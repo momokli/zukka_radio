@@ -114,7 +114,17 @@ music.zukkafabrik.de/library/tracks/XXX
 ## Security
 
 - **`.env` is git-ignored.** Copy `.env.example` → `.env` and fill in real values.
-- **No secrets in code.** `recording_watcher.py` still has the Funkwhale admin password hardcoded as a Base64 header (`FW_AUTH`). TODO: move to env var.
+- **No secrets in code or systemd units.** All credentials (AzuraCast API key,
+  Telegram bot token/channel, Funkwhale admin password) come from the environment
+  via `EnvironmentFile` — never inline in unit files, never hardcoded in scripts.
+- **Deploy as EnvironmentFile:** copy `.env` to the server as `/etc/zukka.env`
+  (`chmod 600`, owned by root) and reference it from every unit:
+
+  ```ini
+  EnvironmentFile=/etc/zukka.env
+  ```
+
+  systemd `EnvironmentFile` syntax is plain `KEY=value` lines (no `export`, no quotes).
 - State files (`*.json`) are git-ignored — they're server runtime data, not source.
 
 ## Development
@@ -151,11 +161,64 @@ scp recording_watcher.py cast.zukkafabrik.de:/tmp/ && \
 
 ### systemd units (on cast.zukkafabrik.de)
 
+All units load secrets from `/etc/zukka.env` (copied from `.env`, chmod 600) —
+**no inline secrets in unit files**. `StandardOutput=journal` is the default for
+services and captures script stdout; scripts also flush their stdout per line so
+`journalctl` always shows output immediately.
+
 | Unit                            | Script               | Env                                           |
 | ------------------------------- | -------------------- | --------------------------------------------- |
-| `zukka-webhook.service`         | pipeline.py          | `TELEGRAM_CHANNEL`, `ZUKKA_WEBHOOK_PORT=5099` |
-| `zukka-recording-watcher.timer` | recording_watcher.py | every 2 min, `TELEGRAM_CHANNEL`               |
-| `zukka-age-broadcasts.timer`    | age_broadcasts.py    | daily 3am                                     |
+| `zukka-webhook.service`         | pipeline.py          | `EnvironmentFile=/etc/zukka.env`              |
+| `zukka-recording-watcher.timer` | recording_watcher.py | every 2 min, `EnvironmentFile=/etc/zukka.env` |
+| `zukka-age-broadcasts.timer`    | age_broadcasts.py    | daily 3am, `EnvironmentFile=/etc/zukka.env`   |
+| `zukka-healthcheck.timer`       | curl /healthz        | every 5 min (see below)                       |
+
+Example — `zukka-webhook.service`:
+
+```ini
+[Unit]
+Description=radio zukka live webhook notifier
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /srv/azuracast/pipeline.py
+EnvironmentFile=/etc/zukka.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Example — healthcheck (oneshot + timer):
+
+```ini
+# /etc/systemd/system/zukka-healthcheck.service
+[Unit]
+Description=radio zukka webhook healthcheck
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS http://127.0.0.1:5099/healthz
+```
+
+```ini
+# /etc/systemd/system/zukka-healthcheck.timer
+[Unit]
+Description=radio zukka webhook healthcheck (every 5 min)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+A failing healthcheck shows up as a failed `zukka-healthcheck.service` in
+`systemctl list-timers` / `journalctl`; wire it into the existing
+`mellon-alertmanager-telegram` alerting (e.g. Prometheus blackbox probe or a
+watchdog on the oneshot failure) to get a Telegram alert when the webhook is down.
 
 ### DEV → PROD switch (Telegram channel)
 
@@ -170,23 +233,34 @@ ssh cast.zukkafabrik.de "sudo sed -i 's/TELEGRAM_CHANNEL=-1003560012041/TELEGRAM
 ### Monitoring
 
 ```bash
+# Healthcheck (pipeline.py serves GET /healthz → 200 {"status": "ok"})
+ssh cast.zukkafabrik.de "curl -fsS http://127.0.0.1:5099/healthz"
+
+# Logs — journald captures script stdout (line-buffered, see systemd section)
 ssh cast.zukkafabrik.de "sudo journalctl -u zukka-webhook -f"          # ON/OFF
 ssh cast.zukkafabrik.de "sudo journalctl -u zukka-recording-watcher -f" # uploads
 ssh cast.zukkafabrik.de "sudo systemctl start zukka-recording-watcher"  # manual trigger
 ```
 
+If `journalctl -u zukka-webhook` shows no entries while the service is
+`active/running`, check that the service actually runs the current script
+(restart after deploy) and that no firewall rule blocks AzuraCast → port 5099
+(see ISSUES.md #1 — `ufw allow from 172.24.0.0/16 to any port 5099 proto tcp`).
+
 ---
 
 ## Obsolete Scripts (do NOT deploy)
 
-| Script                 | Status   | Superseded by          |
-| ---------------------- | -------- | ---------------------- |
-| `webhook_listener.py`  | obsolete | `pipeline.py`          |
-| `telegram_notifier.py` | obsolete | `pipeline.py`          |
-| `auto_upload.py`       | obsolete | `recording_watcher.py` |
-| `app.py`               | obsolete | `recording_watcher.py` |
+| Script                 | Status   | Superseded by          | Location                      |
+| ---------------------- | -------- | ---------------------- | ----------------------------- |
+| `webhook_listener.py`  | obsolete | `pipeline.py`          | `legacy/` (marked OBSOLETE)   |
+| `telegram_notifier.py` | obsolete | `pipeline.py`          | `legacy/` (marked OBSOLETE)   |
+| `auto_upload.py`       | obsolete | `recording_watcher.py` | `legacy/` (marked OBSOLETE)   |
+| `app.py`               | obsolete | `recording_watcher.py` | `legacy/` (marked OBSOLETE)   |
 
-These are kept for reference but are no longer active. On the server they should be removed (still present in `/srv/azuracast/`).
+Moved to `legacy/` and marked with an `OBSOLETE — DO NOT DEPLOY` banner; kept
+for reference only. On the server they should be removed — they are still
+present in `/srv/azuracast/` and nothing references them anymore.
 
 ## Station Config (see STATION.md)
 

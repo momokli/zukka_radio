@@ -7,16 +7,34 @@ Sends instant Telegram messages only. No upload, no wait.
 
 ON:  🔴 duck ist jetzt live auf radio zukka 🎧
 OFF: ⚫ duck war live auf radio zukka 🎧
+
+Robustness (issue #2/#3):
+  - ThreadingHTTPServer: a slow/hanging request no longer blocks
+    all other webhooks.
+  - GET /healthz (and /health): JSON healthcheck for monitoring.
+  - stdout is line-buffered so all log lines reach journald
+    immediately (systemd captures stdout of the service).
 """
 
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+
+# systemd/journald captures stdout — make sure every line is flushed
+# immediately (Python block-buffers piped stdout otherwise, which made
+# `journalctl -u zukka-webhook` appear empty).
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+STARTED_AT = time.time()
 
 # ── Config ────────────────────────────────────────────────────────────
 HOST = os.getenv("ZUKKA_RADIO_HOST", "https://cast.zukkafabrik.de").rstrip("/")
@@ -36,8 +54,19 @@ if not TELEGRAM_TOKEN:
 
 API_HEADERS = {"X-API-Key": API_KEY, "Accept": "application/json"}
 
-print(f"radio zukka notifier — port {PORT}")
+print(f"radio zukka notifier — port {PORT} (healthcheck: GET /healthz)")
 print(f"  telegram → {TELEGRAM_CHANNEL}")
+
+
+def health_payload():
+    """JSON payload for the /healthz endpoint (used by monitoring)."""
+    return {
+        "status": "ok",
+        "service": "zukka-webhook",
+        "version": 2,
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -133,6 +162,19 @@ def handle_disconnect(streamer_name):
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Healthcheck: GET /healthz or GET /health → 200 {"status": "ok"}."""
+        if self.path.split("?", 1)[0] in ("/healthz", "/health"):
+            body = json.dumps(health_payload()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         try:
@@ -167,4 +209,4 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    HTTPServer(("0.0.0.0", PORT), WebhookHandler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", PORT), WebhookHandler).serve_forever()

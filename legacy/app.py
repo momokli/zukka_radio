@@ -1,3 +1,7 @@
+# ⚠️ OBSOLETE — DO NOT DEPLOY ⚠️
+# Superseded by the current automation (see legacy/README.md and AGENT.md).
+# Kept for reference only. Removed from production; not part of the
+# active pipeline. Do not copy back to /srv/azuracast/.
 """
 Zukka Radio — Broadcast Uploader + DJ Library
 Flask web app to review, import, and manage streamer broadcasts.

@@ -7,6 +7,12 @@ uploads to AzuraCast + Funkwhale, posts Telegram link.
 
 ON/OFF messages are handled by pipeline.py (webhook).
 This only handles 📼 "recording anhören" posts.
+
+Robustness (issue #2/#3):
+  - No secrets in code: all credentials come from the environment
+    (.env / systemd EnvironmentFile).
+  - Paths/IDs are env-configurable with sane defaults.
+  - stdout is line-buffered so log lines reach journald immediately.
 """
 
 import base64
@@ -22,6 +28,13 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# systemd/journald captures stdout — make sure every line is flushed
+# immediately (Python block-buffers piped stdout otherwise).
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 # ── Config ────────────────────────────────────────────────────────────
 HOST = os.getenv("ZUKKA_RADIO_HOST", "https://cast.zukkafabrik.de").rstrip("/")
 API_KEY = os.getenv("ZUKKA_RADIO_API_KEY", "")
@@ -30,26 +43,42 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY", "")
 TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL", "@zukka_radio")
 
 FW_HOST = "https://music.zukkafabrik.de"
-FW_LIBRARY = "3338514d-4a10-4ae3-a017-5c90deac398c"
-FW_COMPOSE = "/srv/funkwhale/docker-compose.yml"
+FW_LIBRARY = os.getenv("FUNKWHALE_LIBRARY", "3338514d-4a10-4ae3-a017-5c90deac398c")
+FW_COMPOSE = os.getenv("FUNKWHALE_COMPOSE", "/srv/funkwhale/docker-compose.yml")
 
 # Funkwhale admin auth — from env, no hardcoded secrets
 FW_ADMIN = os.getenv("FUNKWHALE_ADMIN", "admin")
 FW_PASSWORD = os.getenv("FUNKWHALE_PASSWORD", "")
-if FW_PASSWORD:
-    FW_AUTH = "Basic " + base64.b64encode(f"{FW_ADMIN}:{FW_PASSWORD}".encode()).decode()
-else:
-    FW_AUTH = ""
+
+
+def build_fw_auth(admin, password):
+    """Return the Basic auth header for the Funkwhale API.
+
+    Empty password → empty header (Funkwhale steps are skipped
+    gracefully). Kept as a pure function so tests can verify it.
+    """
+    if not password:
+        return ""
+    return "Basic " + base64.b64encode(f"{admin}:{password}".encode()).decode()
+
+
+FW_AUTH = build_fw_auth(FW_ADMIN, FW_PASSWORD)
+if not FW_PASSWORD:
+    print(
+        "WARNING: FUNKWHALE_PASSWORD not set — Funkwhale import will be skipped",
+        file=sys.stderr,
+    )
 
 DJ_PLAYLISTS = {"ankd": 9, "mctoastus": 10, "momo": 11}
 DISPLAY_NAMES = {"hovio": "ANKD", "mctoastus": "duck", "momo": "momo"}
 
-RECORDINGS_DIR = (
-    "/var/lib/docker/volumes/azuracast_station_data/_data/zukka_radio/recordings"
+RECORDINGS_DIR = os.getenv(
+    "ZUKKA_RECORDINGS_DIR",
+    "/var/lib/docker/volumes/azuracast_station_data/_data/zukka_radio/recordings",
 )
-FW_MUSIC_DIR = "/srv/funkwhale/data/music"
+FW_MUSIC_DIR = os.getenv("FUNKWHALE_MUSIC_DIR", "/srv/funkwhale/data/music")
 STATE_FILE = os.getenv("ZUKKA_RECORDING_STATE", "/srv/azuracast/recording_state.json")
-COVER_DIR = "/opt/http/radio.zukkafabrik.de/covers"
+COVER_DIR = os.getenv("ZUKKA_COVER_DIR", "/opt/http/radio.zukkafabrik.de/covers")
 
 MIN_DURATION_SEC = 120
 MIN_AGE_SEC = 90  # recording must be finalized for at least 90s

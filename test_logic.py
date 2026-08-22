@@ -14,16 +14,18 @@ Run:  python3 -m pytest test_logic.py -v
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
-# recording_watcher.py guards on these at import time
+# recording_watcher.py and pipeline.py guard on these at import time
 os.environ.setdefault("ZUKKA_RADIO_API_KEY", "test")
 os.environ.setdefault("TELEGRAM_BOT_API_KEY", "test")
 
 # ── Load the functions from recording_watcher.py without executing main() ──
 
 RW = Path(__file__).parent / "recording_watcher.py"
+PIPELINE = Path(__file__).parent / "pipeline.py"
 
 
 def _load(module_name, path):
@@ -95,6 +97,52 @@ def test_display_name_mapping():
     assert rw.get_display_name("mctoastus") == "duck"
     assert rw.get_display_name("hovio") == "ANKD"
     assert rw.get_display_name("momo") == "momo"
+
+
+def test_fw_auth_from_env():
+    """Funkwhale Basic auth must be built from env values, never hardcoded."""
+    rw = _load("rw_fw", RW)
+    assert rw.build_fw_auth("admin", "secret") == "Basic YWRtaW46c2VjcmV0"
+    assert rw.build_fw_auth("admin", "") == ""  # no password → skip Funkwhale
+
+
+def test_no_hardcoded_secrets_in_watcher():
+    """recording_watcher.py must not contain secret-like literals."""
+    src = RW.read_text()
+    # long base64 blobs (a hardcoded Basic auth header would look like this)
+    for m in re.finditer(r"[A-Za-z0-9+/]{40,}={0,2}", src):
+        assert False, f"possible hardcoded secret in recording_watcher.py: ...{m.group(0)[:16]}..."
+    # placeholder markers must not ship as real values
+    assert "replace_with_" not in src
+
+
+def test_pipeline_import_safety():
+    """pipeline.py loads and exposes the robustness primitives."""
+    pl = _load("pipeline", PIPELINE)
+    for name in ("WebhookHandler", "health_payload", "ThreadingHTTPServer"):
+        assert hasattr(pl, name), f"pipeline.py missing {name}"
+
+
+def test_pipeline_uses_threading_server():
+    """Issue #3: a hanging request must not block other webhooks."""
+    from http.server import ThreadingHTTPServer as _THS
+
+    pl = _load("pipeline_thr", PIPELINE)
+    assert pl.ThreadingHTTPServer is _THS
+
+
+def test_pipeline_health_payload():
+    """Issue #2: /healthz payload is JSON-serializable and reports ok."""
+    import json as _json
+
+    pl = _load("pipeline_hp", PIPELINE)
+    payload = pl.health_payload()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "zukka-webhook"
+    assert payload["uptime_seconds"] >= 0
+    assert "time" in payload
+    # must be serializable (it is served as JSON over HTTP)
+    _json.dumps(payload)
 
 
 if __name__ == "__main__":
