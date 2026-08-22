@@ -18,9 +18,10 @@
      │  (systemd, dauer)│      │  (systemd timer, 2 min) │
      │                  │      │                          │
      │  ON  → 🔴 live   │      │  Find finalized recs    │
-     │  OFF → ⚫ offline │      │  Upload to AzuraCast    │
-     │  (instant)       │      │  Upload to Funkwhale    │
-     └─────────────────┘      │  Post 📼 recording link  │
+     │  OFF → ⚫ offline │      │  postprocess.py (#4)    │
+     │  (instant)       │      │  Upload to AzuraCast    │
+     └─────────────────┘      │  Upload to Funkwhale    │
+                              │  Post 📼 recording link  │
                               └─────────────────────────┘
 
      ┌─────────────────┐
@@ -35,6 +36,7 @@
 | ---------------------- | --------------------------- | --------------------------- | ----------------------------------------------------------------------------------- |
 | `pipeline.py`          | systemd service (always on) | Webhook-triggered (instant) | 🔴 ON / ⚫ OFF Telegram messages                                                    |
 | `recording_watcher.py` | systemd timer (every 2 min) | Periodic                    | Finds finalized recordings, uploads to AzuraCast + Funkwhale, posts 📼 link         |
+| `postprocess.py`       | module (loaded by watcher)  | After finalization, pre-upload | Optional ffmpeg master chain: loudness + MP3/Opus (issue #4, default OFF)         |
 | `age_broadcasts.py`    | systemd timer (daily 3am)   | Daily                       | Moves tracks older than 30 days from per-DJ fresh playlists to shared rotation pool |
 
 ## Naming Convention
@@ -132,7 +134,7 @@ music.zukkafabrik.de/library/tracks/XXX
 ```bash
 cd zukka_radio
 pip install -r requirements.txt   # only `mutagen`
-python3 test_logic.py             # no-deps test runner (6 tests)
+python3 test_logic.py             # no-deps test runner (incl. postprocess tests)
 # or: python3 -m pytest test_logic.py -v
 ```
 
@@ -144,6 +146,53 @@ python3 test_logic.py             # no-deps test runner (6 tests)
 - title / time-range formatting
 - filename prefixing
 - album title / display name mapping (`mctoastus` → `duck`)
+- postprocess.py (issue #4): ffmpeg arg/filter-chain building, loudness gain
+  math, ebur128 parsing, enable/disable + graceful-failure logic — all pure,
+  **no audio binaries required** (ffmpeg calls are injected fakes in tests)
+
+## Post-Processing (issue #4)
+
+`postprocess.py` is a standalone, modular ffmpeg master chain for recordings,
+called by `recording_watcher.py` after a broadcast is finalized and **before**
+upload to AzuraCast/Funkwhale. It is **disabled by default** — the production
+behavior is byte-identical until `POSTPROCESS_ENABLED=true` is deployed.
+
+**Chain** (SOTA order, every stage optional):
+
+1. `highpass=f=30` — rumble/DC removal
+2. optional `acompressor` (`POSTPROCESS_COMPRESSOR=true`)
+3. static loudness normalization — EBU R128 measured once, then a **constant**
+   gain (no dynamic `loudnorm`, which pumps on music). Target `TARGET_LUFS=-16`,
+   true peak capped at `TARGET_TP=-1.5` dBTP (gain = min of both corrections).
+4. `alimiter` safety limiter (auto-level off — pure brickwall at TARGET_TP)
+5. optional `afade` in/out (`POSTPROCESS_FADE_IN` / `POSTPROCESS_FADE_OUT`, s)
+
+**Output:** MP3 320 kbps CBR (`libmp3lame -b:a 320k`). CBR + Xing header
+(written automatically by ffmpeg ≥ 4.0) → correct duration, perfect seeking,
+Safari support. Opus optional via `FORMAT=opus`.
+
+**Config (env, read at call time):**
+
+| Env                         | Default      | Meaning                                  |
+| --------------------------- | ------------ | ---------------------------------------- |
+| `POSTPROCESS_ENABLED`       | `false`      | master switch — module is inert without it |
+| `TARGET_LUFS`               | `-16`        | loudness target (LUFS)                   |
+| `TARGET_TP`                 | `-1.5`       | true-peak ceiling (dBTP)                 |
+| `FORMAT`                    | `mp3`        | `mp3` or `opus`                          |
+| `BITRATE`                   | `320k`/`128k`| CBR bitrate (per format)                 |
+| `POSTPROCESS_COMPRESSOR`    | `false`      | compressor stage                         |
+| `POSTPROCESS_FADE_IN`       | `0`          | fade-in seconds (0 = off)                |
+| `POSTPROCESS_FADE_OUT`      | `0`          | fade-out seconds (0 = off)               |
+| `POSTPROCESS_KEEP_ORIGINAL` | `true`       | `false` → remove raw recording after success |
+| `POSTPROCESS_OUTPUT_DIR`    | next to src  | where the master is written              |
+
+**Design:** pure functions (`load_config`, `compute_gain`, `build_filter_chain`,
+`build_ffmpeg_args`, `output_path`, `parse_ebur128_output`) build the ffmpeg
+command line; a thin execution layer (`measure_loudness`, `probe_duration`,
+`process`) runs it. `process(src) -> dst` is always graceful: any failure
+(missing ffmpeg, measurement error, encode error) logs and returns `None`,
+so the watcher keeps using the original recording. Requires `ffmpeg`/`ffprobe`
+on the server (no pip dependency).
 
 ## Deployment
 
@@ -154,10 +203,14 @@ Scripts are deployed to `cast.zukkafabrik.de` via `scp` and run under systemd.
 scp pipeline.py cast.zukkafabrik.de:/tmp/ && \
   ssh cast.zukkafabrik.de "sudo cp /tmp/pipeline.py /srv/azuracast/pipeline.py && sudo systemctl restart zukka-webhook"
 
-# recording_watcher.py
-scp recording_watcher.py cast.zukkafabrik.de:/tmp/ && \
-  ssh cast.zukkafabrik.de "sudo cp /tmp/recording_watcher.py /srv/azuracast/recording_watcher.py"
+# recording_watcher.py (+ postprocess.py, issue #4)
+scp recording_watcher.py postprocess.py cast.zukkafabrik.de:/tmp/ && \
+  ssh cast.zukkafabrik.de "sudo cp /tmp/recording_watcher.py /tmp/postprocess.py /srv/azuracast/ && \
+    sudo systemctl restart zukka-recording-watcher.timer"
 ```
+
+> ⚠️ Post-processing stays **off** after deploy unless `POSTPROCESS_ENABLED=true`
+> is added to `/etc/zukka.env` (same `EnvironmentFile` as the watcher).
 
 ### systemd units (on cast.zukkafabrik.de)
 

@@ -28,6 +28,18 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Issue #4: optional recording post-processing (ffmpeg master chain).
+# Guarded import: if the module is missing/broken the watcher still runs
+# and simply skips post-processing.
+try:
+    import postprocess
+except Exception as _e:
+    print(
+        f"WARNING: postprocess module unavailable — post-processing disabled ({_e})",
+        file=sys.stderr,
+    )
+    postprocess = None
+
 # systemd/journald captures stdout — make sure every line is flushed
 # immediately (Python block-buffers piped stdout otherwise).
 try:
@@ -212,6 +224,22 @@ def target_filename(username, recording_path):
     return fn
 
 
+def resolve_recording_path(recording_path, username=None):
+    """Absolute path of a recording on disk.
+
+    AzuraCast reports the path either flat ("stream_....ogg") or under a
+    per-streamer subdirectory ("momo/stream_....ogg") — tolerate both.
+    """
+    src = os.path.join(RECORDINGS_DIR, recording_path)
+    if os.path.exists(src):
+        return src
+    if username:
+        alt = os.path.join(RECORDINGS_DIR, username.lower(), Path(recording_path).name)
+        if os.path.exists(alt):
+            return alt
+    return src
+
+
 def album_title(dname):
     return f"{dname} @ radio zukka"
 
@@ -239,8 +267,10 @@ def tg_send(text):
 # ── Upload pipeline (per recording) ───────────────────────────────────
 
 
-def upload_to_azuracast(b, username, dname):
-    fn = target_filename(username, b["path"])
+def upload_to_azuracast(b, username, dname, local_file=None):
+    # Issue #4: when a post-processed master exists, upload THAT instead
+    # of re-downloading the raw recording from AzuraCast.
+    fn = os.path.basename(local_file) if local_file else target_filename(username, b["path"])
     title = format_title(dname, b["timestamp_start"])
 
     try:
@@ -260,18 +290,24 @@ def upload_to_azuracast(b, username, dname):
         pass
 
     try:
-        req = urllib.request.Request(b["download_url"], headers={"X-API-Key": API_KEY})
-        with urllib.request.urlopen(req, timeout=300) as r:
-            data = r.read()
-        print(f"  Download: {len(data) // 1024 // 1024}MB")
+        if local_file and os.path.exists(local_file):
+            with open(local_file, "rb") as f:
+                data = f.read()
+            print(f"  Master: {len(data) // 1024 // 1024}MB (local, no re-download)")
+        else:
+            req = urllib.request.Request(b["download_url"], headers={"X-API-Key": API_KEY})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                data = r.read()
+            print(f"  Download: {len(data) // 1024 // 1024}MB")
     except Exception as e:
         print(f"  ✗ Download: {e}")
         return None
 
     try:
         boundary = "----FW" + os.urandom(8).hex()
+        ctype = "audio/mpeg" if fn.lower().endswith(".mp3") else "audio/ogg"
         body = b""
-        body += f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{fn}"\r\nContent-Type: audio/ogg\r\n\r\n'.encode()
+        body += f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{fn}"\r\nContent-Type: {ctype}\r\n\r\n'.encode()
         body += data
         body += f"\r\n--{boundary}--\r\n".encode()
         hdrs = {
@@ -307,17 +343,15 @@ def upload_to_azuracast(b, username, dname):
     return None
 
 
-def copy_to_funkwhale(recording_path, username):
-    src = os.path.join(RECORDINGS_DIR, recording_path)
+def copy_to_funkwhale(recording_path, username, source=None):
+    # Issue #4: `source` is the post-processed master (already final),
+    # otherwise fall back to the raw recording on disk.
+    src = source or resolve_recording_path(recording_path, username)
     if not os.path.exists(src):
-        alt = os.path.join(RECORDINGS_DIR, username, Path(recording_path).name)
-        if os.path.exists(alt):
-            src = alt
-        else:
-            print(f"  ✗ Source not found: {src}")
-            return None
+        print(f"  ✗ Source not found: {src}")
+        return None
 
-    fn = target_filename(username, recording_path)
+    fn = os.path.basename(src) if source else target_filename(username, recording_path)
     dst_dir = os.path.join(FW_MUSIC_DIR, username.lower())
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, fn)
@@ -376,6 +410,32 @@ def tag_ogg(filepath, dname, ts_start):
     except Exception as e:
         print(f"  ✗ Mutagen: {e}")
         return False
+
+
+def tag_file(filepath, dname, ts_start):
+    """Tag the final file — OGG (vorbis) or MP3 (ID3, issue #4).
+
+    MP3 masters from postprocess.py get ID3 tags so title/artist/album
+    survive the Funkwhale import.
+    """
+    if str(filepath).lower().endswith(".mp3"):
+        try:
+            from mutagen.mp3 import MP3
+            from mutagen.id3 import ID3, TALB, TIT2, TPE1
+
+            audio = MP3(filepath)
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.add(TIT2(encoding=3, text=format_title(dname, ts_start)))
+            audio.tags.add(TPE1(encoding=3, text=dname))
+            audio.tags.add(TALB(encoding=3, text=album_title(dname)))
+            audio.save()
+            print(f"  Mutagen (ID3): ✓")
+            return True
+        except Exception as e:
+            print(f"  ✗ Mutagen (ID3): {e}")
+            return False
+    return tag_ogg(filepath, dname, ts_start)
 
 
 def funkwhale_import(filepath):
@@ -596,15 +656,29 @@ def process_broadcast(b, username, dname):
 
     print(f"\n  #{bid} {dname} — {time_range} · {dur_min} min")
 
+    # Issue #4: optional post-processing BEFORE upload — default OFF, so
+    # nothing changes without an explicit POSTPROCESS_ENABLED=true deploy.
+    # Graceful: on any failure postprocess.process() returns None and the
+    # raw recording is used as before.
+    local_src = resolve_recording_path(b["path"], username)
+    processed = postprocess.process(local_src) if postprocess is not None else None
+    if processed:
+        print(f"  Postprocess: ✓ master → {os.path.basename(processed)}")
+
     # AzuraCast
-    fn = upload_to_azuracast(b, username, dname)
+    fn = upload_to_azuracast(b, username, dname, local_file=processed)
 
     # Funkwhale
-    fw_path = copy_to_funkwhale(b["path"], username)
+    fw_path = copy_to_funkwhale(b["path"], username, source=processed)
     fw_track = None
     if fw_path:
-        reencode_ogg(fw_path)
-        tag_ogg(fw_path, dname, b["timestamp_start"])
+        if processed:
+            # Master is already final (mp3/opus) — do NOT re-encode to
+            # vorbis, that would undo the post-processing.
+            tag_file(fw_path, dname, b["timestamp_start"])
+        else:
+            reencode_ogg(fw_path)
+            tag_ogg(fw_path, dname, b["timestamp_start"])
         if funkwhale_import(fw_path):
             time.sleep(5)  # let Funkwhale index
             stem = Path(target_filename(username, b["path"])).stem
@@ -620,6 +694,20 @@ def process_broadcast(b, username, dname):
                     cover = generate_cover(dname)
                     if cover:
                         funkwhale_upload_cover(album["id"], cover)
+
+    # Issue #4: optional original cleanup (POSTPROCESS_KEEP_ORIGINAL=0) —
+    # only after AzuraCast accepted the master, never on failure.
+    if (
+        processed
+        and postprocess is not None
+        and fn
+        and postprocess.should_delete_original(postprocess.load_config())
+    ):
+        try:
+            os.remove(local_src)
+            print(f"  Postprocess: removed original {os.path.basename(local_src)}")
+        except Exception as e:
+            print(f"  ✗ Postprocess: could not remove original: {e}")
 
     mark_uploaded(
         bid,
