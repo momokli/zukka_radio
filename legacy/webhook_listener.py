@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# ⚠️ OBSOLETE — DO NOT DEPLOY ⚠️
+# Superseded by the current automation (see legacy/README.md and AGENT.md).
+# Kept for reference only. Removed from production; not part of the
+# active pipeline. Do not copy back to /srv/azuracast/.
 """
 Zukka Radio — Post-Cast Handler
 Listens for AzuraCast webhooks on DJ disconnect.
