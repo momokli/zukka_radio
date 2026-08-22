@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Zukka Radio — Broadcast Uploader</title>
+        <link rel="stylesheet" href="/static/style.css" />
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>📻 Zukka Broadcast Uploader</h1>
+                <div class="header-actions">
+                    <button id="fetch-btn" onclick="fetchBroadcasts()">
+                        🔍 Fetch New Broadcasts
+                    </button>
+                    <span id="last-fetched" class="muted"></span>
+                </div>
+            </header>
+
+            <div id="error-box" class="error hidden"></div>
+
+            <div id="main-content" class="hidden">
+                <div class="toolbar">
+                    <label class="select-all-label">
+                        <input
+                            type="checkbox"
+                            id="select-all"
+                            onchange="toggleSelectAll()"
+                        />
+                        Select all new
+                    </label>
+                    <label class="filter-label">
+                        <input
+                            type="checkbox"
+                            id="show-uploaded"
+                            onchange="renderTable()"
+                            checked
+                        />
+                        Show already uploaded
+                    </label>
+                    <span id="selection-count" class="muted"></span>
+                    <button
+                        id="upload-btn"
+                        class="primary"
+                        onclick="startUpload()"
+                        disabled
+                    >
+                        ⬆ Upload Selected (<span id="upload-count">0</span>)
+                    </button>
+                </div>
+
+                <div id="broadcast-table"></div>
+
+                <div id="progress-section" class="hidden">
+                    <h2>Upload Progress</h2>
+                    <div id="progress-list"></div>
+                </div>
+            </div>
+
+            <div id="empty-state" class="empty">
+                <p>
+                    Click <strong>"Fetch New Broadcasts"</strong> to load broadcasts from
+                    AzuraCast.
+                </p>
+            </div>
+        </div>
+
+        <script>
+            let broadcasts = [];
+            let uploadedIds = new Set();
+
+            async function fetchBroadcasts() {
+                const btn = document.getElementById("fetch-btn");
+                const errorBox = document.getElementById("error-box");
+                btn.disabled = true;
+                btn.textContent = "⏳ Fetching...";
+                errorBox.classList.add("hidden");
+
+                try {
+                    const resp = await fetch("/api/broadcasts");
+                    const data = await resp.json();
+                    if (data.error) throw new Error(data.error);
+
+                    broadcasts = data.broadcasts;
+                    uploadedIds = new Set(
+                        broadcasts.filter((b) => b.uploaded).map((b) => b.id),
+                    );
+
+                    document.getElementById("last-fetched").textContent =
+                        data.last_fetched
+                            ? `Last fetched: ${formatDate(data.last_fetched)}`
+                            : "";
+
+                    renderTable();
+                    document.getElementById("empty-state").classList.add("hidden");
+                    document.getElementById("main-content").classList.remove("hidden");
+                    document.getElementById("progress-section").classList.add("hidden");
+                    document.getElementById("progress-list").innerHTML = "";
+                    updateSelection();
+                } catch (err) {
+                    errorBox.textContent = "❌ " + err.message;
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = "🔍 Fetch New Broadcasts";
+                }
+            }
+
+            function renderTable() {
+                const container = document.getElementById("broadcast-table");
+                if (broadcasts.length === 0) {
+                    document.getElementById("empty-state").classList.remove("hidden");
+                    document.getElementById("main-content").classList.add("hidden");
+                    return;
+                }
+
+                const showUploaded = document.getElementById("show-uploaded").checked;
+
+                // Sort: newest first (by timestamp_start descending)
+                const sorted = [...broadcasts].sort((a, b) => {
+                    const ta = a.timestamp_start || "";
+                    const tb = b.timestamp_start || "";
+                    return tb.localeCompare(ta);
+                });
+
+                let html = `<table class="data-table">
+                    <thead>
+                      <tr>
+                        <th class="col-sel">☐</th>
+                        <th class="col-streamer">Streamer</th>
+                        <th class="col-title">Title</th>
+                        <th class="col-file">Filename</th>
+                        <th class="col-dur">Duration</th>
+                        <th class="col-size">Size</th>
+                        <th class="col-date">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>`;
+
+                let visibleCount = 0;
+                for (const b of sorted) {
+                    if (b.uploaded && !showUploaded) continue;
+                    visibleCount++;
+
+                    const checked = b._selected && !b.uploaded ? "checked" : "";
+                    const disabled = b.uploaded ? "disabled" : "";
+                    const rowClass = b.uploaded ? "row-uploaded" : "";
+                    const ts = b.timestamp_start ? formatDate(b.timestamp_start) : "—";
+                    const dur = b.duration_text || "?";
+
+                    // Extract date-only and time-only parts for the Date column
+                    const dateOnly = b.timestamp_start
+                        ? formatDateShort(b.timestamp_start)
+                        : "—";
+                    const timeOnly = b.timestamp_start
+                        ? formatTime(b.timestamp_start)
+                        : "";
+
+                    html += `<tr class="${rowClass}" data-id="${b.id}">
+                      <td class="col-sel">
+                        <input type="checkbox" ${checked} ${disabled}
+                               onchange="onCheck(this, ${b.id})">
+                      </td>
+                      <td class="col-streamer">${escapeHtml(b.display_name)}</td>
+                      <td class="col-title">${escapeHtml(b.display_title)}</td>
+                      <td class="col-file" title="${escapeHtml(b.target_filename)}">${escapeHtml(b.target_filename)}</td>
+                      <td class="col-dur">${dur}</td>
+                      <td class="col-size">${b.size_mb} MB</td>
+                      <td class="col-date" title="${ts}">${dateOnly}<br><span class="time-sub">${timeOnly}</span></td>
+                    </tr>`;
+                }
+
+                html += `</tbody></table>`;
+
+                if (visibleCount === 0) {
+                    html = `<p class="empty">All broadcasts already uploaded. <a href="#" onclick="document.getElementById('show-uploaded').checked=true;renderTable()">Show them</a></p>`;
+                }
+
+                container.innerHTML = html;
+            }
+
+            function onCheck(cb, id) {
+                const b = broadcasts.find((b) => b.id === id);
+                if (b) b._selected = cb.checked;
+                updateSelection();
+            }
+
+            function toggleSelectAll() {
+                const selectAll = document.getElementById("select-all").checked;
+                for (const b of broadcasts) {
+                    if (!b.uploaded) b._selected = selectAll;
+                }
+                renderTable();
+                updateSelection();
+            }
+
+            function updateSelection() {
+                const selected = broadcasts.filter((b) => b._selected && !b.uploaded);
+                const count = selected.length;
+                const totalSize = selected.reduce(
+                    (sum, b) => sum + (b.size_bytes || 0),
+                    0,
+                );
+                const totalDuration = selected.reduce(
+                    (sum, b) => sum + (b.duration_seconds || 0),
+                    0,
+                );
+                const h = Math.floor(totalDuration / 3600);
+                const m = Math.floor((totalDuration % 3600) / 60);
+                const durStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+
+                document.getElementById("selection-count").textContent =
+                    count > 0
+                        ? `${count} selected · ${durStr} · ${(totalSize / (1024 * 1024)).toFixed(0)} MB`
+                        : "";
+                document.getElementById("upload-count").textContent = count;
+                document.getElementById("upload-btn").disabled = count === 0;
+
+                const unuploaded = broadcasts.filter((b) => !b.uploaded);
+                const visibleUnuploaded = unuploaded; // all un-uploaded are visible
+                const allSelected =
+                    visibleUnuploaded.length > 0 &&
+                    visibleUnuploaded.every((b) => b._selected);
+                const noneSelected = visibleUnuploaded.every((b) => !b._selected);
+                document.getElementById("select-all").checked = allSelected;
+                document.getElementById("select-all").indeterminate =
+                    !allSelected && !noneSelected;
+            }
+
+            function startUpload() {
+                const selected = broadcasts.filter((b) => b._selected && !b.uploaded);
+                if (selected.length === 0) return;
+
+                const ids = selected.map((b) => b.id);
+                const progressSection = document.getElementById("progress-section");
+                const progressList = document.getElementById("progress-list");
+                const uploadBtn = document.getElementById("upload-btn");
+
+                progressList.innerHTML = "";
+                uploadBtn.disabled = true;
+
+                for (const b of selected) {
+                    progressList.innerHTML += `<div class="progress-item" id="prog-${b.id}">
+                        <span class="prog-icon">⏳</span>
+                        <span class="prog-text">${escapeHtml(b.display_title)} — ${escapeHtml(b.target_filename)}</span>
+                      </div>`;
+                }
+
+                fetch("/api/upload", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ids }),
+                })
+                    .then(async (resp) => {
+                        const reader = resp.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = "";
+
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split("\n\n");
+                            buffer = lines.pop();
+
+                            for (const line of lines) {
+                                if (line.startsWith("data: ")) {
+                                    const event = JSON.parse(line.slice(6));
+                                    handleProgressEvent(event);
+                                }
+                            }
+                        }
+                    })
+                    .catch((err) => {
+                        console.error("SSE error:", err);
+                    })
+                    .finally(() => {
+                        uploadBtn.disabled = false;
+                        fetchBroadcasts();
+                    });
+            }
+
+            function handleProgressEvent(event) {
+                const el = document.getElementById("prog-" + event.id);
+                if (!el) return;
+
+                const icon = el.querySelector(".prog-icon");
+                const text = el.querySelector(".prog-text");
+
+                switch (event.status) {
+                    case "downloading":
+                        icon.textContent = "⬇";
+                        break;
+                    case "uploading":
+                        icon.textContent = "⬆";
+                        break;
+                    case "done":
+                        icon.textContent = "✅";
+                        uploadedIds.add(event.id);
+                        break;
+                    case "error":
+                        icon.textContent = "❌";
+                        break;
+                    case "complete":
+                        return;
+                }
+                text.textContent = event.message;
+            }
+
+            function formatDate(iso) {
+                try {
+                    const d = new Date(iso);
+                    return d.toLocaleDateString("de-DE", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
+                } catch {
+                    return iso;
+                }
+            }
+
+            function formatDateShort(iso) {
+                try {
+                    const d = new Date(iso);
+                    return d.toLocaleDateString("de-DE", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "2-digit",
+                    });
+                } catch {
+                    return iso;
+                }
+            }
+
+            function formatTime(iso) {
+                try {
+                    const d = new Date(iso);
+                    return d.toLocaleTimeString("de-DE", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
+                } catch {
+                    return "";
+                }
+            }
+
+            function escapeHtml(str) {
+                const div = document.createElement("div");
+                div.textContent = str;
+                return div.innerHTML;
+            }
+        </script>
+    </body>
+</html>

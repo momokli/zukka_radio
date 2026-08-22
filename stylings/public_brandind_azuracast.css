@@ -1,0 +1,164 @@
+/* =========================================
+   ZUKKAFABRIK KOLLEKTIV - MINIMAL STYLE
+   Vibe: Dark, Industrial, Amber Glow.
+   Keine Layout-Experimente.
+   ========================================= */
+
+/* --- 1. SCHRIFTARTEN & FARBEN --- */
+@import url("https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap");
+
+:root {
+    --zukka-bg-dark: #121212; /* Sehr dunkler Hintergrund */
+    --zukka-metal: #2a2a2a; /* Dunkle Metallfarbe für Boxen/Buttons */
+    --zukka-text: #d0d0c0; /* Off-white, staubiger Text */
+    --zukka-amber: #ffb347; /* Warmes Bernstein-Glühen (Accent) */
+    --zukka-red-muted: #8a3324; /* Gedecktes Rot */
+    --zukka-border: #444444; /* Metallkanten */
+}
+
+/* --- 2. GLOBALE BASIS --- */
+body {
+    font-family: "Share Tech Mono", monospace, sans-serif !important;
+    color: var(--zukka-text) !important;
+    background-color: var(--zukka-bg-dark) !important;
+}
+
+/* Überschriften */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.h1,
+.h2,
+.h3,
+.h4,
+.h5,
+.h6 {
+    font-family: "Share Tech Mono", monospace !important;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--zukka-amber) !important;
+    text-shadow: 0 0 5px rgba(255, 179, 71, 0.3);
+    border-bottom: 1px solid var(--zukka-border);
+}
+
+/* Links */
+a,
+a:visited {
+    color: var(--zukka-amber) !important;
+    text-decoration: none;
+    transition: all 0.2s ease;
+}
+a:hover,
+a:focus {
+    color: #fff !important;
+    text-shadow: 0 0 8px var(--zukka-amber);
+}
+
+/* --- 3. CONTAINER (Der "Rack-Gear" Look) --- */
+/* Wendet den dunklen Metall-Look auf die Hauptboxen an */
+.card,
+.well,
+.public-page > .container,
+.modal-content {
+    background-color: rgba(35, 35, 35, 0.95) !important;
+    border: 2px solid var(--zukka-border) !important;
+    border-radius: 3px !important;
+    box-shadow:
+        inset 0 0 20px rgba(0, 0, 0, 0.8),
+        0 5px 10px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* --- 4. ELEMENTE STYLING --- */
+
+/* Album Cover Rahmen */
+img.album-art,
+.album-art img {
+    border-radius: 3px !important;
+    border: 3px solid #222 !important;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.8) !important;
+    filter: contrast(110%) sepia(10%) !important;
+}
+
+/* Progress Bars & Lautstärke (Industrie-Look) */
+.progress,
+.volume-slider,
+.ui-slider {
+    background-color: #0a0a0a !important;
+    border: 1px solid var(--zukka-border);
+    border-radius: 2px !important;
+    height: 18px !important;
+}
+.progress-bar,
+.ui-slider-range {
+    background-color: var(--zukka-red-muted) !important;
+    /* Streifenmuster */
+    background-image: linear-gradient(
+        45deg,
+        rgba(0, 0, 0, 0.3) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(0, 0, 0, 0.3) 50%,
+        rgba(0, 0, 0, 0.3) 75%,
+        transparent 75%,
+        transparent
+    ) !important;
+    background-size: 15px 15px !important;
+}
+
+/* --- 5. ALLE BUTTONS (Einheitlicher Look) --- */
+.btn,
+button {
+    background-color: var(--zukka-metal) !important;
+    color: var(--zukka-amber) !important;
+    border: 2px solid var(--zukka-border) !important;
+    font-family: "Share Tech Mono", monospace !important;
+    text-transform: uppercase;
+    border-radius: 3px !important;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 2px 2px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s ease;
+    text-shadow: none !important;
+    outline: none !important;
+}
+
+/* Hover Zustand: Heller & Glühen */
+.btn:hover,
+button:hover {
+    background-color: #3a3a3a !important;
+    color: #fff !important;
+    border-color: var(--zukka-amber) !important;
+    box-shadow: 0 0 8px var(--zukka-amber) !important;
+}
+
+/* Gedrückter Zustand */
+.btn:active,
+.btn:focus,
+.btn.active {
+    background-color: var(--zukka-amber) !important;
+    color: #000 !important;
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Eingabefelder (Suche, etc.) */
+input.form-control {
+    background-color: #111 !important;
+    border: 2px solid var(--zukka-border) !important;
+    color: var(--zukka-amber) !important;
+    font-family: "Share Tech Mono", monospace !important;
+}
+input.form-control:focus {
+    border-color: var(--zukka-amber) !important;
+    box-shadow: 0 0 5px var(--zukka-amber) !important;
+}
+
+/* Footer klein machen */
+small,
+.text-muted,
+footer {
+    color: #777 !important;
+    font-size: 0.8em;
+}

@@ -1,0 +1,6 @@
+# radio zukka — Python runtime dependencies
+#
+# All three scripts are stdlib-only EXCEPT recording_watcher.py,
+# which optionally uses mutagen to write OGG tags before import.
+
+mutagen

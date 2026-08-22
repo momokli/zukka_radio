@@ -1,0 +1,303 @@
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1117;
+    color: #e1e4e8;
+    line-height: 1.5;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+button {
+    padding: 0.5rem 1rem;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    background: #21262d;
+    color: #c9d1d9;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition:
+        background 0.15s,
+        border-color 0.15s;
+}
+
+button:hover {
+    background: #30363d;
+    border-color: #484f58;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+button.primary {
+    background: #238636;
+    border-color: #2ea043;
+    color: #fff;
+}
+
+button.primary:hover {
+    background: #2ea043;
+}
+
+button.primary:disabled {
+    background: #1a5c28;
+    border-color: #1a5c28;
+}
+
+#fetch-btn {
+    font-size: 0.9rem;
+    padding: 0.55rem 1.2rem;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────── */
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.65rem 1rem;
+    margin-bottom: 0.75rem;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    flex-wrap: wrap;
+}
+
+.select-all-label,
+.filter-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    user-select: none;
+    color: #c9d1d9;
+}
+
+.filter-label {
+    color: #8b949e;
+}
+
+#selection-count {
+    flex: 1;
+    text-align: right;
+}
+
+/* ── Data Table ───────────────────────────────────────────────── */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.data-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.data-table th {
+    padding: 0.55rem 0.65rem;
+    background: #161b22;
+    border-bottom: 2px solid #30363d;
+    text-align: left;
+    font-weight: 600;
+    color: #8b949e;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.data-table td {
+    padding: 0.45rem 0.65rem;
+    border-bottom: 1px solid #21262d;
+    white-space: nowrap;
+}
+
+.data-table tbody tr:hover {
+    background: #161b22;
+}
+
+.data-table tbody tr.row-uploaded {
+    opacity: 0.4;
+}
+
+.data-table tbody tr.row-uploaded:hover {
+    opacity: 0.6;
+    background: #0d1117;
+}
+
+/* Column widths */
+.col-sel {
+    width: 30px;
+    text-align: center;
+}
+.col-streamer {
+    width: 100px;
+}
+.col-title {
+    min-width: 200px;
+}
+.col-file {
+    min-width: 220px;
+}
+.col-dur {
+    width: 70px;
+    text-align: right;
+}
+.col-size {
+    width: 85px;
+    text-align: right;
+}
+.col-date {
+    width: 75px;
+    text-align: right;
+}
+
+.col-dur,
+.col-size,
+.col-date {
+    font-variant-numeric: tabular-nums;
+}
+
+.col-file {
+    font-family: "SF Mono", "Fira Code", "Fira Mono", monospace;
+    font-size: 0.78rem;
+    color: #6e7681;
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.col-title {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.time-sub {
+    font-size: 0.75rem;
+    color: #6e7681;
+}
+
+.data-table tbody td.col-sel input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: #2ea043;
+}
+
+.data-table tbody td.col-sel input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+}
+
+/* ── Progress ─────────────────────────────────────────────────── */
+#progress-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    background: #161b22;
+}
+
+#progress-section h2 {
+    font-size: 1.05rem;
+    margin-bottom: 0.75rem;
+}
+
+#progress-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.progress-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    font-size: 0.875rem;
+}
+
+.prog-icon {
+    flex-shrink: 0;
+    width: 1.3rem;
+    text-align: center;
+}
+
+.prog-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Utilities ────────────────────────────────────────────────── */
+.hidden {
+    display: none !important;
+}
+
+.muted {
+    font-size: 0.825rem;
+    color: #8b949e;
+}
+
+.error {
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    background: #490202;
+    border: 1px solid #da3633;
+    border-radius: 6px;
+    color: #f85149;
+    font-size: 0.9rem;
+}
+
+.empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: #8b949e;
+}
+
+.empty p {
+    font-size: 1rem;
+}
+
+.empty a {
+    color: #58a6ff;
+}
