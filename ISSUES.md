@@ -2,6 +2,8 @@
 
 > Erfasst: 2026-08-22 · Quelle: Live-Diagnose auf `planet` (65.21.27.234) + Repo-Analyse.
 > 🔴 P0 kritisch · 🟠 P1 wichtig · 🟡 P2 Robustheit/Cleanup
+>
+> **Status 2026-08-22:** #1 Quick-Fix live (`ufw allow` gesetzt). #2 + #3 deployt (ThreadingHTTPServer, Secrets → `/etc/zukka.env`, Logging-Fix, `/healthz` + Healthcheck-Timer). Durable #1 (Firewall in IaC) weiterhin offen.
 
 ## 🔴 #1 — ON/OFF-Notifications ausgefallen (live_connect / live_disconnect)
 
@@ -43,6 +45,31 @@ ufw allow from 172.24.0.0/16 to any port 5099 proto tcp
 - [ ] Obsolete Scripts in `/srv/azuracast/` entfernen: `webhook_listener.py`, `telegram_notifier.py`, `auto_upload.py`, `app.py`.
 - [ ] Deploy: manuelles `scp` (AGENT.md) → CI/Deploy-Hook.
 - [ ] 2 tote native Telegram-Webhooks bereinigen oder als Fallback aktivieren (id 1 → `-1003560012041`, id 2 → `@zukka_radio`).
+
+## 🟠 #4 — Recording-Postprocess-Pipeline (Accessibility + Mastering + Qualität)
+
+**Problem:** Recordings sind OGG Vorbis (VBR) → schlechtes Browser-Seeking, Drift bei Daueranzeige (40→80 min), kein Safari-Support, kein Mastering, Generation-Loss (MP3-192-Stream → OGG-Reencode).
+
+**Design:** Eigenständiges Modul `postprocess.py` — modulare ffmpeg-Filter-Chain („pipeline style"), aufgerufen von `recording_watcher.py` nach Finalisierung, **vor** Upload zu AzuraCast/Funkwhale.
+
+**Chain (SOTA-Reihenfolge, konfigurierbar):**
+1. `highpass=f=30` (Rumpeln/DC)
+2. (optional) Kompressor
+3. Loudness-Normalization — **statisch** (ebur128 messen → konstantes Gain), Ziel **-16 LUFS**, True-Peak **-1.5 dBTP** (für Musik statt dynamischem `loudnorm`, der pumpt)
+4. `alimiter` (Safety)
+5. Fade in/out (optional)
+
+**Output:** MP3 320 kbps CBR (`libmp3lame -b:a 320k`) → Xing-Header = perfektes Seek + korrekte Dauer, Safari-kompatibel. Opus optional per Config.
+
+**Config (Env):** `POSTPROCESS_ENABLED`, `TARGET_LUFS=-16`, `TARGET_TP=-1.5`, `FORMAT=mp3`, `BITRATE=320k`. Original behalten/löschen per Config.
+
+**Integration:** `recording_watcher.py`: finalized Recording → `postprocess.process(src) -> dst` → Upload `dst` statt `src`.
+
+**Verify:** ffprobe (Dauer korrekt, LUFS≈-16, TP≤-1.5, MP3/Xing) + Browser-Seek-Test.
+
+## 🟡 #5 — AzuraCast: Recording-Format (Generation-Loss vermeiden)
+
+AzuraCast nimmt Streamer aktuell als OGG Vorbis 192 auf (Reencode des MP3-Streams). Besser: Original-Format der Streamer aufnehmen (MP3/AAC), dann nur einmal postprocessen (#4). Check: AzuraCast Recording-Format-Setting pro Station.
 
 ## ℹ️ Kein Issue (Korrektur)
 
