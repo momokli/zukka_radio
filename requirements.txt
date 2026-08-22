@@ -1,6 +1,10 @@
 # radio zukka — Python runtime dependencies
 #
-# All three scripts are stdlib-only EXCEPT recording_watcher.py,
-# which optionally uses mutagen to write OGG tags before import.
+# All scripts are stdlib-only EXCEPT recording_watcher.py,
+# which optionally uses mutagen to write OGG/MP3 tags before import.
+#
+# postprocess.py (issue #4) needs NO pip packages — it shells out to
+# ffmpeg/ffprobe, which are external binaries, not pip-installable:
+#   apt install ffmpeg   (Debian/Ubuntu, incl. libmp3lame + libopus)
 
 mutagen
