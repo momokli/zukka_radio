@@ -475,6 +475,88 @@ pub struct ExpandResultDto {
     pub warnings: Vec<WarningDto>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #12: sources / priority layers
+// ---------------------------------------------------------------------------
+
+/// Fixed set of priority layers (§2.4/§3.2, C77). Wire form: lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceLayer {
+    Live,
+    Show,
+    Queue,
+    Rotation,
+    Relay,
+    Fun,
+}
+
+impl SourceLayer {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "live" => Ok(SourceLayer::Live),
+            "show" => Ok(SourceLayer::Show),
+            "queue" => Ok(SourceLayer::Queue),
+            "rotation" => Ok(SourceLayer::Rotation),
+            "relay" => Ok(SourceLayer::Relay),
+            "fun" => Ok(SourceLayer::Fun),
+            other => Err(ApiError::validation(
+                field,
+                format!(
+                    "unknown layer '{other}', expected one of 'live', 'show', 'queue', \
+                     'rotation', 'relay' or 'fun'"
+                ),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceLayer::Live => "live",
+            SourceLayer::Show => "show",
+            SourceLayer::Queue => "queue",
+            SourceLayer::Rotation => "rotation",
+            SourceLayer::Relay => "relay",
+            SourceLayer::Fun => "fun",
+        }
+    }
+}
+
+/// Full source representation. `name`/`kind` are read-only (C79), `priority`
+/// is immutable (C78).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceDto {
+    pub id: String,
+    /// Layer name — `live|show|queue|rotation|relay|fun`.
+    pub name: SourceLayer,
+    /// Mirrors `name` in the seed; read-only.
+    pub kind: SourceLayer,
+    /// `1..=100`, immutable (C78).
+    pub priority: i64,
+    /// `INTEGER 0/1` → bool.
+    pub enabled: bool,
+    /// `TEXT` json → Value.
+    pub config: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Body of `PATCH /sources/{id}` — only `enabled` and/or `config`.
+///
+/// Unknown fields (`priority`, `name`, `kind`, `id`, …) are rejected with
+/// `400 bad_request` via `deny_unknown_fields` (C77/C78), never silently
+/// ignored. `config` uses `double_option`: absent = keep, JSON `null` = `422`,
+/// object = replace.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSourceRequest {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub config: Option<Option<serde_json::Value>>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
