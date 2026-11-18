@@ -22,8 +22,8 @@ async fn setup() -> (TempDir, SqlitePool) {
     (dir, pool)
 }
 
-#[tokio::test]
-async fn generated_ids_are_canonical_uuidv7() {
+#[test]
+fn generated_ids_are_canonical_uuidv7() {
     for i in 0..N {
         let id = zukka_scheduler::uuid::new_id();
         assert_eq!(id.len(), 36, "id {i} has unexpected length: {id}");
@@ -38,8 +38,8 @@ async fn generated_ids_are_canonical_uuidv7() {
     }
 }
 
-#[tokio::test]
-async fn ids_are_strictly_increasing() {
+#[test]
+fn ids_are_strictly_increasing() {
     let mut prev = zukka_scheduler::uuid::new_id();
     for i in 0..N {
         let cur = zukka_scheduler::uuid::new_id();
@@ -75,14 +75,20 @@ async fn db_order_by_pk_matches_insertion_order() {
 
     let mut rows = generated.clone();
     rows.sort(); // SQLite TEXT ordering is bytewise; sort must be identity here.
-    assert_eq!(rows, generated, "lexicographic order must be generation order");
+    assert_eq!(
+        rows, generated,
+        "lexicographic order must be generation order"
+    );
 
     let from_db: Vec<String> = sqlx::query_scalar("SELECT key FROM settings ORDER BY key")
         .fetch_all(&pool)
         .await
         .expect("select ordered keys");
     assert_eq!(from_db.len(), N);
-    assert_eq!(from_db, generated, "ORDER BY key must match insertion order");
+    assert_eq!(
+        from_db, generated,
+        "ORDER BY key must match insertion order"
+    );
 
     // Values travelled with their key: key[i] carries the index it was inserted with.
     let pairs: Vec<(String, String)> =
