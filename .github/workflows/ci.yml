@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [v2]
+  pull_request:
+    branches: [v2]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+  liquidsoap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: syntax check
+        run: |
+          docker run --rm -v "$PWD/liquidsoap:/etc/liquidsoap:ro" \
+            savonet/liquidsoap:v2.4.5 \
+            liquidsoap --check /etc/liquidsoap/radio.liq
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: validate
+        run: |
+          cp env/dev.env.example env/dev.env
+          cp env/prod.env.example env/prod.env
+          docker compose -f compose/dev.yml --env-file env/dev.env config -q
+          docker compose -f compose/prod.yml --env-file env/prod.env config -q
