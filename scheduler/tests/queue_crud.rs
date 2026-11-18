@@ -625,3 +625,65 @@ async fn not_found_envelope_for_unknown_ids_and_routes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(value["error"]["code"], "not_found");
 }
+
+// ---------------------------------------------------------------------------
+// 9. Full-chain end-to-end smoke (create → item → reorder → clear → delete)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_queue_lifecycle_smoke() {
+    let (_dir, pool) = setup().await;
+    let app = app(pool.clone());
+    let id = seed_queue(&app, &pool, "c0000000-0000-7000-8000-0000000000aa").await;
+
+    // freshly created queue → version 1
+    let (_, q) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
+    let mut version = q["version"].as_i64().unwrap();
+    assert_eq!(version, 1);
+
+    // two item inserts; each content mutation bumps the queue version (1 -> 3)
+    let mut ids = Vec::new();
+    for i in 0..2 {
+        let (status, item) = send(
+            &app,
+            Method::POST,
+            &format!("/api/v1/queues/{id}/items"),
+            Some(json!({ "kind": "link", "link_url": format!("https://example.com/{i}") })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "add item {i}");
+        ids.push(item["id"].as_str().unwrap().to_string());
+    }
+    let (_, q) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
+    version = q["version"].as_i64().unwrap();
+    assert_eq!(version, 3, "each item insert bumps queue version");
+
+    // reorder consumes the version and bumps it (3 -> 4)
+    ids.reverse();
+    let (status, reordered) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/queues/{id}/reorder"),
+        Some(json!({ "item_ids": ids, "version": version })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reorder: {reordered}");
+    assert_eq!(reordered["version"], version + 1);
+
+    // clear empties the queue and bumps the version (4 -> 5)
+    let (status, _) = send(&app, Method::POST, &format!("/api/v1/queues/{id}/clear"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, items) = send(&app, Method::GET, &format!("/api/v1/queues/{id}/items"), None).await;
+    assert!(items.as_array().unwrap().is_empty(), "items cleared");
+    let (_, q) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
+    version = q["version"].as_i64().unwrap();
+    assert_eq!(version, 5);
+
+    // delete → 204, then every access to the id is a 404 with the envelope
+    let (status, _) = send(&app, Method::DELETE, &format!("/api/v1/queues/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+    assert!(body["error"]["message"].is_string(), "envelope carries a message");
+}
