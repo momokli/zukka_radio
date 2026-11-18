@@ -36,14 +36,18 @@ Dateien:
 - `Cargo.toml`/`scheduler/Cargo.toml`: `tempfile` dev-dependency
 
 ## Verify/Test
-- `cargo fmt --check`: OK
+- `cargo fmt --check`: OK (Hinweis: vorbestehende Abweichungen in `portal/`/`tapes/`, nicht Issue #7)
 - `cargo clippy -p zukka-scheduler --all-targets -- -D warnings`: OK (keine Warnungen)
-- `cargo test -p zukka-scheduler`: 5 passed; 0 failed
+- `cargo test -p zukka-scheduler`: 24 passed; 0 failed (5 smoke + 19 schema_invariants)
   - migration_creates_17_user_tables ok (count == 17)
   - foreign_key_check_is_empty_and_integrity_ok ok (leer / integrity_check=ok)
   - seed_roles_and_sources_present ok (3 roles, 6 sources)
   - smoke_insert_chain ok (FK-Verletzung abgelehnt)
   - event_log_is_append_only ok (UPDATE/DELETE abgelehnt)
+- `scheduler/tests/schema_invariants.rs` (neu, 19 Tests): Migration-Idempotenz, TEXT-PKs,
+  broadcasts ends/content, queue_items content+position, tapes enums/slug/Zeit,
+  sources priority+Seed, Permission-Matrix §6.10.1, sessions expiry, Template-UNIQUE,
+  announcements dedupe_key, FK RESTRICT/CASCADE
 
 Commit: `feat: SQLite schema migration (issue #7)` — siehe Log.
 Pushed: `origin feat/7-sqlite-schema`.
