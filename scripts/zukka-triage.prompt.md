@@ -26,7 +26,7 @@ Slot belegt → **nichts dispatchen**.
 
 ## Vorgehen (pro Lauf)
 
-0. **Verbindliche Vorauswahl prüfen.** Der `zukka-triage-tick` läuft alle 5 min und schreibt bei Dispatch-Bedarf `<OPENCLAW_STATE_DIR>/workspace/zukka-triage-decision.md`. Ist diese Datei **jünger als 15 Minuten**, gilt sie: dispatche **genau** das dort genannte Issue mit dem dort genannten Basis-Branch/PR-Ziel. Keine Neuauswahl. Ist sie älter oder fehlt, mach die Auswahl selbst.
+0. **Verbindliche Vorauswahl prüfen.** Der `zukka-triage-tick` läuft alle 5 min und schreibt bei Dispatch-Bedarf `<OPENCLAW_STATE_DIR>/workspace/zukka-triage-decision.md`. Ist diese Datei **jünger als 15 Minuten**, gilt sie: dispatche **genau** das dort genannte Issue mit dem dort genannten Basis-Branch/PR-Ziel. **Keine** Neuauswahl, **kein** erneutes Slot-/Leaf-Re-Check, **kein** Stale-Guard-Lauf — die Entscheidung ist bereits getroffen (Schritte 1–7 entfallen). Das `orchestrator:dispatched`-Label, das der Tick vorab setzt, ist in diesem Fall **kein** Slot-Beleg, sondern die Buchhaltung des Ticks. Ist die Datei älter oder fehlt, mach die Auswahl selbst.
 1. **Fokus ermitteln** (oben). Bei Exit ≠ 0 → Stop.
 2. **Stale-Guard** (Pflicht, genau einmal): `RUNNER_PROFILE=zukka runner-stale-dispatch.sh -m <fokus-title>`.
 3. **Holen**:
