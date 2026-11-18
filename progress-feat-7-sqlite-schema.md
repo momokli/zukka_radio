@@ -23,8 +23,8 @@
 - [x] develop
 - [x] verify
 - [x] test
-- [ ] pr
-- [ ] review
+- [x] pr (PR #49 gegen `v2`)
+- [x] review (APPROVE als Comment, GitHub blockt Self-Approval)
 
 ## Develop (done)
 Dateien:
@@ -51,3 +51,13 @@ Dateien:
 
 Commit: `feat: SQLite schema migration (issue #7)` — siehe Log.
 Pushed: `origin feat/7-sqlite-schema`.
+
+## PR / CI
+- PR #49: https://github.com/momokli/zukka_radio/pull/49 (Basis `v2`, `Closes #7`)
+- CI: `rust` SUCCESS, `compose` SUCCESS, `liquidsoap` FAILURE.
+  - Ursache ist **vorbestehend auf `v2`**, nicht dieser Diff: `liquidsoap/lib/harbor.liq:4`
+    nutzt `env(...)`, was im gepinnten `savonet/liquidsoap:v2.4.5` als
+    `Error 4: Undefined variable env` scheitert. Kein Bezug zu Issue #7 (SQLite-Schema).
+  - Blockiert nur das CI-Gate aus Issue #39; an Issue #39 als Kommentar festgehalten.
+- Mergeability: MERGEABLE nach Merge von `v2` (CI-Fixes a59ebc7).
+
