@@ -12,8 +12,6 @@
 //! occurrence through [`crate::time::berlin_to_utc`], so DST is handled by
 //! the §3.5 policy instead of manual offset arithmetic.
 
-use std::fmt;
-
 use chrono::{
     DateTime, Datelike, Duration, Months, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday,
 };
@@ -323,12 +321,6 @@ impl RecurrenceRule {
 
     fn month_matches(&self, date: NaiveDate) -> bool {
         self.byday.is_empty() || self.byday.contains(&date.weekday())
-    }
-}
-
-impl fmt::Display for RecurrenceRule {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&RecurrenceRule::to_string(self))
     }
 }
 

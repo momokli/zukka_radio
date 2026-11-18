@@ -118,7 +118,7 @@ pub async fn get_with_warnings(pool: &SqlitePool, id: &str) -> ApiResult<Broadca
     Ok(dto)
 }
 
-async fn warnings_for_dto(
+pub(crate) async fn warnings_for_dto(
     pool: &SqlitePool,
     dto: &BroadcastDto,
 ) -> ApiResult<Vec<crate::dto::WarningDto>> {
@@ -174,7 +174,7 @@ pub async fn create(pool: &SqlitePool, req: &CreateBroadcastRequest) -> ApiResul
 
     let mut tx = pool.begin().await?;
     let report = detect_conflicts(
-        &mut *tx,
+        &mut tx,
         &Slot {
             id: None,
             show_id: req.show_id.as_deref(),
@@ -296,7 +296,7 @@ pub async fn update(
 
     let mut tx = pool.begin().await?;
     let report = detect_conflicts(
-        &mut *tx,
+        &mut tx,
         &Slot {
             id: Some(id),
             show_id: show_id.as_deref(),
@@ -474,7 +474,7 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
 
 /// Inserts one append-only `event_log` row.
 ///
-/// Accepts a pool or a transaction (`&mut *tx`) as executor.
+/// Accepts a pool or a transaction (`&mut tx`) as executor.
 pub(crate) async fn insert_event_log(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     event: &'static str,
