@@ -680,12 +680,12 @@ Routen:
 | `radio.<dom>`  | `/stream.mp3*`        | `icecast:8000`, `flush_interval -1`                                      |
 | `radio.<dom>`  | `/hls/*`              | `file_server` aus `/srv/hls` (Playlist `no-store`, Segmente `immutable`) |
 | `radio.<dom>`  | `/`                   | statischer Player                                                        |
-| `ingest.<dom>` | `/live/*`             | `liquidsoap:8001`, `flush_interval -1` — **TLS-Ingest**                  |
+| `cast.<dom>`   | `/live/*`             | `liquidsoap:8001`, `flush_interval -1` — **TLS-Ingest**                  |
 | `portal.<dom>` | `/*`                  | `portal:8080`, `flush_interval -1` für `/control/events`                 |
 | `tapes.<dom>`  | `/media/*`            | `tapes:8080`, `flush_interval -1`, kein `encode`                         |
 | `tapes.<dom>`  | `/api/*`, `/t/*`, `/` | `tapes:8080`                                                             |
 
-**Harbor-Ingest:** Primärweg ist `https://ingest.<dom>/live/slot-NN` über Caddy
+**Harbor-Ingest:** Primärweg ist `https://cast.<dom>/live/slot-NN` über Caddy
 (TLS am Edge, Klartext nur im `back`-Netz). Roh-TCP `12001` bleibt als Fallback
 für Encoder, die kein HTTPS-PUT können. Damit ist die offene Frage
 „terminiert `input.harbor` TLS?" nicht mehr blockierend — Caddy tut es.
@@ -817,16 +817,16 @@ Legende: **A** = erstgenanntes Dokument, **B** = Gegendokument.
 
 ### 6.6 Live & Harbor
 
-| #   | Thema                  | Ist                                                                                           | Soll                                                    |
-| --- | ---------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| C37 | Harbor-Mount           | `portal.md`: `/live/<slug>`; `liquidsoap.md` D3: Pool `/live/slot-NN`                         | Pool, `N = 32`                                          |
-| C38 | Harbor-Auth-Ziel       | `liquidsoap.md` D4 + `portal.md`: Portal; `data-model.md`: Scheduler `/internal/auth/verify`  | Scheduler                                               |
-| C39 | Live-Event-Pfad        | `portal.md` D14: liquidsoap → portal → scheduler; `liquidsoap.md` D15: liquidsoap → scheduler | liquidsoap → scheduler direkt                           |
-| C40 | Rückkopplung           | `liquidsoap.md` §3.9: Events dürfen nicht steuern; `portal.md` D14: Events steuern            | Events = Beobachtung, Control = eigener Kanal           |
-| C41 | Pool-Größe             | `liquidsoap.md`: 32; `infrastructure.md`: `HARBOR_MAX_CONNECTIONS=10/20`                      | 32                                                      |
-| C42 | Pool erschöpft         | `liquidsoap.md` O7: offen                                                                     | ablehnen, klare Meldung im Portal                       |
-| C43 | Override nach Neustart | `liquidsoap.md` O12: offen                                                                    | Scheduler re-asserted aus `live_sessions`               |
-| C44 | Harbor-TLS             | `infrastructure.md` §4/3: unverifiziert, Roh-TCP                                              | TLS über Caddy auf `ingest.<dom>`, Roh-TCP als Fallback |
+| #   | Thema                  | Ist                                                                                           | Soll                                                  |
+| --- | ---------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| C37 | Harbor-Mount           | `portal.md`: `/live/<slug>`; `liquidsoap.md` D3: Pool `/live/slot-NN`                         | Pool, `N = 32`                                        |
+| C38 | Harbor-Auth-Ziel       | `liquidsoap.md` D4 + `portal.md`: Portal; `data-model.md`: Scheduler `/internal/auth/verify`  | Scheduler                                             |
+| C39 | Live-Event-Pfad        | `portal.md` D14: liquidsoap → portal → scheduler; `liquidsoap.md` D15: liquidsoap → scheduler | liquidsoap → scheduler direkt                         |
+| C40 | Rückkopplung           | `liquidsoap.md` §3.9: Events dürfen nicht steuern; `portal.md` D14: Events steuern            | Events = Beobachtung, Control = eigener Kanal         |
+| C41 | Pool-Größe             | `liquidsoap.md`: 32; `infrastructure.md`: `HARBOR_MAX_CONNECTIONS=10/20`                      | 32                                                    |
+| C42 | Pool erschöpft         | `liquidsoap.md` O7: offen                                                                     | ablehnen, klare Meldung im Portal                     |
+| C43 | Override nach Neustart | `liquidsoap.md` O12: offen                                                                    | Scheduler re-asserted aus `live_sessions`             |
+| C44 | Harbor-TLS             | `infrastructure.md` §4/3: unverifiziert, Roh-TCP                                              | TLS über Caddy auf `cast.<dom>`, Roh-TCP als Fallback |
 
 ### 6.7 Egress & Dateien
 
@@ -1011,7 +1011,7 @@ eingekürzt werden. Konkret:
 - §3.2: Service-Matrix und Compose-Skelett nach §5.2/§5.3 umbauen;
   `ZUKKA_PORT_METRICS` streichen; Control-Port 8010 ergänzen; Liquidsoap-Mount
   auf das ganze `liquidsoap/`-Verzeichnis.
-- §3.3: `ingest.<dom>` als TLS-Ingest-Route dokumentieren.
+- §3.3: `cast.<dom>` als TLS-Ingest-Route dokumentieren.
 - §3.7: Backup/Restore auf eine DB reduzieren.
 - §4: Fragen 3, 5, 7, 8, 9 sind entschieden; 1, 2, 4, 6, 10–14 bleiben.
 
