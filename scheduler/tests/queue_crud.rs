@@ -671,9 +671,21 @@ async fn e2e_queue_lifecycle_smoke() {
     assert_eq!(reordered["version"], version + 1);
 
     // clear empties the queue and bumps the version (4 -> 5)
-    let (status, _) = send(&app, Method::POST, &format!("/api/v1/queues/{id}/clear"), None).await;
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/queues/{id}/clear"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, items) = send(&app, Method::GET, &format!("/api/v1/queues/{id}/items"), None).await;
+    let (_, items) = send(
+        &app,
+        Method::GET,
+        &format!("/api/v1/queues/{id}/items"),
+        None,
+    )
+    .await;
     assert!(items.as_array().unwrap().is_empty(), "items cleared");
     let (_, q) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
     version = q["version"].as_i64().unwrap();
@@ -685,5 +697,8 @@ async fn e2e_queue_lifecycle_smoke() {
     let (status, body) = send(&app, Method::GET, &format!("/api/v1/queues/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "not_found");
-    assert!(body["error"]["message"].is_string(), "envelope carries a message");
+    assert!(
+        body["error"]["message"].is_string(),
+        "envelope carries a message"
+    );
 }
