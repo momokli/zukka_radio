@@ -551,8 +551,12 @@ pub struct SourceDto {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateSourceRequest {
+    // Deserialized as a raw value so a non-boolean (`0`, `1`, `"true"`) is a
+    // field-level `422 validation_error` (validated in the store), not the
+    // extractor's generic `400`. An unknown field still yields `400` via
+    // `deny_unknown_fields`.
     #[serde(default)]
-    pub enabled: Option<bool>,
+    pub enabled: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "double_option")]
     pub config: Option<Option<serde_json::Value>>,
 }

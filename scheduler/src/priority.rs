@@ -12,10 +12,10 @@ use crate::dto::{SourceDto, SourceLayer};
 ///
 /// Tie-break on equal `priority`: the lexicographically **smaller** `name`
 /// wins, making the choice deterministic and reproducible.
-pub fn select_active<'a>(
-    sources: &'a [SourceDto],
+pub fn select_active(
+    sources: &[SourceDto],
     is_available: impl Fn(SourceLayer) -> bool,
-) -> Option<&'a SourceDto> {
+) -> Option<&SourceDto> {
     sources
         .iter()
         .filter(|source| source.enabled)

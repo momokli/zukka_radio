@@ -89,7 +89,16 @@ pub async fn update(
     id: &str,
     req: &UpdateSourceRequest,
 ) -> ApiResult<SourceDto> {
-    let enabled = req.enabled.map(|value| i64::from(value));
+    let enabled = match &req.enabled {
+        None => None,
+        Some(serde_json::Value::Bool(value)) => Some(i64::from(*value)),
+        Some(_) => {
+            return Err(ApiError::validation(
+                "enabled",
+                "enabled must be a JSON boolean",
+            ));
+        }
+    };
 
     let config = match &req.config {
         // Field absent: keep the existing value.
@@ -101,10 +110,18 @@ pub async fn update(
                 "config must be a JSON object, not null",
             ));
         }
-        // Replace with the stored JSON text.
-        Some(Some(value)) => Some(serde_json::to_string(value).map_err(|err| {
-            ApiError::Internal(anyhow::anyhow!("failed to serialize config: {err}"))
-        })?),
+        // Replace with the stored JSON text; `config` must be an object (§2).
+        Some(Some(value)) if value.is_object() => {
+            Some(serde_json::to_string(value).map_err(|err| {
+                ApiError::Internal(anyhow::anyhow!("failed to serialize config: {err}"))
+            })?)
+        }
+        Some(Some(_)) => {
+            return Err(ApiError::validation(
+                "config",
+                "config must be a JSON object",
+            ));
+        }
     };
 
     if enabled.is_none() && config.is_none() {
