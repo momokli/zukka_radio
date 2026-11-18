@@ -5,7 +5,7 @@ output.icecast(
   %mp3(bitrate=192),
   host="icecast",
   port=8000,
-  password=env("ICECAST_SOURCE_PASSWORD", "hackme"),
+  password="hackme",  # TODO: sourced from the generated config in M4
   mount="stream.mp3",
   name="radio zukka",
   radio
