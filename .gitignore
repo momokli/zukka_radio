@@ -28,3 +28,6 @@ target/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Orchestrator progress files (transient)
+progress-*.md
