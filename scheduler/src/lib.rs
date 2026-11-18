@@ -8,4 +8,5 @@ pub mod db;
 pub mod dto;
 pub mod error;
 pub mod store;
+pub mod time;
 pub mod uuid;
