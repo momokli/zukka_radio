@@ -4,3 +4,4 @@
 //! (including the `sqlx` migrations).
 
 pub mod db;
+pub mod uuid;
