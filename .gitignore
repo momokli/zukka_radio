@@ -1,17 +1,20 @@
-# Secrets — never commit
+# Secrets
 .env
+*.env
+!*.env.example
 
-# Python
-.venv/
-__pycache__/
-*.pyc
-*.pyo
+# Rust
+target/
+**/*.rs.bk
 
-# Local state files (server-side runtime data)
-*.json
+# SQLite (runtime data)
+*.db
+*.db-wal
+*.db-shm
 
-# ...but show config is source, not state
-!shows.json
+# Local state / cache
+/tmp/
+*.log
 
 # OS / editor
 .DS_Store
@@ -19,5 +22,9 @@ __pycache__/
 .idea/
 .vscode/
 
-# Gemini/design scratch exports
-casette_*.html
+# Python (legacy local venv)
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
