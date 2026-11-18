@@ -1,0 +1,85 @@
+# radio zukka v2 — DEV stack
+# Usage: docker compose -f compose/dev.yml --env-file env/dev.env up -d
+
+name: zukka-dev
+
+x-common: &common
+  restart: unless-stopped
+  env_file:
+    - ../env/dev.env
+  logging:
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  icecast:
+    <<: *common
+    image: moul/icecast:latest
+    ports:
+      - "127.0.0.1:${ZUKKA_PORT_ICECAST:-12100}:8000"
+    volumes:
+      - icecast_logs:/var/log/icecast
+    networks: [front, back]
+
+  liquidsoap:
+    <<: *common
+    image: savonet/liquidsoap:v2.4.5
+    ports:
+      - "127.0.0.1:${ZUKKA_PORT_HARBOR:-12101}:8001"
+    volumes:
+      - ../liquidsoap:/etc/liquidsoap:ro
+      - hls:/hls
+      - recordings_staging:/recordings
+      - rotation:/rotation:ro
+    networks: [front, back, egress]
+    command: ["/etc/liquidsoap/radio.liq"]
+
+  scheduler:
+    <<: *common
+    build: ../scheduler
+    volumes:
+      - zukka_data:/data
+      - recordings_staging:/recordings
+      - rotation:/rotation
+      - hls:/hls:ro
+    networks: [back, egress]
+
+  portal:
+    <<: *common
+    build: ../portal
+    volumes:
+      - zukka_data:/data:ro
+    networks: [front, back, egress]
+
+  tapes:
+    <<: *common
+    build: ../tapes
+    volumes:
+      - zukka_data:/data:ro
+    networks: [front, back, egress]
+
+  caddy:
+    <<: *common
+    image: caddy:2.9
+    ports:
+      - "127.0.0.1:${ZUKKA_PORT_CADDY:-12180}:12080"
+    volumes:
+      - ../deploy/caddy:/etc/caddy:ro
+      - caddy_data:/data
+      - hls:/srv/hls:ro
+    networks: [front, egress]
+
+volumes:
+  zukka_data:
+  hls:
+  recordings_staging:
+  rotation:
+  caddy_data:
+  icecast_logs:
+
+networks:
+  front:
+  back:
+    internal: true
+  egress:

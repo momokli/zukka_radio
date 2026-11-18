@@ -1,0 +1,8 @@
+# PROD behind the shared edge Caddy: no TLS here, just internal routing.
+{
+	auto_https off
+}
+
+http://:12080 {
+	import routes.caddy
+}

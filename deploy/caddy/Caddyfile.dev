@@ -1,0 +1,8 @@
+# DEV: internal TLS, plain listener behind the host firewall.
+{
+	local_certs
+}
+
+https://:12180 {
+	import routes.caddy
+}

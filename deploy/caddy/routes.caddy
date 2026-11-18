@@ -1,0 +1,38 @@
+# Shared route definitions. Imported by Caddyfile.dev / .prod / .prod-own.
+# Domains come from the environment (see env/*.env.example).
+
+{$ZUKKA_DOMAIN_RADIO} {
+	handle /stream.mp3* {
+		reverse_proxy icecast:8000 {
+			flush_interval -1
+		}
+	}
+	handle /hls/* {
+		root * /srv/hls
+		file_server
+	}
+	handle {
+		root * /srv/player
+		file_server
+	}
+}
+
+{$ZUKKA_DOMAIN_CAST} {
+	handle /live/* {
+		reverse_proxy liquidsoap:8001 {
+			flush_interval -1
+		}
+	}
+}
+
+{$ZUKKA_DOMAIN_PORTAL} {
+	reverse_proxy portal:8080 {
+		flush_interval -1
+	}
+}
+
+{$ZUKKA_DOMAIN_TAPES} {
+	reverse_proxy tapes:8080 {
+		flush_interval -1
+	}
+}
