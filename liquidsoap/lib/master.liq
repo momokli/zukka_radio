@@ -4,5 +4,5 @@ live = fallback(track_sensitive=false, harbor_slots)
 
 radio = fallback(
   track_sensitive=false,
-  [live, rotation, relay, fun]
+  [live, rotation, relay, fallback_jingle]
 )
