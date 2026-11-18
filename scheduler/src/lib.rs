@@ -7,5 +7,7 @@ pub mod api;
 pub mod db;
 pub mod dto;
 pub mod error;
+pub mod rrule;
 pub mod store;
+pub mod time;
 pub mod uuid;
