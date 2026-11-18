@@ -1,8 +1,10 @@
 //! Persistence layer: runtime `sqlx` queries (no compile-time macros, so CI
 //! works without a database).
 
+pub mod broadcasts;
 pub mod queue_items;
 pub mod queues;
+pub mod schedule;
 pub mod shows;
 
 use chrono::{SecondsFormat, Utc};

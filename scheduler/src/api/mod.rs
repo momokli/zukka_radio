@@ -2,6 +2,7 @@
 
 pub mod queues;
 
+pub mod broadcasts;
 pub mod shows;
 
 use axum::extract::{FromRequest, Request};
@@ -67,7 +68,20 @@ pub fn router(pool: SqlitePool) -> Router {
             get(shows::get_one)
                 .patch(shows::update)
                 .delete(shows::delete),
-        );
+        )
+        .route(
+            "/broadcasts",
+            get(broadcasts::list).post(broadcasts::create),
+        )
+        .route(
+            "/broadcasts/{id}",
+            get(broadcasts::get_one)
+                .patch(broadcasts::update)
+                .delete(broadcasts::delete),
+        )
+        .route("/broadcasts/{id}/cancel", post(broadcasts::cancel))
+        .route("/broadcasts/{id}/start", post(broadcasts::start))
+        .route("/broadcasts/{id}/end", post(broadcasts::end));
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
