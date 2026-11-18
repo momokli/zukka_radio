@@ -1,5 +1,4 @@
 use anyhow::Context;
-use axum::{Router, routing::get};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,9 +13,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to initialize database at {db_path}"))?;
     tracing::info!("database ready at {db_path}");
 
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .with_state(pool);
+    let app = zukka_scheduler::api::router(pool);
 
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
