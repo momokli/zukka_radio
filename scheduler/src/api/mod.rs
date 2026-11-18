@@ -2,6 +2,8 @@
 
 pub mod queues;
 
+pub mod shows;
+
 use axum::extract::{FromRequest, Request};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -57,6 +59,15 @@ pub fn router(pool: SqlitePool) -> Router {
         )
         .route("/queues/{id}/reorder", post(queues::reorder))
         .route("/queues/{id}/clear", post(queues::clear));
+
+    let api = api
+        .route("/shows", get(shows::list).post(shows::create))
+        .route(
+            "/shows/{id}",
+            get(shows::get_one)
+                .patch(shows::update)
+                .delete(shows::delete),
+        );
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
