@@ -292,14 +292,14 @@ pub struct WarningView {
 #[derive(Template)]
 #[template(path = "partials/calendar_grid.html")]
 pub struct CalendarGridFragment {
-    pub csrf_token: String,
     pub view: String,
-    pub view_label: String,
     pub anchor: String,
     pub prev_anchor: String,
     pub next_anchor: String,
     pub title: String,
     pub weeks: Vec<CalendarWeek>,
+    /// `false` when the visible grid holds no entries (empty state).
+    pub has_entries: bool,
     pub can_write: bool,
 }
 
@@ -309,12 +309,13 @@ pub struct CalendarGridFragment {
 pub struct SchedulePage {
     pub csrf_token: String,
     pub view: String,
-    pub view_label: String,
     pub anchor: String,
     pub prev_anchor: String,
     pub next_anchor: String,
     pub title: String,
     pub weeks: Vec<CalendarWeek>,
+    /// `false` when the visible grid holds no entries (empty state).
+    pub has_entries: bool,
     pub can_write: bool,
     /// Server-side inline error (e.g. a hard `show_overlap` reload).
     pub error: Option<String>,
@@ -385,7 +386,6 @@ pub struct ShowsPage {
     pub csrf_token: String,
     pub can_write: bool,
     pub shows: Vec<ShowRow>,
-    pub error: Option<String>,
 }
 
 /// Show detail (`GET /shows/{id}`) incl. edit form.
@@ -398,5 +398,13 @@ pub struct ShowDetailPage {
     pub has_recurrence: bool,
     /// The raw rule string (`""` when none) — precomputed for the form field.
     pub recurrence_text: String,
+}
+
+/// Inline error fragment for the show create/edit forms: an htmx `422`
+/// re-renders this into the form's error slot (the form itself keeps its
+/// entered values because nothing is swapped away).
+#[derive(Template)]
+#[template(path = "partials/show_form_error.html")]
+pub struct ShowFormErrorFragment {
     pub error: Option<String>,
 }
