@@ -249,6 +249,9 @@ async fn waveform_json_returns_peaks() {
     assert_eq!(value["subject_id"], "t-1");
     assert_eq!(value["bars"], 2);
     assert_eq!(value["data"], serde_json::json!([128, 200, 40, 255]));
+    // Contract: `data` is exactly `2 * bars` interleaved (min, max) bytes.
+    let data_len = value["data"].as_array().unwrap().len();
+    assert_eq!(data_len, 2 * value["bars"].as_i64().unwrap() as usize);
 }
 
 #[tokio::test]

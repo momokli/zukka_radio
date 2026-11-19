@@ -407,6 +407,10 @@ async fn library_waveform_canvas_hooks() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("<th>Waveform</th>"), "head column: {body}");
+    assert!(
+        body.contains("src=\"/static/waveform.js\""),
+        "page must load the renderer: {body}"
+    );
     assert!(body.contains("class=\"waveform-canvas\""), "{body}");
     assert!(
         body.contains("data-waveform-src=\"/library/tracks/t-mine/waveform.json\""),
