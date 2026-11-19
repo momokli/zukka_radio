@@ -367,7 +367,7 @@ async fn list_stale_running_filters_by_age() {
 /// Moves a job to `running`, then backdates `updated_at` so it looks stale.
 async fn make_stale_running(pool: &SqlitePool, caster: &str, attempts: i64) -> String {
     let job = upload_jobs::create(
-        &pool,
+        pool,
         &CreateUploadJobRequest {
             caster_id: caster.to_string(),
             filename: "stale.flac".into(),
@@ -379,7 +379,7 @@ async fn make_stale_running(pool: &SqlitePool, caster: &str, attempts: i64) -> S
     .unwrap();
     for _ in 0..attempts {
         upload_jobs::patch_state(
-            &pool,
+            pool,
             &job.id,
             &PatchUploadJobRequest {
                 state: "running".into(),
