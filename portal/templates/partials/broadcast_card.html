@@ -1,4 +1,4 @@
-{% if card.persisted && card.id != "" %}
+{% if card.persisted && card.id != "" && can_write %}
 <a
   class="broadcast-card kind-{{ card.kind }} status-{{ card.status }}"
   href="/schedule/{{ card.id }}/edit"
@@ -15,7 +15,7 @@
     <span class="badge badge-{{ card.kind }}">{{ card.kind }}</span>
     {% if card.open_end %}<span class="badge badge-open">offen</span>{% endif %}
     {% for w in card.warnings %} {% include "partials/conflict_warning.html" %} {% endfor %}
-    {% if card.persisted && card.id != "" %}
+    {% if card.persisted && card.id != "" && can_write %}
   </a>
   {% else %}
   </span>

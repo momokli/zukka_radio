@@ -656,6 +656,56 @@ async fn create_end_before_start_is_inline_error() {
 }
 
 #[tokio::test]
+async fn update_end_before_start_keeps_edit_action() {
+    // Regression: a `422` on `POST /schedule/{id}` (edit) must re-render the
+    // form fragment still targeting `/schedule/{id}` (with its `version` hidden
+    // field) — losing the id would turn a corrected save into a *new* broadcast.
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(broadcast(
+        "seed-1",
+        None,
+        "c-1",
+        "Edit Me",
+        "2026-11-18T20:00:00+01:00",
+        None,
+    ));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _, body) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/seed-1",
+        true,
+        form(&[
+            ("title", "Backwards"),
+            ("kind", "live"),
+            ("starts_at", "2026-11-18T22:00"),
+            ("ends_at", "2026-11-18T20:00"),
+            ("version", "1"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("after starts_at"), "inline error: {body}");
+    assert!(
+        body.contains("action=\"/schedule/seed-1\""),
+        "edit action preserved: {body}"
+    );
+    assert!(
+        !body.contains("action=\"/schedule\""),
+        "must not fall back to create action: {body}"
+    );
+    assert!(
+        body.contains("name=\"version\" value=\"1\""),
+        "version hidden field preserved: {body}"
+    );
+    // The failed update must not have created a new broadcast.
+    assert_eq!(backend.all_broadcasts().len(), 1);
+    assert_eq!(backend.all_broadcasts()[0].title, "Edit Me");
+}
+
+#[tokio::test]
 async fn create_requires_broadcast_write() {
     let backend = zukka_portal::api_client::FakeScheduleBackend::new();
     let app = router(no_perms(), &backend);

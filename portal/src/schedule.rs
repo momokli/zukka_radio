@@ -505,7 +505,7 @@ pub async fn broadcast_create(
             }
         }
         Err(err @ (ScheduleError::Validation { .. } | ScheduleError::Conflict { .. })) => {
-            form_error_response(&state, &ctx, &headers, &form, err).await
+            form_error_response(&state, &ctx, &headers, None, &form, err).await
         }
         Err(err) => Err(schedule_error(err)),
     }
@@ -550,7 +550,7 @@ pub async fn broadcast_update(
             }
         }
         Err(err @ (ScheduleError::Validation { .. } | ScheduleError::Conflict { .. })) => {
-            form_error_response(&state, &ctx, &headers, &form, err).await
+            form_error_response(&state, &ctx, &headers, Some(&id), &form, err).await
         }
         Err(err) => Err(schedule_error(err)),
     }
@@ -559,10 +559,15 @@ pub async fn broadcast_update(
 /// A `422`/`409` from create/update: htmx re-renders the form inline with the
 /// entered values (a `409 show_overlap` additionally raises a toast) — the UI
 /// never becomes leading. Non-htmx returns the field error.
+///
+/// `id` is the URL `Path` id for an update (`None` for create); it must be kept
+/// so the re-rendered fragment posts back to `/schedule/{id}` with its `version`
+/// hidden field — otherwise a corrected save would create a *new* broadcast.
 async fn form_error_response(
     state: &AppState,
     ctx: &AuthContext,
     headers: &HeaderMap,
+    id: Option<&str>,
     form: &BroadcastFormPost,
     err: ScheduleError,
 ) -> Result<Response, PortalError> {
@@ -570,6 +575,10 @@ async fn form_error_response(
         return Err(schedule_error(err));
     }
     let mut filled = empty_form(state, ctx).await?;
+    if let Some(id) = id {
+        filled.id = id.to_string();
+        filled.version = form.version.unwrap_or(0);
+    }
     filled.title = form.title.clone();
     filled.description = form.description.clone().unwrap_or_default();
     filled.kind = form.kind.clone();
