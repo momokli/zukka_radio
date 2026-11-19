@@ -873,3 +873,89 @@ async fn broadcast_write_gates_new_form() {
     let (status, _) = get(&app, &session, "/schedule/new", false).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ---------------------------------------------------------------------------
+// D12 — inline warnings in the form *before* saving (date-change preview)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn form_preview_shows_conflict_warnings_inline() {
+    // Two overlapping broadcasts already in the window: the date-change
+    // preview (`GET /schedule/new` as htmx fragment) must surface the
+    // scheduler warnings inline and stay permissive (HTTP 200, no block).
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(broadcast(
+        "seed-1",
+        Some("s-1"),
+        "c-1",
+        "First",
+        "2026-11-18T20:00:00+01:00",
+        Some("2026-11-18T22:00:00+01:00"),
+    ));
+    backend.seed_broadcast(broadcast(
+        "seed-2",
+        Some("s-2"),
+        "c-2",
+        "Second",
+        "2026-11-18T21:00:00+01:00",
+        Some("2026-11-18T23:00:00+01:00"),
+    ));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (status, body) = get(
+        &app,
+        &session,
+        "/schedule/new?starts_at=2026-11-18T21:00&ends_at=2026-11-18T23:00",
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "preview never blocks: {body}");
+    assert!(body.contains("broadcast-form"), "form fragment: {body}");
+    assert!(body.contains("conflict-warning"), "inline warning: {body}");
+    assert!(body.contains("Überlappt"), "overlap message: {body}");
+}
+
+// ---------------------------------------------------------------------------
+// P5 DoD — weekly show across the fall-back DST transition renders correctly
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn calendar_renders_same_berlin_time_across_dst() {
+    // Acceptance/P5 DoD: a weekly slot keeps the same local wall time across
+    // the DST fall-back (2026-10-25). The portal calendar renders Berlin
+    // labels for both sides of the transition; their UTC offsets differ.
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(broadcast(
+        "summer",
+        Some("s-1"),
+        "c-1",
+        "Summer Slot",
+        "2026-10-14T20:00:00+02:00",
+        Some("2026-10-14T22:00:00+02:00"),
+    ));
+    backend.seed_broadcast(broadcast(
+        "winter",
+        Some("s-1"),
+        "c-1",
+        "Winter Slot",
+        "2026-10-28T20:00:00+01:00",
+        Some("2026-10-28T22:00:00+01:00"),
+    ));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (status, body) = get(
+        &app,
+        &session,
+        "/schedule?view=month&anchor=2026-10-15",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Summer Slot"), "{body}");
+    assert!(body.contains("Winter Slot"), "{body}");
+    assert_eq!(
+        body.matches("20:00–22:00").count(),
+        2,
+        "both sides of the DST transition render 20:00 Berlin: {body}"
+    );
+}
