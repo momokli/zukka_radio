@@ -10,6 +10,7 @@ pub mod schedule;
 pub mod shows;
 pub mod sources;
 pub mod upload_jobs;
+pub mod waveforms;
 
 use axum::extract::{FromRequest, Request};
 use axum::routing::{get, patch, post};
@@ -127,6 +128,11 @@ pub fn router(pool: SqlitePool) -> Router {
         .route(
             "/upload-jobs/{id}",
             get(upload_jobs::get_one).patch(upload_jobs::patch),
+        )
+        .route("/waveforms", post(waveforms::upsert))
+        .route(
+            "/waveforms/{subject_kind}/{subject_id}",
+            get(waveforms::get_one),
         )
         .route_layer(axum::middleware::from_fn(auth::require_service_token));
     let api = api.nest("/internal", internal);

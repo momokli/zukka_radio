@@ -869,6 +869,43 @@ pub struct UploadJobDto {
     pub updated_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #18: waveforms (D8/C05; write-through to `/internal/waveforms`)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /internal/waveforms` — upsert one waveform row for a track or
+/// a tape (`waveforms`, PK `(subject_kind, subject_id)`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpsertWaveformRequest {
+    /// `track` | `tape` (`waveforms.subject_kind` CHECK).
+    pub subject_kind: String,
+    pub subject_id: String,
+    /// Format version (`1` = v1).
+    pub scheme: i64,
+    /// Algorithm tag, e.g. `ffmpeg-minmax-8k/1`.
+    pub algorithm: String,
+    /// Milliseconds covered by one bar.
+    pub ms_per_bar: i64,
+    /// Number of bars.
+    pub bars: i64,
+    /// Raw peaks; `2 * bars` bytes of interleaved 8-bit `(min, max)` pairs.
+    pub data: Vec<u8>,
+}
+
+/// Full waveform representation (`waveforms` row). `data` is transferred as a
+/// JSON array of byte values (small: `2 * bars`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaveformDto {
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub scheme: i64,
+    pub algorithm: String,
+    pub ms_per_bar: i64,
+    pub bars: i64,
+    pub data: Vec<u8>,
+    pub created_at: String,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where

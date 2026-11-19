@@ -113,7 +113,12 @@ pub async fn list(pool: &SqlitePool, limit: i64) -> ApiResult<Vec<UploadJobDto>>
 }
 
 /// Finds a completed job for `sha256` that produced a track — the dedupe
-/// lookup (D6/D8). Returns the most recent match, if any.
+/// fallback lookup (D6/D8). Returns the most recent match, if any.
+///
+/// The portal's upload pipeline dedupes primarily against the Music API
+/// (`GET /tracks/by-hash/{sha256}`); this store lookup is the scheduler-side
+/// fallback and is also the query the tapes-worker can reuse. Kept public so it
+/// is not dead code.
 pub async fn find_by_hash(pool: &SqlitePool, sha256: &str) -> ApiResult<Option<UploadJobDto>> {
     let sql = format!(
         "{SELECT} WHERE sha256 = ? AND state = 'done' AND track_id IS NOT NULL \
