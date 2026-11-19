@@ -21,11 +21,14 @@
 //! `POST http://liquidsoap:8010/control/*` push is M4/#32 and appears only as a
 //! `TODO(#32)` seam below.
 
+use std::collections::BTreeMap;
+
 use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::dto::{
-    ControlLiveRequest, ControlPauseRequest, ControlSkipRequest, ControlSwitchRequest, SourceLayer,
+    ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlSkipRequest,
+    ControlStateDto, ControlSwitchRequest, LiveStateDto, SourceDto, SourceLayer,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::store::now_ts;
@@ -254,6 +257,172 @@ pub async fn skip(pool: &SqlitePool, req: &ControlSkipRequest) -> ApiResult<()> 
     .await?;
     // TODO(#32): push the skip command to http://liquidsoap:8010/control/skip (M4).
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Read-only state composition (Issue #22, US-1)
+// ---------------------------------------------------------------------------
+
+/// Composes the full read-only control-panel state (`GET /control/state`).
+///
+/// Pure `SELECT`s over existing tables (K1): no writes, no lock beyond reading.
+/// `active_layer` is the K3 approximation; `derived` is always `true` (K2).
+pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
+    let sources = crate::store::sources::list(pool).await?;
+
+    let paused = get_setting(pool, PAUSED_KEY).await?.as_deref() == Some("true");
+
+    // An unparseable setting is treated as absent (a `GET` must never `500`).
+    let forced_layer = get_setting(pool, FORCED_LAYER_KEY)
+        .await?
+        .and_then(|raw| SourceLayer::parse("control.forced_layer", &raw).ok());
+
+    let override_caster_id = get_setting(pool, LIVE_OVERRIDE_KEY).await?;
+    let active_caster_id = match override_caster_id.clone() {
+        Some(id) => Some(id),
+        None => {
+            sqlx::query_scalar::<_, String>(
+                "SELECT caster_id FROM broadcasts \
+                 WHERE kind = 'live' AND status = 'live' ORDER BY starts_at, id LIMIT 1",
+            )
+            .fetch_optional(pool)
+            .await?
+        }
+    };
+
+    let connected = connected_casters(pool).await?;
+    let now_playing = crate::store::playback::current(pool).await?;
+    let active_layer = active_layer(pool, &sources).await?;
+
+    Ok(ControlStateDto {
+        sources,
+        paused,
+        forced_layer,
+        active_layer,
+        derived: true,
+        live: LiveStateDto {
+            override_caster_id,
+            active_caster_id,
+            connected,
+        },
+        now_playing,
+    })
+}
+
+/// K3 layer derivation (highest first): `forced_layer` → `live` →
+/// `show`/`queue` (running broadcast or active queue with a pending item) →
+/// `rotation` (content present) → `relay`/`fun` (opt-in settings). Only
+/// enabled layers participate; the first matching layer wins.
+async fn active_layer(pool: &SqlitePool, sources: &[SourceDto]) -> ApiResult<Option<SourceLayer>> {
+    let enabled = |layer: SourceLayer| sources.iter().any(|s| s.name == layer && s.enabled);
+
+    // (1) forced layer always wins.
+    if let Some(raw) = get_setting(pool, FORCED_LAYER_KEY).await? {
+        if let Ok(layer) = SourceLayer::parse("control.forced_layer", &raw) {
+            return Ok(Some(layer));
+        }
+    }
+
+    // (2) live layer active (override or running live broadcast).
+    if enabled(SourceLayer::Live) && live_is_active(pool).await? {
+        return Ok(Some(SourceLayer::Live));
+    }
+
+    // (3) a running broadcast: `recording` serves the `show` layer, otherwise
+    // `playlist`/`live`-kind content comes from the `queue` layer.
+    let running_kind: Option<String> = sqlx::query_scalar(
+        "SELECT kind FROM broadcasts WHERE status = 'live' ORDER BY starts_at, id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if let Some(kind) = running_kind {
+        let layer = if kind == "recording" {
+            SourceLayer::Show
+        } else {
+            SourceLayer::Queue
+        };
+        if enabled(layer) {
+            return Ok(Some(layer));
+        }
+    }
+
+    // (4) an active queue with a playable pending item.
+    if enabled(SourceLayer::Queue) {
+        if let Some(queue_id) = crate::store::playback::active_queue_id(pool).await? {
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM queue_items \
+                 WHERE queue_id = ? AND state = 'pending' AND kind IN ('track', 'tape')",
+            )
+            .bind(&queue_id)
+            .fetch_one(pool)
+            .await?;
+            if pending > 0 {
+                return Ok(Some(SourceLayer::Queue));
+            }
+        }
+    }
+
+    // (5) rotation: satisfied once the shared library has playable content.
+    if enabled(SourceLayer::Rotation) {
+        let shared: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tracks WHERE visibility = 'shared' AND music_api_id <> ''",
+        )
+        .fetch_one(pool)
+        .await?;
+        if shared > 0 {
+            return Ok(Some(SourceLayer::Rotation));
+        }
+    }
+
+    // (6) relay / fun: no signal exists yet (#32); opt-in settings keys only.
+    if enabled(SourceLayer::Relay)
+        && get_setting(pool, "control.relay_active").await?.as_deref() == Some("true")
+    {
+        return Ok(Some(SourceLayer::Relay));
+    }
+    if enabled(SourceLayer::Fun)
+        && get_setting(pool, "control.fun_active").await?.as_deref() == Some("true")
+    {
+        return Ok(Some(SourceLayer::Fun));
+    }
+
+    Ok(None)
+}
+
+/// K4: casters whose latest `event_log` live event is `live_connected`.
+///
+/// There is no `live_sessions` table (migrations are frozen), so connection
+/// state is recomputed from the append-only log: per `caster_id`, the latest
+/// `live_connected`/`live_disconnected` decides. Sorted by `caster_id`; empty
+/// when no events exist (no error).
+async fn connected_casters(pool: &SqlitePool) -> ApiResult<Vec<ConnectedCasterDto>> {
+    let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT e.caster_id, e.event, c.harbor_mount, e.occurred_at \
+         FROM event_log e LEFT JOIN casters c ON c.id = e.caster_id \
+         WHERE e.event IN ('live_connected', 'live_disconnected') \
+           AND e.caster_id IS NOT NULL \
+         ORDER BY e.occurred_at DESC, e.id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // BTreeMap keeps the result sorted by `caster_id`; `or_insert` keeps only
+    // the newest event per caster (the rows are already newest-first).
+    let mut latest: BTreeMap<String, (String, Option<String>, String)> = BTreeMap::new();
+    for (caster_id, event, mount, occurred_at) in rows {
+        latest
+            .entry(caster_id)
+            .or_insert((event, mount, occurred_at));
+    }
+    Ok(latest
+        .into_iter()
+        .filter(|(_, (event, _, _))| event == "live_connected")
+        .map(|(caster_id, (_, mount, since))| ConnectedCasterDto {
+            caster_id,
+            mount,
+            since,
+        })
+        .collect())
 }
 
 /// `POST /control/pause` — pause/resume with the live guard (US-7, D3).

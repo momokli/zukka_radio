@@ -9,6 +9,7 @@ pub mod api_client;
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod control;
 pub mod error;
 pub mod ffprobe;
 pub mod library;

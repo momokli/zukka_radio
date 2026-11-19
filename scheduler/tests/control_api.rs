@@ -525,9 +525,152 @@ async fn t20_get_methods_not_silently_accepted() {
         );
     }
     // unknown GET subroute still uses the JSON envelope (§4.6)
-    let (status, body) = send(&app, Method::GET, "/api/v1/control/state", None).await;
+    let (status, body) = send(&app, Method::GET, "/api/v1/control/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "not_found");
+}
+
+// ---------------------------------------------------------------------------
+// T22–T26: GET /control/state (Issue #22, US-1)
+// ---------------------------------------------------------------------------
+
+async fn get(app: &Router, uri: &str) -> (StatusCode, Value) {
+    send(app, Method::GET, uri, None).await
+}
+
+/// t20 (adjusted): `GET /control/state` now answers `200` with the state DTO.
+#[tokio::test]
+async fn t22_state_is_200() {
+    let (_dir, _pool, app) = setup().await;
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["derived"], true);
+    assert_eq!(body["paused"], false);
+    assert!(body["forced_layer"].is_null());
+    assert!(body["now_playing"].is_null());
+    // all six seeded layers, ordered priority DESC, name ASC
+    let names: Vec<&str> = body["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["live", "show", "queue", "rotation", "relay", "fun"]
+    );
+    assert_eq!(body["sources"][0]["enabled"], true);
+    // empty `connected` is a valid acceptance state (O2/K4)
+    assert_eq!(body["live"]["connected"], json!([]));
+    assert!(body["live"]["override_caster_id"].is_null());
+    assert!(body["live"]["active_caster_id"].is_null());
+}
+
+/// Settings drive `paused` / `forced_layer`; `forced_layer` is the active layer.
+#[tokio::test]
+async fn t23_state_reflects_settings() {
+    let (_dir, pool, app) = setup().await;
+    seed_setting(&pool, "control.paused", "true").await;
+    seed_setting(&pool, "control.forced_layer", "queue").await;
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["paused"], true);
+    assert_eq!(body["forced_layer"], "queue");
+    assert_eq!(body["active_layer"], "queue");
+}
+
+/// A live override sets `active_caster_id` and makes `live` the active layer.
+#[tokio::test]
+async fn t24_state_live_override() {
+    let (_dir, pool, app) = setup().await;
+    seed_caster(&pool, CASTER).await;
+    seed_setting(&pool, "live.override_caster_id", CASTER).await;
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["live"]["override_caster_id"], CASTER);
+    assert_eq!(body["live"]["active_caster_id"], CASTER);
+    assert_eq!(body["active_layer"], "live");
+}
+
+/// Connected casters are derived from `event_log` (K4): a `live_connected`
+/// without a later `live_disconnected`; a disconnect removes the caster.
+#[tokio::test]
+async fn t25_state_connected_from_event_log() {
+    let (_dir, pool, app) = setup().await;
+    seed_caster(&pool, CASTER).await;
+    sqlx::query(
+        "INSERT INTO event_log (id, occurred_at, event, caster_id, source_layer, details, created_at) \
+         VALUES (?, '2026-11-19T12:00:00.000Z', 'live_connected', ?, NULL, '{}', ?)",
+    )
+    .bind("f0000000-0000-7000-8000-000000000001")
+    .bind(CASTER)
+    .bind(TS)
+    .execute(&pool)
+    .await
+    .expect("insert connected");
+    // a non-live event must not appear
+    sqlx::query(
+        "INSERT INTO event_log (id, occurred_at, event, caster_id, source_layer, details, created_at) \
+         VALUES (?, ?, 'control_action', NULL, NULL, '{}', ?)",
+    )
+    .bind("f0000000-0000-7000-8000-000000000002")
+    .bind(TS)
+    .bind(TS)
+    .execute(&pool)
+    .await
+    .expect("insert control_action");
+
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let connected = body["live"]["connected"].as_array().unwrap();
+    assert_eq!(connected.len(), 1);
+    assert_eq!(connected[0]["caster_id"], CASTER);
+    assert_eq!(connected[0]["since"], "2026-11-19T12:00:00.000Z");
+
+    // a later disconnect removes the caster again
+    sqlx::query(
+        "INSERT INTO event_log (id, occurred_at, event, caster_id, source_layer, details, created_at) \
+         VALUES (?, '2026-11-19T13:00:00.000Z', 'live_disconnected', ?, NULL, '{}', ?)",
+    )
+    .bind("f0000000-0000-7000-8000-000000000003")
+    .bind(CASTER)
+    .bind(TS)
+    .execute(&pool)
+    .await
+    .expect("insert disconnected");
+    let (_, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(body["live"]["connected"], json!([]));
+}
+
+/// An active queue with a pending item derives the `queue` layer.
+#[tokio::test]
+async fn t26_state_active_queue_layer() {
+    let (_dir, pool, app) = setup().await;
+    seed_caster(&pool, CASTER).await;
+    let queue_id = "a0000000-0000-7000-8000-000000000009";
+    seed_queue(&pool, queue_id, CASTER).await;
+    seed_setting(&pool, "queue.active_id", queue_id).await;
+    sqlx::query(
+        "INSERT INTO tracks (id, music_api_id, title, duration_ms, storage_key, visibility, created_at, updated_at) \
+         VALUES ('t-1', 'm-1', 'Track', 0, 'k', 'shared', ?, ?)",
+    )
+    .bind(TS)
+    .bind(TS)
+    .execute(&pool)
+    .await
+    .expect("insert track");
+    sqlx::query(
+        "INSERT INTO queue_items (id, queue_id, position, kind, track_id, state, created_at) \
+         VALUES ('b0000000-0000-7000-8000-000000000009', ?, 0, 'track', 't-1', 'pending', ?)",
+    )
+    .bind(queue_id)
+    .bind(TS)
+    .execute(&pool)
+    .await
+    .expect("insert pending item");
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["active_layer"], "queue");
 }
 
 /// The `/control` nest must not shadow `/playback`: the token-guarded playback

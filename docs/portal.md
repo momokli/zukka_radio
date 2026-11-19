@@ -214,7 +214,9 @@ wenn `EventSource` fehlt oder die Verbindung abbricht.
 
 Caddy muss für diesen Pfad Buffering aus haben (`flush_interval -1`) — sonst
 klebt das Panel. Das ist ein Deployment-Detail für `infrastructure.md`, hier
-nur als Anforderung notiert.
+nur als Anforderung notiert. Umgesetzt in `deploy/caddy/routes.caddy`: die
+Portal-Domain hat einen expliziten `handle /control/events` mit
+`flush_interval -1` (Issue #22, US-7).
 
 ### D16 — Control-Aktionen sind sofort und rückholbar
 

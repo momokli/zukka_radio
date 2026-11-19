@@ -8,12 +8,13 @@
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use sqlx::SqlitePool;
 
 use crate::api::ApiJson;
 use crate::dto::{
-    ControlLiveRequest, ControlPauseRequest, ControlSkipRequest, ControlSwitchRequest,
+    ControlLiveRequest, ControlPauseRequest, ControlSkipRequest, ControlStateDto,
+    ControlSwitchRequest,
 };
 use crate::error::ApiResult;
 use crate::store;
@@ -22,10 +23,17 @@ use crate::store;
 pub fn router() -> Router<SqlitePool> {
     // TODO(auth): portal service token + `control.write` permission (§4.1/§6.10.1).
     Router::new()
+        .route("/state", get(state))
         .route("/live", post(live))
         .route("/switch", post(switch))
         .route("/skip", post(skip))
         .route("/pause", post(pause))
+}
+
+/// `GET /control/state` — full read-only control-panel state (Issue #22).
+pub async fn state(State(pool): State<SqlitePool>) -> ApiResult<axum::Json<ControlStateDto>> {
+    // TODO(auth): require permission `control.read`.
+    Ok(axum::Json(store::control::state(&pool).await?))
 }
 
 /// `POST /control/live` — set/clear the live override.

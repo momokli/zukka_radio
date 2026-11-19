@@ -26,8 +26,19 @@
 }
 
 {$ZUKKA_DOMAIN_PORTAL} {
-	reverse_proxy portal:8080 {
-		flush_interval -1
+	# Control Panel SSE (Issue #22, D15): the event stream must be un-buffered
+	# (`flush_interval -1`) or the panel shows a stale state. The catch-all
+	# below is already un-buffered, but the explicit route documents the
+	# requirement and survives a future split of the portal Caddy config.
+	handle /control/events {
+		reverse_proxy portal:8080 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy portal:8080 {
+			flush_interval -1
+		}
 	}
 }
 

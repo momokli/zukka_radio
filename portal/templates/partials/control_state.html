@@ -1,0 +1,86 @@
+<div id="control-state" class="control-state">
+  {% if view.scheduler_error %}
+  <p class="error">Scheduler vorübergehend nicht erreichbar — Zustand momentan unbekannt.</p>
+  {% else %}
+  <section class="control-section">
+    <h2>Quellen</h2>
+    <ul class="layer-list">
+      {% for layer in view.layers %}
+      <li class="layer{% if layer.active %} active{% endif %}{% if layer.enabled == false %} disabled{% endif %}">
+        <span class="layer-name">{{ layer.name }}</span>
+        {% if layer.active %}<span class="badge badge-active">aktiv</span>{% endif %}
+        {% if layer.enabled == false %}<span class="badge badge-muted">aus</span>{% endif %}
+        {% if view.can_write %}
+        <form method="post" action="/control/source" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <input type="hidden" name="target_kind" value="layer" />
+          <input type="hidden" name="target" value="{{ layer.name }}" />
+          <input type="hidden" name="reason" value="Umschalten via Control Panel" />
+          <button type="submit" class="ghost">Umschalten</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="control-section">
+    <h2>Live</h2>
+    {% match view.live_active_caster %}
+    {% when Some with (caster) %}
+    <p>Aktiver Caster: <code>{{ caster }}</code>{% if view.live_override.is_some() %} (Override){% endif %}</p>
+    {% when None %}
+    <p class="muted">Kein Live-Override aktiv.</p>
+    {% endmatch %}
+    {% if view.has_connected %}
+    <ul class="connected">
+      {% for c in view.connected %}
+      <li><code>{{ c.caster_id }}</code>{% match c.mount %}{% when Some with (m) %} · {{ m }}{% when None %}{% endmatch %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Keine verbundenen Caster.</p>
+    {% endif %}
+    {% if view.can_write %}
+    <form method="post" action="/control/source" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="target_kind" value="caster" />
+      <input type="hidden" name="target" value="" />
+      <input type="hidden" name="reason" value="Live-Override aufheben (Control Panel)" />
+      <button type="submit" class="ghost">Live-Override aufheben</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="control-section">
+    <h2>Now Playing</h2>
+    {% match view.now_title %}
+    {% when Some with (title) %}
+    <p><strong>{{ title }}</strong>{% match view.now_artist %}{% when Some with (artist) %} — {{ artist }}{% when None %}{% endmatch %} <span class="muted">{{ view.now_duration }}</span></p>
+    {% when None %}
+    <p class="muted">Nichts läuft.</p>
+    {% endmatch %}
+  </section>
+
+  <section class="control-section">
+    <h2>Status</h2>
+    <p>Pause: <strong>{% if view.paused %}an{% else %}aus{% endif %}</strong>{% if view.derived %} <span class="muted">(Quelle abgeleitet)</span>{% endif %}</p>
+    {% if view.can_write %}
+    <form method="post" action="/control/pause" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="paused" value="{% if view.paused %}false{% else %}true{% endif %}" />
+      <input type="hidden" name="reason" value="Pause via Control Panel" />
+      <button type="submit" class="ghost"{% if view.live_active_caster.is_some() %} disabled{% endif %}>{% if view.paused %}Fortsetzen{% else %}Pause{% endif %}</button>
+    </form>
+    <form method="post" action="/control/skip" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="reason" value="Skip via Control Panel" />
+      <button type="submit" class="ghost">Skip</button>
+    </form>
+    {% if view.live_active_caster.is_some() %}
+    <p class="muted">Live aktiv — Pause nicht möglich.</p>
+    {% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+</div>

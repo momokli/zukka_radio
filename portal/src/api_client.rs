@@ -2015,13 +2015,17 @@ impl QueueApi for FakeQueueApi {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #20: control (skip) — `POST /api/v1/control/skip`, §6
+// Issue #20/#22: control — `GET /api/v1/control/state` + `POST /control/*`, §6
 // ---------------------------------------------------------------------------
 
-/// Control-operation failure (the portal only needs the `409` distinction).
+/// Control-operation failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
-    /// The skip was rejected (`409`/`422`), e.g. nothing is playing.
+    /// The scheduler rejected the action because live is active (`409
+    /// live_active`), e.g. a pause while a caster is live.
+    #[error("live active: {0}")]
+    LiveActive(String),
+    /// Any other rejection (`409`/`422`), e.g. a field error or nothing playing.
     #[error("conflict: {0}")]
     Conflict(String),
     /// Transport/parse failure or unexpected status.
@@ -2029,10 +2033,92 @@ pub enum ControlError {
     Upstream(String),
 }
 
+/// One priority layer as returned by `GET /control/state`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlSource {
+    pub id: String,
+    /// `live|show|queue|rotation|relay|fun`.
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// One connected caster (derived from `event_log`; often empty).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectedCaster {
+    pub caster_id: String,
+    #[serde(default)]
+    pub mount: Option<String>,
+    #[serde(default)]
+    pub since: String,
+}
+
+/// The live-layer slice of [`ControlState`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LiveState {
+    #[serde(default)]
+    pub override_caster_id: Option<String>,
+    #[serde(default)]
+    pub active_caster_id: Option<String>,
+    #[serde(default)]
+    pub connected: Vec<ConnectedCaster>,
+}
+
+/// The currently playing item (`now_playing`), mirroring `PlaybackItemDto`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NowPlaying {
+    #[serde(default)]
+    pub queue_item_id: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub duration_ms: i64,
+}
+
+/// Full control-panel state (`GET /control/state`), mirroring the scheduler's
+/// `ControlStateDto` (serde-compatible).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ControlState {
+    #[serde(default)]
+    pub sources: Vec<ControlSource>,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub forced_layer: Option<String>,
+    #[serde(default)]
+    pub active_layer: Option<String>,
+    #[serde(default)]
+    pub derived: bool,
+    #[serde(default)]
+    pub live: LiveState,
+    #[serde(default)]
+    pub now_playing: Option<NowPlaying>,
+}
+
 /// Control operations the portal needs. Implemented by [`HttpControlApi`] in
 /// production and by [`FakeControlApi`] in tests.
 #[async_trait]
 pub trait ControlApi: Send + Sync {
+    /// Reads the full control-panel state. `viewer` is sent as `X-Caster-Id`.
+    async fn state(&self, viewer: Option<&str>) -> Result<ControlState, ControlError>;
+
+    /// Forces one of the six layers (`POST /control/switch`).
+    async fn switch(&self, layer: &str, reason: &str) -> Result<(), ControlError>;
+
+    /// Sets (`Some`) or clears (`None`) the live override (`POST /control/live`).
+    async fn live(&self, caster_id: Option<&str>, reason: &str) -> Result<(), ControlError>;
+
+    /// Pauses/resumes (`POST /control/pause`); live active ⇒ `LiveActive`.
+    async fn pause(&self, paused: bool, reason: &str) -> Result<(), ControlError>;
+
     /// Requests a skip of the currently playing item.
     async fn skip(&self, reason: &str) -> Result<(), ControlError>;
 }
@@ -2063,42 +2149,115 @@ impl HttpControlApi {
     fn url(&self, path: &str) -> String {
         format!("{}/api/v1{path}", self.base_url)
     }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        viewer: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .request(method, self.url(path))
+            .bearer_auth(&self.service_token);
+        if let Some(viewer) = viewer {
+            builder = builder.header("x-caster-id", viewer);
+        }
+        builder
+    }
+
+    /// Maps a non-success response into a [`ControlError`].
+    async fn error_from(response: reqwest::Response) -> ControlError {
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let code = body["error"]["code"].as_str().unwrap_or("").to_string();
+        let message = body["error"]["message"]
+            .as_str()
+            .unwrap_or("upstream error")
+            .to_string();
+        match (status.as_u16(), code.as_str()) {
+            (409, "live_active") => ControlError::LiveActive(message),
+            (409, _) | (422, _) => ControlError::Conflict(message),
+            (other, _) => ControlError::Upstream(format!("scheduler returned {other}: {message}")),
+        }
+    }
 }
 
 #[async_trait]
 impl ControlApi for HttpControlApi {
-    async fn skip(&self, reason: &str) -> Result<(), ControlError> {
+    async fn state(&self, viewer: Option<&str>) -> Result<ControlState, ControlError> {
         let response = self
-            .client
-            .post(self.url("/control/skip"))
-            .bearer_auth(&self.service_token)
-            .json(&serde_json::json!({ "reason": reason }))
+            .request(reqwest::Method::GET, "/control/state", viewer)
+            .send()
+            .await
+            .map_err(|e| ControlError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| ControlError::Upstream(e.to_string()))
+    }
+
+    async fn switch(&self, layer: &str, reason: &str) -> Result<(), ControlError> {
+        self.post_action(
+            "/control/switch",
+            serde_json::json!({ "layer": layer, "reason": reason }),
+        )
+        .await
+    }
+
+    async fn live(&self, caster_id: Option<&str>, reason: &str) -> Result<(), ControlError> {
+        self.post_action(
+            "/control/live",
+            serde_json::json!({ "caster_id": caster_id, "reason": reason }),
+        )
+        .await
+    }
+
+    async fn pause(&self, paused: bool, reason: &str) -> Result<(), ControlError> {
+        self.post_action(
+            "/control/pause",
+            serde_json::json!({ "paused": paused, "reason": reason }),
+        )
+        .await
+    }
+
+    async fn skip(&self, reason: &str) -> Result<(), ControlError> {
+        self.post_action("/control/skip", serde_json::json!({ "reason": reason }))
+            .await
+    }
+}
+
+impl HttpControlApi {
+    /// Shared `POST /control/*` call: `204` success, otherwise mapped error.
+    async fn post_action(&self, path: &str, body: serde_json::Value) -> Result<(), ControlError> {
+        let response = self
+            .request(reqwest::Method::POST, path, None)
+            .json(&body)
             .send()
             .await
             .map_err(|e| ControlError::Upstream(e.to_string()))?;
         if response.status().is_success() {
             return Ok(());
         }
-        let status = response.status();
-        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
-        let message = body["error"]["message"]
-            .as_str()
-            .unwrap_or("upstream error")
-            .to_string();
-        match status.as_u16() {
-            409 | 422 => Err(ControlError::Conflict(message)),
-            other => Err(ControlError::Upstream(format!(
-                "scheduler returned {other}: {message}"
-            ))),
-        }
+        Err(Self::error_from(response).await)
     }
 }
 
-/// In-memory [`ControlApi`] for tests: records reasons and can be told to fail.
+/// In-memory [`ControlApi`] for tests: holds a settable state, records the
+/// write calls, and can simulate the `live_active` live guard.
 #[derive(Default)]
 pub struct FakeControlApi {
     calls: std::sync::Mutex<Vec<String>>,
     conflict: std::sync::Mutex<Option<String>>,
+    state: std::sync::Mutex<ControlState>,
+    switches: std::sync::Mutex<Vec<(String, String)>>,
+    lives: std::sync::Mutex<Vec<(Option<String>, String)>>,
+    pauses: std::sync::Mutex<Vec<(bool, String)>>,
+    pause_live_active: std::sync::Mutex<bool>,
+    state_error: std::sync::Mutex<bool>,
 }
 
 impl FakeControlApi {
@@ -2107,19 +2266,83 @@ impl FakeControlApi {
         Self::default()
     }
 
+    /// Sets the state returned by [`ControlApi::state`].
+    pub fn set_state(&self, state: ControlState) {
+        *self.state.lock().unwrap() = state;
+    }
+
     /// Makes every subsequent `skip` answer with a `409` conflict.
     pub fn fail_with(&self, message: &str) {
         *self.conflict.lock().unwrap() = Some(message.to_string());
+    }
+
+    /// Makes every subsequent `pause` answer with `409 live_active`.
+    pub fn fail_pause_live(&self) {
+        *self.pause_live_active.lock().unwrap() = true;
+    }
+
+    /// Makes every subsequent `state` answer fail (simulates an outage).
+    pub fn fail_state(&self) {
+        *self.state_error.lock().unwrap() = true;
     }
 
     /// The recorded skip reasons.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// The recorded `(layer, reason)` switch calls.
+    pub fn switches(&self) -> Vec<(String, String)> {
+        self.switches.lock().unwrap().clone()
+    }
+
+    /// The recorded `(caster_id, reason)` live calls.
+    pub fn lives(&self) -> Vec<(Option<String>, String)> {
+        self.lives.lock().unwrap().clone()
+    }
+
+    /// The recorded `(paused, reason)` pause calls.
+    pub fn pauses(&self) -> Vec<(bool, String)> {
+        self.pauses.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl ControlApi for FakeControlApi {
+    async fn state(&self, _viewer: Option<&str>) -> Result<ControlState, ControlError> {
+        if *self.state_error.lock().unwrap() {
+            return Err(ControlError::Upstream("unreachable".into()));
+        }
+        Ok(self.state.lock().unwrap().clone())
+    }
+
+    async fn switch(&self, layer: &str, reason: &str) -> Result<(), ControlError> {
+        self.switches
+            .lock()
+            .unwrap()
+            .push((layer.to_string(), reason.to_string()));
+        Ok(())
+    }
+
+    async fn live(&self, caster_id: Option<&str>, reason: &str) -> Result<(), ControlError> {
+        self.lives
+            .lock()
+            .unwrap()
+            .push((caster_id.map(str::to_string), reason.to_string()));
+        Ok(())
+    }
+
+    async fn pause(&self, paused: bool, reason: &str) -> Result<(), ControlError> {
+        self.pauses
+            .lock()
+            .unwrap()
+            .push((paused, reason.to_string()));
+        if paused && *self.pause_live_active.lock().unwrap() {
+            return Err(ControlError::LiveActive("live active".into()));
+        }
+        Ok(())
+    }
+
     async fn skip(&self, reason: &str) -> Result<(), ControlError> {
         self.calls.lock().unwrap().push(reason.to_string());
         if let Some(message) = self.conflict.lock().unwrap().clone() {
