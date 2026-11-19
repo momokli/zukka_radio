@@ -1,0 +1,113 @@
+{% extends "layout.html" %}
+{% block title %}{{ queue.name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ queue.name }}</h1>
+  <p class="muted">
+    <span class="badge">{{ queue.kind }}</span>
+    <span class="muted">v{{ queue.version }}</span>
+    {% if !can_write %}<span class="badge badge-readonly">read-only</span>{% endif %}
+  </p>
+  {% if queue.description != "" %}
+  <p>{{ queue.description }}</p>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card">
+  <h2>Item hinzufügen</h2>
+  <form
+    method="post"
+    action="/queues/{{ queue_id }}/items"
+    hx-post="/queues/{{ queue_id }}/items"
+    hx-target="#queue-items"
+    hx-swap="outerHTML"
+    class="stack"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Art
+      <select name="kind">
+        <option value="track">Track</option>
+        <option value="link">Link</option>
+      </select>
+    </label>
+    <label>
+      Track-ID (bei Art = Track)
+      <input type="text" name="track_id" />
+    </label>
+    <label>
+      Provider (bei Art = Link)
+      <select name="link_provider">
+        <option value="youtube">youtube</option>
+        <option value="spotify">spotify</option>
+        <option value="other">other</option>
+      </select>
+    </label>
+    <label>
+      Link-URL (bei Art = Link)
+      <input type="url" name="link_url" />
+    </label>
+    <button type="submit">Hinzufügen</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Items</h2>
+  <div id="queue-items-wrapper">
+    {% include "partials/queue_list.html" %}
+  </div>
+</section>
+
+{% if can_write %}
+<section class="card">
+  <h2>Queue</h2>
+  <form
+    method="post"
+    action="/queues/{{ queue_id }}/rename"
+    hx-post="/queues/{{ queue_id }}/rename"
+    hx-target="#queue-items"
+    hx-swap="outerHTML"
+    class="stack"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <input type="hidden" name="version" value="{{ version }}" />
+    <label>
+      Name
+      <input type="text" name="name" value="{{ queue.name }}" required />
+    </label>
+    <label>
+      Beschreibung
+      <input type="text" name="description" value="{{ queue.description }}" />
+    </label>
+    <button type="submit">Umbenennen</button>
+  </form>
+
+  <form
+    method="post"
+    action="/queues/{{ queue_id }}/skip"
+    hx-post="/queues/{{ queue_id }}/skip"
+    hx-swap="none"
+    class="inline"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit">Skip (laufendes Programm)</button>
+  </form>
+
+  <form
+    method="post"
+    action="/queues/{{ queue_id }}/delete"
+    hx-post="/queues/{{ queue_id }}/delete"
+    hx-confirm="Queue wirklich löschen?"
+    class="inline"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <input type="hidden" name="version" value="{{ version }}" />
+    <button type="submit">Queue löschen</button>
+  </form>
+</section>
+{% endif %}
+
+<p><a class="button" href="/queues">Zurück zu Queues</a></p>
+{% endblock %}

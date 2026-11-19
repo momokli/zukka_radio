@@ -13,6 +13,7 @@ pub mod error;
 pub mod ffprobe;
 pub mod library;
 pub mod music_api;
+pub mod queues;
 pub mod rate_limit;
 pub mod rbac;
 pub mod templates;

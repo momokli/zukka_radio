@@ -1,0 +1,64 @@
+<li class="queue-item" id="queue-item-{{ row.item.id }}" data-item-id="{{ row.item.id }}">
+  <span class="pos">{{ row.item.position }}</span>
+  <span class="kind badge badge-{{ row.item.kind }}">{{ row.item.kind }}</span>
+  <span class="title">{{ row.title }}</span>
+  {% if row.item.kind == "link" %}
+  <span class="link-provider badge">{{ row.link_label }}</span>
+  {% if row.link_state == "unplayable" %}
+  <span class="link-state badge badge-unplayable">nicht abspielbar</span>
+  {% else if row.link_state == "failed" %}
+  <span class="link-state badge badge-failed">nicht auflösbar</span>
+  {% else if row.link_state == "ready" %}
+  <span class="link-state badge badge-ready">bereit</span>
+  {% else %}
+  <span class="link-state badge">wird aufgelöst …</span>
+  {% endif %}
+  {% endif %}
+  <span class="state muted">{{ row.item.state }}</span>
+  {% if can_write %}
+  <span class="move">
+    {% if !row.prev_id.is_empty() %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+      hx-target="#queue-items"
+      hx-swap="outerHTML"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="before_id" value="{{ row.prev_id }}" />
+      <input type="hidden" name="version" value="{{ version }}" />
+      <button type="submit" aria-label="nach oben">↑</button>
+    </form>
+    {% endif %}
+    {% if !row.next_id.is_empty() %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+      hx-target="#queue-items"
+      hx-swap="outerHTML"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="after_id" value="{{ row.next_id }}" />
+      <input type="hidden" name="version" value="{{ version }}" />
+      <button type="submit" aria-label="nach unten">↓</button>
+    </form>
+    {% endif %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
+      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
+      hx-target="#queue-items"
+      hx-swap="outerHTML"
+      hx-confirm="Item wirklich entfernen?"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit">Entfernen</button>
+    </form>
+  </span>
+  {% endif %}
+</li>

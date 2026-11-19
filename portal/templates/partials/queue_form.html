@@ -1,0 +1,29 @@
+<form
+  method="post"
+  action="/queues"
+  hx-post="/queues"
+  hx-target="#queue-overview"
+  hx-swap="outerHTML"
+  class="stack"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  {% if let Some(error) = error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+  <label>
+    Name
+    <input type="text" name="name" required />
+  </label>
+  <label>
+    Beschreibung
+    <input type="text" name="description" />
+  </label>
+  <label>
+    Kind
+    <select name="kind">
+      <option value="background">background</option>
+      <option value="slot">slot</option>
+    </select>
+  </label>
+  <button type="submit">Anlegen</button>
+</form>

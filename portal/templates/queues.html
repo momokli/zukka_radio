@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block title %}Queues{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Queues</h1>
+  <p class="muted">Eigene Queues bearbeitbar, fremde Queues lesbar (read-only).</p>
+</section>
+
+{% if can_create %}
+<section class="card">
+  <h2>Neue Queue</h2>
+  <div id="queue-form">
+    {% include "partials/queue_form.html" %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Übersicht</h2>
+  <ul class="queue-overview" id="queue-overview">
+    {% if queues.is_empty() %}
+    <li class="muted">Noch keine Queue.</li>
+    {% endif %}
+    {% for row in queues %}
+    <li class="queue-row">
+      <a href="/queues/{{ row.queue.id }}">{{ row.queue.name }}</a>
+      <span class="badge">{{ row.queue.kind }}</span>
+      <span class="muted">{{ row.item_count }} Items</span>
+      <span class="muted">v{{ row.queue.version }}</span>
+      {% if !row.can_write %}
+      <span class="badge badge-readonly">read-only</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

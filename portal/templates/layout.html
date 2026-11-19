@@ -7,6 +7,7 @@
     <title>{% block title %}zukka{% endblock %} · zukka radio</title>
     <link rel="stylesheet" href="/static/app.css" />
     <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/sortable.min.js" defer></script>
   </head>
   <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
     <header class="topbar">
@@ -14,14 +15,70 @@
       <nav class="nav">
         <a href="/">Dashboard</a>
         <a href="/library">Library</a>
+        <a href="/queues">Queues</a>
         <a href="/account">Konto</a>
       </nav>
     </header>
     <main class="content">
       {% block content %}{% endblock %}
     </main>
+    <div id="toast" class="toast" hidden></div>
     <footer class="footer">
       <span>portal · thin UI over the scheduler identity authority</span>
     </footer>
+    <script>
+      // Toast sink for the HX-Trigger `toast` event (Issue #20).
+      (function () {
+        function showToast(evt) {
+          var detail = (evt && evt.detail) || {};
+          var el = document.getElementById("toast");
+          if (!el) return;
+          el.textContent = detail.message || "";
+          el.className = "toast toast-" + (detail.level || "info");
+          el.hidden = false;
+          window.clearTimeout(el._timer);
+          el._timer = window.setTimeout(function () {
+            el.hidden = true;
+          }, 4000);
+        }
+        document.body.addEventListener("toast", showToast);
+      })();
+
+      // Drag-and-drop reorder (SortableJS) → the same `move` endpoint as the
+      // no-JS ↑/↓ buttons, so both paths yield the same DB state (D18).
+      (function () {
+        function initQueueSortable() {
+          var el = document.getElementById("queue-items");
+          if (!el || !window.Sortable || el.dataset.canWrite !== "true") return;
+          if (el._sortable) el._sortable.destroy();
+          el._sortable = window.Sortable.create(el, {
+            animation: 150,
+            onEnd: function (evt) {
+              var list = evt.to;
+              var ids = Array.prototype.map
+                .call(list.children, function (li) {
+                  return li.dataset.itemId;
+                })
+                .filter(Boolean);
+              var moved = ids[evt.newIndex];
+              if (!moved) return;
+              var values;
+              if (evt.newIndex === 0) {
+                values = { before_id: ids[1] || "", version: list.dataset.version };
+              } else {
+                values = { after_id: ids[evt.newIndex - 1], version: list.dataset.version };
+              }
+              window.htmx.ajax(
+                "POST",
+                "/queues/" + list.dataset.queueId + "/items/" + moved + "/move",
+                { target: "#queue-items", swap: "outerHTML", values: values }
+              );
+            },
+          });
+        }
+        document.addEventListener("DOMContentLoaded", initQueueSortable);
+        document.addEventListener("htmx:afterSwap", initQueueSortable);
+      })();
+    </script>
   </body>
 </html>

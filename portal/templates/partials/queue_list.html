@@ -1,0 +1,14 @@
+<ul
+  id="queue-items"
+  class="queue-items"
+  data-queue-id="{{ queue_id }}"
+  data-version="{{ version }}"
+  data-can-write="{{ can_write }}"
+>
+  {% if items.is_empty() %}
+  <li class="muted">Diese Queue ist leer.</li>
+  {% endif %}
+  {% for row in items %}
+  {% include "partials/queue_item.html" %}
+  {% endfor %}
+</ul>

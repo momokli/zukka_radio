@@ -2,7 +2,7 @@
 
 use askama::Template;
 
-use crate::api_client::{Track, UploadJob};
+use crate::api_client::{Queue, QueueItem, Track, UploadJob};
 
 /// Login page (`GET /login`).
 #[derive(Template)]
@@ -129,4 +129,113 @@ pub struct UploadJobFragment {
 pub struct WaveformSvg {
     pub bars: i64,
     pub peaks: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #20: queues (Queue-UI)
+// ---------------------------------------------------------------------------
+
+/// A queue plus the per-viewer row capabilities. `can_write` is the
+/// server-side ownership comparison, computed in [`crate::queues`].
+pub struct QueueRow {
+    pub queue: Queue,
+    pub can_write: bool,
+    pub item_count: i64,
+}
+
+/// A queue item plus its neighbours (for the no-JS ↑/↓ buttons) and the
+/// pre-computed display strings (title, link label/state). Built by
+/// [`QueueItemRow::from_items`] so the templates stay free of method chains.
+pub struct QueueItemRow {
+    pub item: QueueItem,
+    pub prev_id: String,
+    pub next_id: String,
+    pub title: String,
+    pub link_label: String,
+    pub link_state: String,
+}
+
+impl QueueItemRow {
+    /// Builds the row list, wiring each item to its position neighbours.
+    pub fn from_items(items: Vec<QueueItem>) -> Vec<Self> {
+        let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let prev_id = index
+                    .checked_sub(1)
+                    .and_then(|i| ids.get(i).cloned())
+                    .unwrap_or_default();
+                let next_id = ids.get(index + 1).cloned().unwrap_or_default();
+                let title = item
+                    .title_override
+                    .clone()
+                    .or_else(|| item.track_id.clone())
+                    .or_else(|| item.link_url.clone())
+                    .unwrap_or_else(|| item.id.clone());
+                let link_label = if item.kind == "link" {
+                    item.link_provider
+                        .clone()
+                        .unwrap_or_else(|| "link".to_string())
+                } else {
+                    String::new()
+                };
+                let link_state = item.link_state.clone().unwrap_or_default();
+                Self {
+                    item,
+                    prev_id,
+                    next_id,
+                    title,
+                    link_label,
+                    link_state,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Queue overview (`GET /queues`): own + foreign queues + create form.
+#[derive(Template)]
+#[template(path = "queues.html")]
+pub struct QueuesPage {
+    pub csrf_token: String,
+    pub can_create: bool,
+    pub queues: Vec<QueueRow>,
+    /// Inline create-form error (kept `None` on the plain overview).
+    pub error: Option<String>,
+}
+
+/// Queue editor (`GET /queues/{id}`). Carries the fragment fields too so
+/// `partials/queue_list.html` can be `{% include %}`-d in scope.
+#[derive(Template)]
+#[template(path = "queue_editor.html")]
+pub struct QueueEditorPage {
+    pub csrf_token: String,
+    pub queue: Queue,
+    pub queue_id: String,
+    pub version: i64,
+    pub items: Vec<QueueItemRow>,
+    pub can_write: bool,
+}
+
+/// The authoritative item list (`partials/queue_list.html`), returned by every
+/// mutation so the server — never the UI — is the source of truth.
+#[derive(Template)]
+#[template(path = "partials/queue_list.html")]
+pub struct QueueListFragment {
+    pub csrf_token: String,
+    pub queue_id: String,
+    pub version: i64,
+    pub items: Vec<QueueItemRow>,
+    pub can_write: bool,
+}
+
+/// Create-form fragment (`partials/queue_form.html`), re-rendered inline on a
+/// `422` validation error.
+#[derive(Template)]
+#[template(path = "partials/queue_form.html")]
+pub struct QueueFormFragment {
+    pub csrf_token: String,
+    pub error: Option<String>,
 }
