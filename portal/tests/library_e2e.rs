@@ -390,6 +390,57 @@ async fn library_htmx_returns_fragment_only() {
 }
 
 #[tokio::test]
+async fn library_waveform_canvas_hooks() {
+    // Issue #23: every rendered row carries exactly one waveform canvas whose
+    // `data-waveform-src` points at the peak JSON endpoint, on the full page
+    // and on the htmx fragment alike.
+    let app = router(caster_perms(), seeded());
+    let (session, _csrf) = login(&app).await;
+
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/library",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<th>Waveform</th>"), "head column: {body}");
+    assert!(body.contains("class=\"waveform-canvas\""), "{body}");
+    assert!(
+        body.contains("data-waveform-src=\"/library/tracks/t-mine/waveform.json\""),
+        "own track hook: {body}"
+    );
+    // caster sees shared + own private → two rows → two canvases.
+    assert_eq!(
+        body.matches("class=\"waveform-canvas\"").count(),
+        2,
+        "{body}"
+    );
+
+    let (status, _, fragment) = send(
+        &app,
+        Method::GET,
+        "/library",
+        &[("cookie", &cookie(&session)), ("hx-request", "true")],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!fragment.contains("<html"), "fragment only: {fragment}");
+    assert!(
+        fragment.contains("data-waveform-src=\"/library/tracks/t-shared/waveform.json\""),
+        "shared track hook in fragment: {fragment}"
+    );
+    assert_eq!(
+        fragment.matches("class=\"waveform-canvas\"").count(),
+        2,
+        "{fragment}"
+    );
+}
+
+#[tokio::test]
 async fn library_private_filter_shows_only_own() {
     let app = router(caster_perms(), seeded());
     let (session, _csrf) = login(&app).await;

@@ -367,3 +367,19 @@ button.ghost {
 }
 .live-badge.live { background: #c62828; color: #fff; font-weight: 700; }
 .toast-undo { margin-left: 0.6rem; }
+
+/* Issue #23: client-rendered waveform canvases (library rows + queue items). */
+.waveform-canvas {
+  display: block;
+  height: 40px;
+  width: 100%;
+  max-width: 160px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.queue-item .waveform-canvas {
+  width: 120px;
+  flex: 0 0 auto;
+}

@@ -30,6 +30,7 @@ const HTMX_JS: &str = include_str!("../static/htmx.min.js");
 const HTMX_SSE_JS: &str = include_str!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
 const SORTABLE_JS: &str = include_str!("../static/sortable.min.js");
+const WAVEFORM_JS: &str = include_str!("../static/waveform.js");
 
 /// Shared application state.
 #[derive(Clone)]
@@ -362,6 +363,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/static/htmx-ext-sse.js", get(htmx_sse_js))
         .route("/static/app.css", get(app_css))
         .route("/static/sortable.min.js", get(sortable_js))
+        .route("/static/waveform.js", get(waveform_js))
         .route(
             "/login",
             get(handlers::login_get).post(handlers::login_post),
@@ -397,6 +399,13 @@ async fn sortable_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         SORTABLE_JS,
+    )
+}
+
+async fn waveform_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        WAVEFORM_JS,
     )
 }
 

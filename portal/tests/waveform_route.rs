@@ -179,9 +179,9 @@ async fn inject(mut req: Request<Body>, next: Next) -> Response {
     next.run(req).await
 }
 
-fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
+fn state(waveforms: Arc<dyn WaveformApi>) -> AppState {
     let backend = zukka_portal::api_client::FakeScheduleBackend::new();
-    let state = AppState {
+    AppState {
         config: Arc::new(config()),
         identity: Arc::new(NoIdentity),
         music: Arc::new(FakeMusicApi::new()),
@@ -194,7 +194,10 @@ fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
         shows: Arc::new(backend.shows()),
         broadcasts: Arc::new(backend.broadcasts()),
         limiter: Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
-    };
+    }
+}
+
+fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
     Router::new()
         .route(
             "/library/tracks/{id}/waveform.json",
@@ -205,7 +208,7 @@ fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
             get(zukka_portal::upload::waveform_svg),
         )
         .route_layer(from_fn(inject))
-        .with_state(state)
+        .with_state(state(waveforms))
 }
 
 async fn get_req(app: &Router, uri: &str) -> (StatusCode, String, Option<String>) {
@@ -276,6 +279,27 @@ async fn waveform_svg_unknown_is_404() {
     let app = router(fake);
     let (status, _, _) = get_req(&app, "/library/tracks/missing/waveform.svg").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn waveform_js_is_served() {
+    // The renderer asset lives on the unprotected static layer (like
+    // `sortable.min.js`); serve it through the real app router.
+    let fake = Arc::new(FakeWaveforms::default());
+    let app = zukka_portal::app::build_router(state(fake));
+
+    let (status, body, content_type) = get_req(&app, "/static/waveform.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        content_type.as_deref(),
+        Some("text/javascript; charset=utf-8")
+    );
+    assert!(
+        body.contains("IntersectionObserver"),
+        "renderer entry point"
+    );
+    assert!(body.contains(".waveform-canvas"), "selects the canvas hook");
+    assert!(body.contains("htmx:afterSwap"), "re-scans after htmx swaps");
 }
 
 #[test]
