@@ -35,7 +35,7 @@ fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
     Ok(Html(page.render()?).into_response())
 }
 
-fn is_htmx(headers: &HeaderMap) -> bool {
+pub(crate) fn is_htmx(headers: &HeaderMap) -> bool {
     headers.get("hx-request").is_some()
 }
 
@@ -97,7 +97,7 @@ async fn authorize_write(
 
 /// Escapes a JSON value so every byte is visible ASCII — required because the
 /// `HX-Trigger` header may only carry visible-ASCII bytes (umlauts, em dashes).
-fn ascii_json(value: &serde_json::Value) -> String {
+pub(crate) fn ascii_json(value: &serde_json::Value) -> String {
     let raw = value.to_string();
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -114,7 +114,7 @@ fn ascii_json(value: &serde_json::Value) -> String {
 }
 
 /// Attaches an `HX-Trigger` toast to `response`.
-fn set_toast(response: &mut Response, level: &str, message: &str) {
+pub(crate) fn set_toast(response: &mut Response, level: &str, message: &str) {
     let payload = serde_json::json!({ "toast": { "level": level, "message": message } });
     if let Ok(value) = header::HeaderValue::from_str(&ascii_json(&payload)) {
         response
@@ -157,7 +157,7 @@ async fn render_list_fragment(
 }
 
 /// `204` with an `HX-Refresh` so htmx reloads the page (server stays truth).
-fn refresh_with_toast(level: &str, message: &str) -> Response {
+pub(crate) fn refresh_with_toast(level: &str, message: &str) -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::HeaderName::from_static("hx-refresh"),
@@ -168,7 +168,7 @@ fn refresh_with_toast(level: &str, message: &str) -> Response {
 }
 
 /// `204` + toast only (no DOM target), for `hx-swap="none"` actions like skip.
-fn toast_only(level: &str, message: &str) -> Response {
+pub(crate) fn toast_only(level: &str, message: &str) -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
     set_toast(&mut response, level, message);
     response

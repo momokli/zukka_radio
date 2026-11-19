@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block title %}{% if form.id != "" %}Broadcast bearbeiten{% else %}Neuer Broadcast{% endif %}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{% if form.id != "" %}Broadcast bearbeiten{% else %}Neuer Broadcast{% endif %}</h1>
+  <p class="muted">
+    Zeiten in <strong>Europe/Berlin</strong>. Das Ende ist optional: ein Broadcast
+    ohne Ende läuft, bis jemand übernimmt (offener Balken).
+  </p>
+</section>
+
+<section class="card">
+  <div id="broadcast-form-slot">{% include "partials/broadcast_form.html" %}</div>
+</section>
+
+<p><a class="button" href="/schedule">Zurück zum Kalender</a></p>
+{% endblock %}

@@ -1,0 +1,71 @@
+<section id="calendar-grid" class="calendar card">
+  <div class="calendar-nav">
+    <a
+      class="nav-btn"
+      href="/schedule?view={{ view }}&anchor={{ prev_anchor }}"
+      hx-get="/schedule?view={{ view }}&anchor={{ prev_anchor }}&fragment=calendar-grid"
+      hx-target="#calendar-grid"
+      hx-swap="outerHTML"
+      hx-push-url="/schedule?view={{ view }}&anchor={{ prev_anchor }}"
+      >‹ Zurück</a
+    >
+    <h2 class="calendar-title">{{ title }}</h2>
+    <a
+      class="nav-btn"
+      href="/schedule?view={{ view }}&anchor={{ next_anchor }}"
+      hx-get="/schedule?view={{ view }}&anchor={{ next_anchor }}&fragment=calendar-grid"
+      hx-target="#calendar-grid"
+      hx-swap="outerHTML"
+      hx-push-url="/schedule?view={{ view }}&anchor={{ next_anchor }}"
+      >Weiter ›</a
+    >
+    <span class="view-toggle">
+      <a
+        class="{% if view == "week" %}active{% endif %}"
+        href="/schedule?view=week&anchor={{ anchor }}"
+        hx-get="/schedule?view=week&anchor={{ anchor }}&fragment=calendar-grid"
+        hx-target="#calendar-grid"
+        hx-swap="outerHTML"
+        hx-push-url="/schedule?view=week&anchor={{ anchor }}"
+        >Woche</a
+      >
+      <a
+        class="{% if view == "month" %}active{% endif %}"
+        href="/schedule?view=month&anchor={{ anchor }}"
+        hx-get="/schedule?view=month&anchor={{ anchor }}&fragment=calendar-grid"
+        hx-target="#calendar-grid"
+        hx-swap="outerHTML"
+        hx-push-url="/schedule?view=month&anchor={{ anchor }}"
+        >Monat</a
+      >
+    </span>
+    {% if can_write %}
+    <a class="button" href="/schedule/new">Neuer Broadcast</a>
+    {% endif %}
+  </div>
+
+  <div class="calendar-head">
+    <span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span
+    ><span>So</span>
+  </div>
+
+  <div class="calendar-weeks">
+    {% for week in weeks %}
+    <div class="calendar-week">
+      {% for cell in week.cells %}
+      <div
+        class="calendar-cell{% if !cell.in_month %} out-of-month{% endif %}{% if cell.is_today %} today{% endif %}"
+        data-date="{{ cell.date }}"
+      >
+        <span class="day-num">{{ cell.day_num }}</span>
+        {% for card in cell.entries %} {% include "partials/broadcast_card.html" %} {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if weeks.is_empty() %}
+  <p class="muted">Keine Einträge im sichtbaren Bereich.</p>
+  {% endif %}
+</section>

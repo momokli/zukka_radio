@@ -1,0 +1,114 @@
+<form
+  id="broadcast-form"
+  method="post"
+  action="{% if form.id != "" %}/schedule/{{ form.id }}{% else %}/schedule{% endif %}"
+  hx-post="{% if form.id != "" %}/schedule/{{ form.id }}{% else %}/schedule{% endif %}"
+  hx-target="#broadcast-form-slot"
+  hx-swap="innerHTML"
+  class="stack"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  {% if form.id != "" %}
+  <input type="hidden" name="version" value="{{ form.version }}" />
+  {% endif %}
+  {% if let Some(error) = error %}
+  <p class="alert alert-error">{{ error }}</p>
+  {% endif %}
+
+  <label>
+    Titel
+    <input type="text" name="title" value="{{ form.title }}" required />
+  </label>
+  <label>
+    Beschreibung
+    <input type="text" name="description" value="{{ form.description }}" />
+  </label>
+  <label>
+    Art
+    <select name="kind">
+      <option value="live" {% if form.kind == "live" %}selected{% endif %}>live</option>
+      <option value="recording" {% if form.kind == "recording" %}selected{% endif %}>
+        recording
+      </option>
+      <option value="playlist" {% if form.kind == "playlist" %}selected{% endif %}>
+        playlist
+      </option>
+    </select>
+  </label>
+  <label>
+    Show
+    <select name="show_id">
+      <option value="">— keine —</option>
+      {% for s in form.shows %}
+      <option value="{{ s.id }}" {% if s.id == form.show_id %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Beginn (Berliner Zeit)
+    <input
+      type="datetime-local"
+      name="starts_at"
+      value="{{ form.starts_at }}"
+      required
+      hx-get="/schedule/new"
+      hx-target="#broadcast-form-slot"
+      hx-swap="innerHTML"
+      hx-trigger="change"
+      hx-include="#broadcast-form"
+      hx-push-url="false"
+    />
+  </label>
+  <label>
+    Ende (Berliner Zeit, optional — leer = offener Balken)
+    <input
+      type="datetime-local"
+      name="ends_at"
+      value="{{ form.ends_at }}"
+      hx-get="/schedule/new"
+      hx-target="#broadcast-form-slot"
+      hx-swap="innerHTML"
+      hx-trigger="change"
+      hx-include="#broadcast-form"
+      hx-push-url="false"
+    />
+  </label>
+  <label>
+    tape_id (nur recording)
+    <input type="text" name="tape_id" value="{{ form.tape_id }}" />
+  </label>
+  <label>
+    queue_id (nur playlist)
+    <select name="queue_id">
+      <option value="">— keine —</option>
+      {% for q in form.queues %}
+      <option value="{{ q.id }}" {% if q.id == form.queue_id %}selected{% endif %}>{{ q.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">{% if form.id != "" %}Speichern{% else %}Anlegen{% endif %}</button>
+</form>
+
+{% if !warnings.is_empty() %}
+<div class="conflict-block" role="note" aria-live="polite">
+  <strong>Hinweise im gewählten Zeitraum (blockieren nicht):</strong>
+  <ul class="conflict-list">
+    {% for w in warnings %}
+    <li>{% include "partials/conflict_warning.html" %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if form.id != "" %}
+<form
+  method="post"
+  action="/schedule/{{ form.id }}/delete"
+  hx-post="/schedule/{{ form.id }}/delete"
+  hx-confirm="Broadcast wirklich löschen?"
+  class="inline"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit" class="ghost">Löschen</button>
+</form>
+{% endif %}
