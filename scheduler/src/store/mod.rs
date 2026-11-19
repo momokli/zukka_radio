@@ -5,6 +5,7 @@ pub mod broadcasts;
 pub mod playback;
 pub mod queue_items;
 pub mod queues;
+pub mod rotation;
 pub mod schedule;
 pub mod shows;
 pub mod sources;
