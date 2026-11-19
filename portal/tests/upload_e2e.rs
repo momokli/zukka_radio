@@ -26,9 +26,9 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use zukka_portal::api_client::{
-    CasterDto, CreatedSessionDto, FakeTrackApi, IdentityApi, IdentityError, JobError, NewUploadJob,
-    NewWaveform, SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform,
-    WaveformApi, WaveformApiError,
+    CasterDto, CreatedSessionDto, FakeControlApi, FakeQueueApi, FakeTrackApi, IdentityApi,
+    IdentityError, JobError, NewUploadJob, NewWaveform, SessionValidationDto, UploadJob,
+    UploadJobApi, UploadJobPatch, Waveform, WaveformApi, WaveformApiError,
 };
 use zukka_portal::app::{AppState, build_router};
 use zukka_portal::config::Config;
@@ -355,6 +355,8 @@ fn router(identity: FakeIdentity, cfg: Config) -> (Router, Services) {
         jobs.clone(),
         waveforms.clone(),
         tracks.clone(),
+        Arc::new(FakeQueueApi::new()),
+        Arc::new(FakeControlApi::new()),
     );
     (
         build_router(state),

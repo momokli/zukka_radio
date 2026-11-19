@@ -1131,3 +1131,999 @@ impl TrackApi for FakeTrackApi {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #20: queues (Queue-UI) — read/write to `/api/v1/queues*`, §4.2
+// ---------------------------------------------------------------------------
+
+/// A fixed timestamp for fakes (never rendered as "now").
+const FAKE_TS: &str = "2026-11-19T12:00:00.000Z";
+
+/// A queue as returned by the scheduler (`queues` row, §3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Queue {
+    pub id: String,
+    pub caster_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// `background` | `slot`.
+    pub kind: String,
+    pub version: i64,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// A queue item as returned by the scheduler (`queue_items` row, §3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueueItem {
+    pub id: String,
+    pub queue_id: String,
+    pub position: i64,
+    /// `track` | `tape` | `link`.
+    pub kind: String,
+    #[serde(default)]
+    pub track_id: Option<String>,
+    #[serde(default)]
+    pub tape_id: Option<String>,
+    #[serde(default)]
+    pub link_url: Option<String>,
+    /// `youtube` | `spotify` | `other`.
+    #[serde(default)]
+    pub link_provider: Option<String>,
+    /// `pending` | `ready` | `failed` | `unplayable`.
+    #[serde(default)]
+    pub link_state: Option<String>,
+    #[serde(default)]
+    pub title_override: Option<String>,
+    /// `pending` | `playing` | `played` | `skipped`.
+    pub state: String,
+    #[serde(default)]
+    pub played_at: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Query parameters of `GET /queues` (both optional).
+#[derive(Debug, Clone, Default)]
+pub struct QueueQuery {
+    pub caster_id: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// Body of `POST /queues`.
+#[derive(Debug, Clone, Default)]
+pub struct NewQueue {
+    pub caster_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// Body of `POST /queues/{id}/items`.
+#[derive(Debug, Clone, Default)]
+pub struct NewQueueItem {
+    pub kind: String,
+    pub track_id: Option<String>,
+    pub tape_id: Option<String>,
+    pub link_url: Option<String>,
+    pub link_provider: Option<String>,
+    pub title_override: Option<String>,
+    pub position: Option<i64>,
+}
+
+/// Queue operation failure (mapping identical to [`TrackError`]: `404`/`409`/`422`).
+#[derive(Debug, thiserror::Error)]
+pub enum QueueError {
+    /// Unknown queue/item (scheduler `404`).
+    #[error("not found")]
+    NotFound,
+    /// Optimistic-lock or duplicate conflict (scheduler `409`).
+    #[error("conflict: {0}")]
+    Conflict(String),
+    /// Field-level rejection (scheduler `422`).
+    #[error("{message}")]
+    Validation { field: String, message: String },
+    /// Transport/parse failure or unexpected status.
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+impl QueueError {
+    /// `true` on a `404`.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, QueueError::NotFound)
+    }
+
+    /// `true` on a `409` (version conflict / duplicate).
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, QueueError::Conflict(_))
+    }
+}
+
+/// Queue operations. Implemented by [`HttpQueueApi`] in production and by
+/// [`FakeQueueApi`] in tests. `viewer` is the session `caster_id`; it is sent as
+/// `X-Caster-Id` and must never come from client input (§1).
+#[async_trait]
+pub trait QueueApi: Send + Sync {
+    /// Lists queues, optionally filtered by owner/kind.
+    async fn list(
+        &self,
+        viewer: Option<&str>,
+        query: &QueueQuery,
+    ) -> Result<Vec<Queue>, QueueError>;
+
+    /// Fetches one queue.
+    async fn get(&self, viewer: Option<&str>, id: &str) -> Result<Queue, QueueError>;
+
+    /// Creates a queue (`version = 1`).
+    async fn create(&self, viewer: Option<&str>, req: &NewQueue) -> Result<Queue, QueueError>;
+
+    /// Renames/updates a queue with an optimistic-lock `version`.
+    async fn update(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        version: i64,
+    ) -> Result<Queue, QueueError>;
+
+    /// Deletes a queue with an optimistic-lock `version`.
+    async fn delete(&self, viewer: Option<&str>, id: &str, version: i64) -> Result<(), QueueError>;
+
+    /// Lists a queue's items in position order.
+    async fn items(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+    ) -> Result<Vec<QueueItem>, QueueError>;
+
+    /// Adds an item to a queue.
+    async fn add_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        req: &NewQueueItem,
+    ) -> Result<QueueItem, QueueError>;
+
+    /// Updates mutable item fields (`title_override`, `state`, `position`).
+    async fn update_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+        title_override: Option<&str>,
+        state: Option<&str>,
+        position: Option<i64>,
+    ) -> Result<QueueItem, QueueError>;
+
+    /// Deletes an item.
+    async fn delete_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+    ) -> Result<(), QueueError>;
+
+    /// Reorders all items (exact id set) with an optimistic-lock `version`.
+    async fn reorder(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_ids: &[String],
+        version: i64,
+    ) -> Result<Queue, QueueError>;
+
+    /// Removes every item from a queue.
+    async fn clear(&self, viewer: Option<&str>, queue_id: &str) -> Result<(), QueueError>;
+}
+
+/// HTTP client for `/api/v1/queues*` (service-token bearer + `X-Caster-Id`).
+pub struct HttpQueueApi {
+    client: reqwest::Client,
+    base_url: String,
+    service_token: String,
+}
+
+impl HttpQueueApi {
+    /// Builds a client against `base_url` (e.g. `http://scheduler:8080`).
+    pub fn new(
+        base_url: impl Into<String>,
+        service_token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            service_token: service_token.into(),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/v1{path}", self.base_url)
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        viewer: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .request(method, self.url(path))
+            .bearer_auth(&self.service_token);
+        if let Some(viewer) = viewer {
+            builder = builder.header("x-caster-id", viewer);
+        }
+        builder
+    }
+
+    async fn error_from(response: reqwest::Response) -> QueueError {
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let field = body["error"]["details"]["field"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let message = body["error"]["message"]
+            .as_str()
+            .unwrap_or("upstream error")
+            .to_string();
+        match status.as_u16() {
+            404 => QueueError::NotFound,
+            409 => QueueError::Conflict(message),
+            422 => QueueError::Validation { field, message },
+            other => QueueError::Upstream(format!("scheduler returned {other}: {message}")),
+        }
+    }
+}
+
+#[async_trait]
+impl QueueApi for HttpQueueApi {
+    async fn list(
+        &self,
+        viewer: Option<&str>,
+        query: &QueueQuery,
+    ) -> Result<Vec<Queue>, QueueError> {
+        let mut params: Vec<(&str, String)> = Vec::new();
+        if let Some(c) = &query.caster_id {
+            params.push(("caster_id", c.clone()));
+        }
+        if let Some(k) = &query.kind {
+            params.push(("kind", k.clone()));
+        }
+        let response = self
+            .request(reqwest::Method::GET, "/queues", viewer)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn get(&self, viewer: Option<&str>, id: &str) -> Result<Queue, QueueError> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/queues/{id}"), viewer)
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn create(&self, viewer: Option<&str>, req: &NewQueue) -> Result<Queue, QueueError> {
+        let response = self
+            .request(reqwest::Method::POST, "/queues", viewer)
+            .json(&serde_json::json!({
+                "caster_id": req.caster_id,
+                "name": req.name,
+                "description": req.description,
+                "kind": req.kind,
+            }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn update(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        version: i64,
+    ) -> Result<Queue, QueueError> {
+        let response = self
+            .request(reqwest::Method::PATCH, &format!("/queues/{id}"), viewer)
+            .json(&serde_json::json!({
+                "name": name,
+                "description": description,
+                "version": version,
+            }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn delete(&self, viewer: Option<&str>, id: &str, version: i64) -> Result<(), QueueError> {
+        let response = self
+            .request(reqwest::Method::DELETE, &format!("/queues/{id}"), viewer)
+            .json(&serde_json::json!({ "version": version }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(Self::error_from(response).await)
+        }
+    }
+
+    async fn items(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+    ) -> Result<Vec<QueueItem>, QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/queues/{queue_id}/items"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn add_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        req: &NewQueueItem,
+    ) -> Result<QueueItem, QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/queues/{queue_id}/items"),
+                viewer,
+            )
+            .json(&serde_json::json!({
+                "kind": req.kind,
+                "track_id": req.track_id,
+                "tape_id": req.tape_id,
+                "link_url": req.link_url,
+                "link_provider": req.link_provider,
+                "title_override": req.title_override,
+                "position": req.position,
+            }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn update_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+        title_override: Option<&str>,
+        state: Option<&str>,
+        position: Option<i64>,
+    ) -> Result<QueueItem, QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::PATCH,
+                &format!("/queues/{queue_id}/items/{item_id}"),
+                viewer,
+            )
+            .json(&serde_json::json!({
+                "title_override": title_override,
+                "state": state,
+                "position": position,
+            }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn delete_item(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+    ) -> Result<(), QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/queues/{queue_id}/items/{item_id}"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(Self::error_from(response).await)
+        }
+    }
+
+    async fn reorder(
+        &self,
+        viewer: Option<&str>,
+        queue_id: &str,
+        item_ids: &[String],
+        version: i64,
+    ) -> Result<Queue, QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/queues/{queue_id}/reorder"),
+                viewer,
+            )
+            .json(&serde_json::json!({
+                "item_ids": item_ids,
+                "version": version,
+            }))
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))
+    }
+
+    async fn clear(&self, viewer: Option<&str>, queue_id: &str) -> Result<(), QueueError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/queues/{queue_id}/clear"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| QueueError::Upstream(e.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(Self::error_from(response).await)
+        }
+    }
+}
+
+/// Enforces the "exactly one content field" matrix from §3.3 (shared by the fake).
+fn validate_item_content(
+    kind: &str,
+    track_id: Option<&str>,
+    tape_id: Option<&str>,
+    link_url: Option<&str>,
+) -> Result<(), QueueError> {
+    let (has_track, has_tape, has_link) =
+        (track_id.is_some(), tape_id.is_some(), link_url.is_some());
+    let ok = match kind {
+        "track" => has_track && !has_tape && !has_link,
+        "tape" => has_tape && !has_track && !has_link,
+        "link" => has_link && !has_track && !has_tape,
+        other => {
+            return Err(QueueError::Validation {
+                field: "kind".into(),
+                message: format!("unknown kind '{other}', expected 'track', 'tape' or 'link'"),
+            });
+        }
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(QueueError::Validation {
+            field: "kind".into(),
+            message: format!("kind '{kind}' requires exactly one matching content field"),
+        })
+    }
+}
+
+/// In-memory [`QueueApi`] for tests. It enforces the same invariants as the
+/// scheduler (exactly one content field, monotonically increasing `position`, a
+/// `version` bump on every mutation and exact item-set validation on `reorder`)
+/// so portal behaviour is exercised faithfully without a network.
+#[derive(Default)]
+pub struct FakeQueueApi {
+    queues: std::sync::Mutex<Vec<Queue>>,
+    items: std::sync::Mutex<Vec<QueueItem>>,
+    counter: std::sync::Mutex<u64>,
+}
+
+impl FakeQueueApi {
+    /// A fresh, empty fake.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Seeds a queue directly (bypasses `create`).
+    pub fn seed_queue(&self, queue: Queue) {
+        self.queues.lock().unwrap().push(queue);
+    }
+
+    /// Seeds an item directly (bypasses `add_item`).
+    pub fn seed_item(&self, item: QueueItem) {
+        self.items.lock().unwrap().push(item);
+    }
+
+    /// All queues (test assertions).
+    pub fn all_queues(&self) -> Vec<Queue> {
+        self.queues.lock().unwrap().clone()
+    }
+
+    /// All items (test assertions).
+    pub fn all_items(&self) -> Vec<QueueItem> {
+        self.items.lock().unwrap().clone()
+    }
+
+    fn next_id(&self, prefix: &str) -> String {
+        let mut counter = self.counter.lock().unwrap();
+        *counter += 1;
+        format!("{prefix}-{counter}")
+    }
+
+    fn find_queue(&self, id: &str) -> Result<Queue, QueueError> {
+        self.queues
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|q| q.id == id)
+            .cloned()
+            .ok_or(QueueError::NotFound)
+    }
+
+    fn bump(&self, queue_id: &str) {
+        if let Some(q) = self
+            .queues
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|q| q.id == queue_id)
+        {
+            q.version += 1;
+        }
+    }
+
+    fn items_for(&self, queue_id: &str) -> Vec<QueueItem> {
+        let mut items: Vec<QueueItem> = self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.queue_id == queue_id)
+            .cloned()
+            .collect();
+        items.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
+        items
+    }
+}
+
+#[async_trait]
+impl QueueApi for FakeQueueApi {
+    async fn list(
+        &self,
+        _viewer: Option<&str>,
+        query: &QueueQuery,
+    ) -> Result<Vec<Queue>, QueueError> {
+        let queues = self.queues.lock().unwrap();
+        Ok(queues
+            .iter()
+            .filter(|q| query.caster_id.as_deref().is_none_or(|c| q.caster_id == c))
+            .filter(|q| query.kind.as_deref().is_none_or(|k| q.kind == k))
+            .cloned()
+            .collect())
+    }
+
+    async fn get(&self, _viewer: Option<&str>, id: &str) -> Result<Queue, QueueError> {
+        self.find_queue(id)
+    }
+
+    async fn create(&self, _viewer: Option<&str>, req: &NewQueue) -> Result<Queue, QueueError> {
+        let name = req.name.trim();
+        if name.is_empty() {
+            return Err(QueueError::Validation {
+                field: "name".into(),
+                message: "name must not be empty".into(),
+            });
+        }
+        let queue = Queue {
+            id: self.next_id("q"),
+            caster_id: req.caster_id.clone(),
+            name: name.to_string(),
+            description: req.description.clone().unwrap_or_default(),
+            kind: req.kind.clone().unwrap_or_else(|| "background".into()),
+            version: 1,
+            created_at: FAKE_TS.into(),
+            updated_at: FAKE_TS.into(),
+        };
+        self.queues.lock().unwrap().push(queue.clone());
+        Ok(queue)
+    }
+
+    async fn update(
+        &self,
+        _viewer: Option<&str>,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        version: i64,
+    ) -> Result<Queue, QueueError> {
+        let mut queues = self.queues.lock().unwrap();
+        let queue = queues
+            .iter_mut()
+            .find(|q| q.id == id)
+            .ok_or(QueueError::NotFound)?;
+        if queue.version != version {
+            return Err(QueueError::Conflict("version_conflict".into()));
+        }
+        if let Some(name) = name {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err(QueueError::Validation {
+                    field: "name".into(),
+                    message: "name must not be empty".into(),
+                });
+            }
+            queue.name = trimmed.to_string();
+        }
+        if let Some(description) = description {
+            queue.description = description.to_string();
+        }
+        queue.version += 1;
+        Ok(queue.clone())
+    }
+
+    async fn delete(
+        &self,
+        _viewer: Option<&str>,
+        id: &str,
+        version: i64,
+    ) -> Result<(), QueueError> {
+        let mut queues = self.queues.lock().unwrap();
+        let index = queues
+            .iter()
+            .position(|q| q.id == id)
+            .ok_or(QueueError::NotFound)?;
+        if queues[index].version != version {
+            return Err(QueueError::Conflict("version_conflict".into()));
+        }
+        queues.remove(index);
+        self.items.lock().unwrap().retain(|i| i.queue_id != id);
+        Ok(())
+    }
+
+    async fn items(
+        &self,
+        _viewer: Option<&str>,
+        queue_id: &str,
+    ) -> Result<Vec<QueueItem>, QueueError> {
+        self.find_queue(queue_id)?;
+        Ok(self.items_for(queue_id))
+    }
+
+    async fn add_item(
+        &self,
+        _viewer: Option<&str>,
+        queue_id: &str,
+        req: &NewQueueItem,
+    ) -> Result<QueueItem, QueueError> {
+        self.find_queue(queue_id)?;
+        validate_item_content(
+            &req.kind,
+            req.track_id.as_deref(),
+            req.tape_id.as_deref(),
+            req.link_url.as_deref(),
+        )?;
+        if let Some(position) = req.position {
+            if position < 0 {
+                return Err(QueueError::Validation {
+                    field: "position".into(),
+                    message: "position must be >= 0".into(),
+                });
+            }
+        }
+        let id = self.next_id("i");
+        let item = {
+            let mut items = self.items.lock().unwrap();
+            let position = match req.position {
+                Some(position) => position,
+                None => items
+                    .iter()
+                    .filter(|i| i.queue_id == queue_id)
+                    .map(|i| i.position)
+                    .max()
+                    .map_or(0, |m| m + 1),
+            };
+            let item = QueueItem {
+                id,
+                queue_id: queue_id.to_string(),
+                position,
+                kind: req.kind.clone(),
+                track_id: req.track_id.clone(),
+                tape_id: req.tape_id.clone(),
+                link_url: req.link_url.clone(),
+                link_provider: req.link_provider.clone(),
+                link_state: (req.kind == "link").then(|| "pending".to_string()),
+                title_override: req.title_override.clone(),
+                state: "pending".into(),
+                played_at: None,
+                created_at: FAKE_TS.into(),
+            };
+            items.push(item.clone());
+            item
+        };
+        self.bump(queue_id);
+        Ok(item)
+    }
+
+    async fn update_item(
+        &self,
+        _viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+        title_override: Option<&str>,
+        state: Option<&str>,
+        position: Option<i64>,
+    ) -> Result<QueueItem, QueueError> {
+        self.find_queue(queue_id)?;
+        let item = {
+            let mut items = self.items.lock().unwrap();
+            let index = items
+                .iter()
+                .position(|i| i.id == item_id && i.queue_id == queue_id)
+                .ok_or(QueueError::NotFound)?;
+            if let Some(title) = title_override {
+                items[index].title_override = Some(title.to_string());
+            }
+            if let Some(state) = state {
+                items[index].state = state.to_string();
+            }
+            if let Some(position) = position {
+                items[index].position = position;
+            }
+            items[index].clone()
+        };
+        self.bump(queue_id);
+        Ok(item)
+    }
+
+    async fn delete_item(
+        &self,
+        _viewer: Option<&str>,
+        queue_id: &str,
+        item_id: &str,
+    ) -> Result<(), QueueError> {
+        self.find_queue(queue_id)?;
+        {
+            let mut items = self.items.lock().unwrap();
+            let before = items.len();
+            items.retain(|i| !(i.id == item_id && i.queue_id == queue_id));
+            if items.len() == before {
+                return Err(QueueError::NotFound);
+            }
+        }
+        self.bump(queue_id);
+        Ok(())
+    }
+
+    async fn reorder(
+        &self,
+        _viewer: Option<&str>,
+        queue_id: &str,
+        item_ids: &[String],
+        version: i64,
+    ) -> Result<Queue, QueueError> {
+        let queue = self.find_queue(queue_id)?;
+        if queue.version != version {
+            return Err(QueueError::Conflict("version_conflict".into()));
+        }
+        let mut current: Vec<String> = self.items_for(queue_id).into_iter().map(|i| i.id).collect();
+        let mut requested: Vec<String> = item_ids.to_vec();
+        current.sort();
+        requested.sort();
+        let mut deduped = requested.clone();
+        deduped.dedup();
+        if deduped.len() != requested.len() || requested != current {
+            return Err(QueueError::Validation {
+                field: "item_ids".into(),
+                message: "item_ids must contain exactly the current item ids of this queue".into(),
+            });
+        }
+        {
+            let mut items = self.items.lock().unwrap();
+            for (index, item_id) in item_ids.iter().enumerate() {
+                if let Some(item) = items
+                    .iter_mut()
+                    .find(|i| &i.id == item_id && i.queue_id == queue_id)
+                {
+                    item.position = index as i64;
+                }
+            }
+        }
+        self.bump(queue_id);
+        self.find_queue(queue_id)
+    }
+
+    async fn clear(&self, _viewer: Option<&str>, queue_id: &str) -> Result<(), QueueError> {
+        self.find_queue(queue_id)?;
+        self.items
+            .lock()
+            .unwrap()
+            .retain(|i| i.queue_id != queue_id);
+        self.bump(queue_id);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #20: control (skip) — `POST /api/v1/control/skip`, §6
+// ---------------------------------------------------------------------------
+
+/// Control-operation failure (the portal only needs the `409` distinction).
+#[derive(Debug, thiserror::Error)]
+pub enum ControlError {
+    /// The skip was rejected (`409`/`422`), e.g. nothing is playing.
+    #[error("conflict: {0}")]
+    Conflict(String),
+    /// Transport/parse failure or unexpected status.
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+/// Control operations the portal needs. Implemented by [`HttpControlApi`] in
+/// production and by [`FakeControlApi`] in tests.
+#[async_trait]
+pub trait ControlApi: Send + Sync {
+    /// Requests a skip of the currently playing item.
+    async fn skip(&self, reason: &str) -> Result<(), ControlError>;
+}
+
+/// HTTP client for `/api/v1/control/*` (service-token bearer).
+pub struct HttpControlApi {
+    client: reqwest::Client,
+    base_url: String,
+    service_token: String,
+}
+
+impl HttpControlApi {
+    /// Builds a client against `base_url` (e.g. `http://scheduler:8080`).
+    pub fn new(
+        base_url: impl Into<String>,
+        service_token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            service_token: service_token.into(),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/v1{path}", self.base_url)
+    }
+}
+
+#[async_trait]
+impl ControlApi for HttpControlApi {
+    async fn skip(&self, reason: &str) -> Result<(), ControlError> {
+        let response = self
+            .client
+            .post(self.url("/control/skip"))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({ "reason": reason }))
+            .send()
+            .await
+            .map_err(|e| ControlError::Upstream(e.to_string()))?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let message = body["error"]["message"]
+            .as_str()
+            .unwrap_or("upstream error")
+            .to_string();
+        match status.as_u16() {
+            409 | 422 => Err(ControlError::Conflict(message)),
+            other => Err(ControlError::Upstream(format!(
+                "scheduler returned {other}: {message}"
+            ))),
+        }
+    }
+}
+
+/// In-memory [`ControlApi`] for tests: records reasons and can be told to fail.
+#[derive(Default)]
+pub struct FakeControlApi {
+    calls: std::sync::Mutex<Vec<String>>,
+    conflict: std::sync::Mutex<Option<String>>,
+}
+
+impl FakeControlApi {
+    /// A fresh fake.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Makes every subsequent `skip` answer with a `409` conflict.
+    pub fn fail_with(&self, message: &str) {
+        *self.conflict.lock().unwrap() = Some(message.to_string());
+    }
+
+    /// The recorded skip reasons.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ControlApi for FakeControlApi {
+    async fn skip(&self, reason: &str) -> Result<(), ControlError> {
+        self.calls.lock().unwrap().push(reason.to_string());
+        if let Some(message) = self.conflict.lock().unwrap().clone() {
+            return Err(ControlError::Conflict(message));
+        }
+        Ok(())
+    }
+}

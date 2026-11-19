@@ -11,8 +11,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 
 use crate::api_client::{
-    HttpTrackApi, HttpUploadJobApi, HttpWaveformApi, IdentityApi, TrackApi, UploadJobApi,
-    WaveformApi,
+    ControlApi, HttpControlApi, HttpQueueApi, HttpTrackApi, HttpUploadJobApi, HttpWaveformApi,
+    IdentityApi, QueueApi, TrackApi, UploadJobApi, WaveformApi,
 };
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
@@ -27,6 +27,7 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 const HTMX_JS: &str = include_str!("../static/htmx.min.js");
 const APP_CSS: &str = include_str!("../static/app.css");
+const SORTABLE_JS: &str = include_str!("../static/sortable.min.js");
 
 /// Shared application state.
 #[derive(Clone)]
@@ -37,6 +38,8 @@ pub struct AppState {
     pub upload_jobs: Arc<dyn UploadJobApi>,
     pub waveforms: Arc<dyn WaveformApi>,
     pub tracks: Arc<dyn TrackApi>,
+    pub queues: Arc<dyn QueueApi>,
+    pub control: Arc<dyn ControlApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
@@ -49,6 +52,8 @@ impl AppState {
             upload_jobs: default_jobs(&config),
             waveforms: default_waveforms(&config),
             tracks: default_tracks(&config),
+            queues: default_queues(&config),
+            control: default_control(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -66,6 +71,8 @@ impl AppState {
             upload_jobs: default_jobs(&config),
             waveforms: default_waveforms(&config),
             tracks: default_tracks(&config),
+            queues: default_queues(&config),
+            control: default_control(&config),
             config: Arc::new(config),
             identity,
             limiter,
@@ -73,6 +80,7 @@ impl AppState {
     }
 
     /// Builds state with explicit clients (upload + library tests).
+    #[allow(clippy::too_many_arguments)]
     pub fn with_clients(
         config: Config,
         identity: Arc<dyn IdentityApi>,
@@ -81,6 +89,8 @@ impl AppState {
         upload_jobs: Arc<dyn UploadJobApi>,
         waveforms: Arc<dyn WaveformApi>,
         tracks: Arc<dyn TrackApi>,
+        queues: Arc<dyn QueueApi>,
+        control: Arc<dyn ControlApi>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -89,6 +99,8 @@ impl AppState {
             upload_jobs,
             waveforms,
             tracks,
+            queues,
+            control,
             limiter,
         }
     }
@@ -128,6 +140,26 @@ fn default_tracks(config: &Config) -> Arc<dyn TrackApi> {
             config.service_token.clone(),
         )
         .expect("build track client"),
+    )
+}
+
+fn default_queues(config: &Config) -> Arc<dyn QueueApi> {
+    Arc::new(
+        HttpQueueApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build queue client"),
+    )
+}
+
+fn default_control(config: &Config) -> Arc<dyn ControlApi> {
+    Arc::new(
+        HttpControlApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build control client"),
     )
 }
 
@@ -172,6 +204,35 @@ pub fn build_router(state: AppState) -> Router {
             "/library/tracks/{id}/waveform.svg",
             get(upload::waveform_svg),
         )
+        .route(
+            "/queues",
+            get(crate::queues::queues_get).post(crate::queues::queues_post),
+        )
+        .route("/queues/{id}", get(crate::queues::queue_editor))
+        .route(
+            "/queues/{id}/items",
+            axum::routing::post(crate::queues::item_add),
+        )
+        .route(
+            "/queues/{id}/items/{item}/move",
+            axum::routing::post(crate::queues::item_move),
+        )
+        .route(
+            "/queues/{id}/items/{item}/delete",
+            axum::routing::post(crate::queues::item_delete),
+        )
+        .route(
+            "/queues/{id}/rename",
+            axum::routing::post(crate::queues::queue_rename),
+        )
+        .route(
+            "/queues/{id}/skip",
+            axum::routing::post(crate::queues::queue_skip),
+        )
+        .route(
+            "/queues/{id}/delete",
+            axum::routing::post(crate::queues::queue_delete),
+        )
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))
         .route_layer(from_fn_with_state(
@@ -183,6 +244,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/static/htmx.min.js", get(htmx_js))
         .route("/static/app.css", get(app_css))
+        .route("/static/sortable.min.js", get(sortable_js))
         .route(
             "/login",
             get(handlers::login_get).post(handlers::login_post),
@@ -205,6 +267,13 @@ async fn htmx_js() -> impl IntoResponse {
 
 async fn app_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
+}
+
+async fn sortable_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        SORTABLE_JS,
+    )
 }
 
 async fn not_found() -> PortalError {

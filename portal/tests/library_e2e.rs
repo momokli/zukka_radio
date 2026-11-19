@@ -17,9 +17,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use zukka_portal::api_client::{
-    CasterDto, CreatedSessionDto, FakeTrackApi, IdentityApi, IdentityError, JobError, NewUploadJob,
-    NewWaveform, SessionValidationDto, Track, UploadJob, UploadJobApi, UploadJobPatch, Waveform,
-    WaveformApi, WaveformApiError,
+    CasterDto, CreatedSessionDto, FakeControlApi, FakeQueueApi, FakeTrackApi, IdentityApi,
+    IdentityError, JobError, NewUploadJob, NewWaveform, SessionValidationDto, Track, UploadJob,
+    UploadJobApi, UploadJobPatch, Waveform, WaveformApi, WaveformApiError,
 };
 use zukka_portal::app::{AppState, build_router};
 use zukka_portal::config::Config;
@@ -216,6 +216,8 @@ fn router(perms: BTreeMap<String, bool>, tracks: Arc<FakeTrackApi>) -> Router {
         Arc::new(NoJobs),
         Arc::new(NoWaveforms),
         tracks,
+        Arc::new(FakeQueueApi::new()),
+        Arc::new(FakeControlApi::new()),
     );
     build_router(state)
 }
