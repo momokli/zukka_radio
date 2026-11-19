@@ -1,6 +1,15 @@
 <tr id="track-{{ row.track.id }}">
   <td><a href="/library/tracks/{{ row.track.id }}">{{ row.track.title }}</a></td>
   <td>{{ row.track.artist }}</td>
+  <td>
+    <canvas
+      class="waveform-canvas"
+      width="120"
+      height="40"
+      data-waveform-src="/library/tracks/{{ row.track.id }}/waveform.json"
+      aria-label="Waveform von {{ row.track.title }}"
+    ></canvas>
+  </td>
   <td><span class="badge badge-{{ row.track.visibility }}">{{ row.track.visibility }}</span></td>
   <td>
     {% if row.can_toggle %}

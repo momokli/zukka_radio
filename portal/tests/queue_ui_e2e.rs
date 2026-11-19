@@ -584,6 +584,49 @@ async fn add_link_item_renders_provider_and_url() {
     assert_eq!(link.link_provider.as_deref(), Some("spotify"));
 }
 
+// Issue #23: only `kind == track` items carry a waveform canvas; a `link`
+// item must stay canvas-free.
+#[tokio::test]
+async fn queue_waveform_canvas_only_for_track_items() {
+    let (queues, control) = seeded();
+    queues.seed_item(item("a", "q-own", 0)); // kind=track, track_id=t-a
+    queues.seed_item(QueueItem {
+        id: "l-1".into(),
+        queue_id: "q-own".into(),
+        position: 1,
+        kind: "link".into(),
+        track_id: None,
+        tape_id: None,
+        link_url: Some("https://open.spotify.com/track/x".into()),
+        link_provider: Some("spotify".into()),
+        link_state: Some("pending".into()),
+        title_override: None,
+        state: "pending".into(),
+        played_at: None,
+        created_at: "2026-11-19T12:00:00.000Z".into(),
+    });
+    let app = router(caster_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("data-waveform-src=\"/library/tracks/t-a/waveform.json\""),
+        "track item canvas: {body}"
+    );
+    assert_eq!(
+        body.matches("class=\"waveform-canvas\"").count(),
+        1,
+        "only the track item gets a canvas: {body}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // US-5: reorder (proof a + c)
 // ---------------------------------------------------------------------------

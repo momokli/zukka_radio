@@ -2,6 +2,15 @@
   <span class="pos">{{ row.item.position }}</span>
   <span class="kind badge badge-{{ row.item.kind }}">{{ row.item.kind }}</span>
   <span class="title">{{ row.title }}</span>
+  {% if row.item.kind == "track" %}{% if let Some(track_id) = row.item.track_id %}
+  <canvas
+    class="waveform-canvas"
+    width="120"
+    height="40"
+    data-waveform-src="/library/tracks/{{ track_id }}/waveform.json"
+    aria-label="Waveform"
+  ></canvas>
+  {% endif %}{% endif %}
   {% if row.item.kind == "link" %}
   <span class="link-provider badge">{{ row.link_label }}</span>
   {% if row.link_state == "unplayable" %}
