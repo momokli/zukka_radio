@@ -455,6 +455,10 @@ async fn empty_calendar_has_defined_state() {
     let (status, body) = get(&app, &session, "/schedule", false).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("id=\"calendar-grid\""), "{body}");
+    assert!(
+        body.contains("Keine Einträge im sichtbaren Bereich"),
+        "empty state shown inside the grid: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +578,69 @@ async fn hard_self_overlap_is_409_with_toast() {
         backend.all_broadcasts().len(),
         1,
         "hard conflict blocks the insert"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reviewer blocker — date preview on the edit form keeps the edit context
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn edit_date_preview_keeps_edit_context() {
+    // Regression: the date-change preview on the edit form is a GET to
+    // `/schedule/new` with `hx-include="#broadcast-form"`. The form must carry
+    // the broadcast `id` so the preview keeps the edit context
+    // (`action="/schedule/{id}"` + `version`) — otherwise a date change turns
+    // the edit into a create form.
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(broadcast(
+        "seed-1",
+        None,
+        "c-1",
+        "Edit Me",
+        "2026-11-18T20:00:00+01:00",
+        None,
+    ));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+
+    // 1) The edit page exposes the id in the form so htmx includes it.
+    let (status, page) = get(&app, &session, "/schedule/seed-1/edit", false).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(
+        page.contains("action=\"/schedule/seed-1\""),
+        "edit action: {page}"
+    );
+    assert!(
+        page.contains("name=\"id\" value=\"seed-1\""),
+        "id carried in the form for the preview: {page}"
+    );
+    assert!(
+        page.contains("name=\"version\" value=\"1\""),
+        "version carried: {page}"
+    );
+
+    // 2) The preview (as htmx issues it, with the form's id) keeps the edit
+    //    context instead of degrading into a create form.
+    let (status, preview) = get(
+        &app,
+        &session,
+        "/schedule/new?id=seed-1&version=1&title=Edit+Me&kind=live&starts_at=2026-11-18T21:00&ends_at=2026-11-18T23:00",
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "preview never blocks: {preview}");
+    assert!(
+        preview.contains("action=\"/schedule/seed-1\""),
+        "preview keeps the edit action: {preview}"
+    );
+    assert!(
+        !preview.contains("action=\"/schedule\""),
+        "preview must not fall back to the create action: {preview}"
+    );
+    assert!(
+        preview.contains("name=\"version\" value=\"1\""),
+        "preview keeps the version hidden field: {preview}"
     );
 }
 
@@ -824,6 +891,41 @@ async fn show_detail_renders() {
     let (status, body) = get(&app, &session, "/shows/s-1", false).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Morning Show"), "{body}");
+}
+
+#[tokio::test]
+async fn show_create_htmx_error_is_visible() {
+    // Regression (reviewer minor): an htmx `422` on the show form must render
+    // the error into the form's error slot — `hx-swap="none"` used to discard
+    // it, leaving the user without feedback.
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _, body) = post(
+        &app,
+        &session,
+        &csrf,
+        "/shows",
+        true,
+        form(&[
+            ("slug", "broken"),
+            ("name", "Broken"),
+            ("recurrence", "FREQ=WEEKLY"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "htmx re-render, not an error page: {body}"
+    );
+    assert!(body.contains("alert-error"), "visible error block: {body}");
+    assert!(
+        body.contains("invalid recurrence rule"),
+        "error message shown: {body}"
+    );
+    assert!(!body.contains("<html"), "fragment only: {body}");
+    assert!(backend.all_shows().is_empty(), "nothing persisted");
 }
 
 #[tokio::test]

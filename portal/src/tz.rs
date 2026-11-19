@@ -99,17 +99,6 @@ pub fn weekday_code(weekday: Weekday) -> &'static str {
     }
 }
 
-/// `Mo, 18.11.2026` (Berlin date label).
-pub fn fmt_day_label(date: NaiveDate) -> String {
-    format!(
-        "{}, {:02}.{:02}.{}",
-        weekday_code(date.weekday()),
-        date.day(),
-        date.month(),
-        date.year()
-    )
-}
-
 /// The ISO week number of `date`.
 pub fn iso_week(date: NaiveDate) -> u32 {
     date.iso_week().week()
@@ -139,13 +128,6 @@ impl CalendarView {
         match self {
             CalendarView::Week => "week",
             CalendarView::Month => "month",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CalendarView::Week => "Woche",
-            CalendarView::Month => "Monat",
         }
     }
 
@@ -300,7 +282,6 @@ mod tests {
         let (from, to) = CalendarView::Week.range(date(2026, 11, 18));
         assert_eq!(fmt_input(from), "2026-11-16T00:00", "Monday");
         assert_eq!(fmt_input(to), "2026-11-23T00:00", "next Monday");
-        assert_eq!(fmt_day_label(date(2026, 11, 16)), "Mo, 16.11.2026");
     }
 
     #[test]

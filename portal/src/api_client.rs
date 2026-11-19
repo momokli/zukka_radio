@@ -2345,6 +2345,10 @@ pub trait ScheduleApi: Send + Sync {
     ) -> Result<Vec<ScheduleEntry>, ScheduleError>;
 
     /// `POST /schedule/expand?from=&to=` (idempotent materialisation).
+    ///
+    /// Kept as part of the scheduler contract surface; the portal renders the
+    /// expanded window from [`ScheduleApi::window`] and never materialises
+    /// RRULE occurrences itself (D11: expansion lives in the scheduler).
     async fn expand(
         &self,
         viewer: Option<&str>,

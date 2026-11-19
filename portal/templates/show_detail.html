@@ -13,9 +13,6 @@
   {% if has_recurrence %}
   <p class="hint">RRULE: <code>{{ recurrence_text }}</code></p>
   {% endif %}
-  {% if let Some(error) = error %}
-  <p class="alert alert-error">{{ error }}</p>
-  {% endif %}
 </section>
 
 {% if can_write %}
@@ -25,7 +22,8 @@
     method="post"
     action="/shows/{{ show.id }}"
     hx-post="/shows/{{ show.id }}"
-    hx-swap="none"
+    hx-target="#show-edit-error"
+    hx-swap="innerHTML"
     class="stack"
   >
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -47,6 +45,7 @@
     </label>
     <button type="submit">Speichern</button>
   </form>
+  <div id="show-edit-error" role="alert"></div>
 </section>
 {% endif %}
 

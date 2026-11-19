@@ -4,15 +4,19 @@
 <section class="card">
   <h1>Shows</h1>
   <p class="muted">Eigene Shows sind bearbeitbar, fremde Shows lesbar.</p>
-  {% if let Some(error) = error %}
-  <p class="alert alert-error">{{ error }}</p>
-  {% endif %}
 </section>
 
 {% if can_write %}
 <section class="card">
   <h2>Neue Show</h2>
-  <form method="post" action="/shows" hx-post="/shows" hx-swap="none" class="stack">
+  <form
+    method="post"
+    action="/shows"
+    hx-post="/shows"
+    hx-target="#shows-error"
+    hx-swap="innerHTML"
+    class="stack"
+  >
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
     <label>
       Slug
@@ -36,6 +40,7 @@
     </label>
     <button type="submit">Anlegen</button>
   </form>
+  <div id="shows-error" role="alert"></div>
 </section>
 {% endif %}
 

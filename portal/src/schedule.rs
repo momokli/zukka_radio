@@ -150,31 +150,34 @@ pub async fn schedule_get(
         .await
         .map_err(schedule_error)?;
     let weeks = build_grid(view, anchor, entries);
+    let has_entries = weeks
+        .iter()
+        .flat_map(|week| week.cells.iter())
+        .any(|cell| !cell.entries.is_empty());
     let can_write = ctx.has("broadcast.write");
     let fragment =
         crate::queues::is_htmx(&headers) || q.fragment.as_deref() == Some("calendar-grid");
     if fragment {
         render(&CalendarGridFragment {
-            csrf_token: ctx.csrf_token.clone(),
             view: view.as_str().into(),
-            view_label: view.label().into(),
             anchor: anchor.to_string(),
             prev_anchor: view.shift(anchor, -1).to_string(),
             next_anchor: view.shift(anchor, 1).to_string(),
             title: view.title(anchor),
             weeks,
+            has_entries,
             can_write,
         })
     } else {
         render(&SchedulePage {
             csrf_token: ctx.csrf_token.clone(),
             view: view.as_str().into(),
-            view_label: view.label().into(),
             anchor: anchor.to_string(),
             prev_anchor: view.shift(anchor, -1).to_string(),
             next_anchor: view.shift(anchor, 1).to_string(),
             title: view.title(anchor),
             weeks,
+            has_entries,
             can_write,
             error: None,
         })

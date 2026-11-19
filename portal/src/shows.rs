@@ -17,7 +17,7 @@ use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::{PortalError, redirect};
 use crate::rbac;
-use crate::templates::{ShowDetailPage, ShowRow, ShowsPage};
+use crate::templates::{ShowDetailPage, ShowFormErrorFragment, ShowRow, ShowsPage};
 
 fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
     Ok(Html(page.render()?).into_response())
@@ -78,7 +78,6 @@ pub async fn shows_get(
         csrf_token: ctx.csrf_token.clone(),
         can_write,
         shows,
-        error: None,
     })
 }
 
@@ -101,7 +100,6 @@ pub async fn show_detail(
         can_write: ctx.has("show.write"),
         has_recurrence,
         recurrence_text,
-        error: None,
     })
 }
 
@@ -144,7 +142,9 @@ pub async fn show_create(
         }
         Err(ScheduleError::Validation { message, .. }) => {
             if crate::queues::is_htmx(&headers) {
-                shows_error_page(&state, &ctx, message).await
+                render(&ShowFormErrorFragment {
+                    error: Some(message),
+                })
             } else {
                 Err(PortalError::Validation {
                     field: "recurrence".into(),
@@ -185,7 +185,9 @@ pub async fn show_update(
         }
         Err(ScheduleError::Validation { message, .. }) => {
             if crate::queues::is_htmx(&headers) {
-                shows_error_page(&state, &ctx, message).await
+                render(&ShowFormErrorFragment {
+                    error: Some(message),
+                })
             } else {
                 Err(PortalError::Validation {
                     field: "recurrence".into(),
@@ -195,19 +197,4 @@ pub async fn show_update(
         }
         Err(err) => Err(schedule_error(err)),
     }
-}
-
-/// Re-renders the show list with an inline error (htmx validation feedback).
-async fn shows_error_page(
-    state: &AppState,
-    ctx: &AuthContext,
-    message: String,
-) -> Result<Response, PortalError> {
-    let (shows, can_write) = load_rows(state, ctx).await?;
-    render(&ShowsPage {
-        csrf_token: ctx.csrf_token.clone(),
-        can_write,
-        shows,
-        error: Some(message),
-    })
 }
