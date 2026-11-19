@@ -155,7 +155,7 @@ fn refresh_with_toast(level: &str, message: &str) -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::HeaderName::from_static("hx-refresh"),
-        "true".parse().unwrap(),
+        header::HeaderValue::from_static("true"),
     );
     set_toast(&mut response, level, message);
     response

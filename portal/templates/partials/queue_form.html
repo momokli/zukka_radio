@@ -2,8 +2,8 @@
   method="post"
   action="/queues"
   hx-post="/queues"
-  hx-target="#queue-overview"
-  hx-swap="outerHTML"
+  hx-target="#queue-form"
+  hx-swap="innerHTML"
   class="stack"
 >
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
