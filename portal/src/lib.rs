@@ -10,6 +10,7 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod music_api;
 pub mod rate_limit;
 pub mod rbac;
 pub mod templates;

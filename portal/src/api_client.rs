@@ -316,3 +316,227 @@ struct StreamPasswordResponse {
     #[serde(default)]
     password: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Issue #18: upload jobs (write-through to `/internal/upload-jobs`, §4.2)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /internal/upload-jobs`.
+#[derive(Debug, Clone)]
+pub struct NewUploadJob {
+    pub caster_id: String,
+    pub filename: String,
+    pub size_bytes: Option<i64>,
+    pub sha256: Option<String>,
+}
+
+/// Body of `PATCH /internal/upload-jobs/{id}`.
+#[derive(Debug, Clone)]
+pub struct UploadJobPatch {
+    pub state: String,
+    pub sha256: Option<String>,
+    pub track_id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// An upload job as returned by the scheduler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadJob {
+    pub id: String,
+    #[serde(default)]
+    pub caster_id: Option<String>,
+    pub filename: String,
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub track_id: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub attempts: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Upload-job operation failure.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct JobError(#[from] JobErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+enum JobErrorKind {
+    #[error("job not found")]
+    NotFound,
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("{message}")]
+    Validation { field: String, message: String },
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+impl JobError {
+    /// `true` when the job does not exist (`404`).
+    pub fn is_not_found(&self) -> bool {
+        matches!(self.0, JobErrorKind::NotFound)
+    }
+}
+
+/// Upload-job write-through operations. Implemented by [`HttpUploadJobApi`] in
+/// production and by a fake in tests.
+#[async_trait]
+pub trait UploadJobApi: Send + Sync {
+    /// Creates a `pending` job; returns its id.
+    async fn create_job(&self, job: &NewUploadJob) -> Result<String, JobError>;
+
+    /// Applies a state patch and returns the updated job.
+    async fn patch_job(&self, id: &str, patch: &UploadJobPatch) -> Result<UploadJob, JobError>;
+
+    /// Fetches one job (for polling fragments).
+    async fn get_job(&self, id: &str) -> Result<UploadJob, JobError>;
+
+    /// Lists recent jobs, newest first.
+    async fn list_jobs(&self, limit: i64) -> Result<Vec<UploadJob>, JobError>;
+}
+
+/// HTTP client for `/internal/upload-jobs` (service-token bearer).
+pub struct HttpUploadJobApi {
+    client: reqwest::Client,
+    base_url: String,
+    service_token: String,
+}
+
+impl HttpUploadJobApi {
+    /// Builds a client against `base_url` (e.g. `http://scheduler:8080`).
+    pub fn new(
+        base_url: impl Into<String>,
+        service_token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            service_token: service_token.into(),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/v1/internal{path}", self.base_url)
+    }
+
+    async fn error_from(response: reqwest::Response) -> JobError {
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let field = body["error"]["details"]["field"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let message = body["error"]["message"]
+            .as_str()
+            .unwrap_or("upstream error")
+            .to_string();
+        match status.as_u16() {
+            404 => JobErrorKind::NotFound.into(),
+            409 => JobErrorKind::Conflict(message).into(),
+            422 => JobErrorKind::Validation { field, message }.into(),
+            other => {
+                JobErrorKind::Upstream(format!("scheduler returned {other}: {message}")).into()
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl UploadJobApi for HttpUploadJobApi {
+    async fn create_job(&self, job: &NewUploadJob) -> Result<String, JobError> {
+        let response = self
+            .client
+            .post(self.url("/upload-jobs"))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({
+                "caster_id": job.caster_id,
+                "filename": job.filename,
+                "size_bytes": job.size_bytes,
+                "sha256": job.sha256,
+            }))
+            .send()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        let body: CreateJobResponse = response
+            .json()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()))?;
+        Ok(body.id)
+    }
+
+    async fn patch_job(&self, id: &str, patch: &UploadJobPatch) -> Result<UploadJob, JobError> {
+        let response = self
+            .client
+            .patch(self.url(&format!("/upload-jobs/{id}")))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({
+                "state": patch.state,
+                "sha256": patch.sha256,
+                "track_id": patch.track_id,
+                "error": patch.error,
+            }))
+            .send()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()).into())
+    }
+
+    async fn get_job(&self, id: &str) -> Result<UploadJob, JobError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/upload-jobs/{id}")))
+            .bearer_auth(&self.service_token)
+            .send()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()).into())
+    }
+
+    async fn list_jobs(&self, limit: i64) -> Result<Vec<UploadJob>, JobError> {
+        let response = self
+            .client
+            .get(self.url("/upload-jobs"))
+            .bearer_auth(&self.service_token)
+            .query(&[("limit", limit.to_string())])
+            .send()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| JobErrorKind::Upstream(e.to_string()).into())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateJobResponse {
+    id: String,
+}
