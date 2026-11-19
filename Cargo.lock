@@ -2789,6 +2789,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "subtle",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",
@@ -2796,6 +2797,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zukka-scheduler",
 ]
 
 [[package]]

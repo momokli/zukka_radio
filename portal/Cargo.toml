@@ -40,4 +40,6 @@ uuid.workspace = true
 [dev-dependencies]
 http-body-util = "0.1"
 mime = "0.3"
+tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }
+zukka-scheduler = { path = "../scheduler" }
