@@ -825,6 +825,50 @@ pub struct StreamPasswordResponse {
     pub password: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #18: upload jobs (write-through, §4.2)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /internal/upload-jobs` (§4.2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateUploadJobRequest {
+    pub caster_id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+/// Body of `PATCH /internal/upload-jobs/{id}`. `state` is mandatory; the
+/// optional fields overwrite only when present (`error` is always replaced).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PatchUploadJobRequest {
+    pub state: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub track_id: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Full upload-job representation (`upload_jobs` row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadJobDto {
+    pub id: String,
+    pub caster_id: Option<String>,
+    pub filename: String,
+    pub size_bytes: Option<i64>,
+    pub sha256: Option<String>,
+    pub state: String,
+    pub track_id: Option<String>,
+    pub error: Option<String>,
+    pub attempts: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
