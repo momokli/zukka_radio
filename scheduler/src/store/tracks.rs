@@ -235,7 +235,10 @@ pub async fn import(
 
 /// Updates a track (COALESCE patch, no optimistic lock; pattern `store/shows.rs`).
 ///
-/// The update is visibility-scoped: a foreign private track is a `404`.
+/// Updates are **owner-only**: the scope is `id = ? AND caster_id = ?`. A
+/// non-owner — including one who can see the track because it is `shared` —
+/// gets `0` affected rows and therefore a `404` (never `403`: no existence
+/// leak). Search/get keep the broader visibility scope.
 pub async fn update(
     pool: &SqlitePool,
     id: &str,
@@ -268,7 +271,7 @@ pub async fn update(
          visibility = COALESCE(?, visibility), \
          caster_id = CASE WHEN ? THEN ? ELSE caster_id END, \
          updated_at = ? \
-         WHERE id = ? AND (visibility = 'shared' OR caster_id = ?)",
+         WHERE id = ? AND caster_id = ?",
     )
     .bind(title)
     .bind(req.artist.clone())
@@ -296,6 +299,12 @@ pub async fn update(
 }
 
 /// Deletes a track within the viewer's visibility scope, else `404`.
+///
+/// "Who may delete" is authorized by the portal via the `library.delete`
+/// permission (US-7: operator/admin); the scheduler has no roles. This scope
+/// only ensures a viewer cannot act on a track invisible to them — a foreign
+/// private track is a `404`. Deliberately **not** owner-only: operators must be
+/// able to delete foreign shared tracks.
 pub async fn delete(pool: &SqlitePool, id: &str, viewer: Option<&str>) -> ApiResult<()> {
     let res =
         sqlx::query("DELETE FROM tracks WHERE id = ? AND (visibility = 'shared' OR caster_id = ?)")

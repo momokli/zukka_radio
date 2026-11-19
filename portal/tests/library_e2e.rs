@@ -581,6 +581,40 @@ async fn visibility_toggle_requires_permission_and_csrf() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn visibility_toggle_foreign_shared_is_404() {
+    // The logged-in caster (c-1) can see `t-shared` (owned by c-2) but must not
+    // toggle it: the scheduler PATCH is owner-only and answers 404.
+    let tracks = seeded();
+    let app = router(caster_perms(), tracks.clone());
+    let (session, csrf) = login(&app).await;
+
+    let (status, _, _) = send(
+        &app,
+        Method::POST,
+        "/library/tracks/t-shared/visibility",
+        &[
+            ("cookie", &cookie(&session)),
+            ("x-csrf-token", &csrf),
+            ("sec-fetch-site", "same-origin"),
+            ("content-type", "application/x-www-form-urlencoded"),
+        ],
+        Some(form(&[("visibility", "private")])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        tracks
+            .all()
+            .iter()
+            .find(|t| t.id == "t-shared")
+            .unwrap()
+            .visibility,
+        "shared",
+        "foreign shared track unchanged"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // US-7: delete
 // ---------------------------------------------------------------------------

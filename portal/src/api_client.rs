@@ -995,8 +995,6 @@ impl TrackApi for HttpTrackApi {
 pub struct FakeTrackApi {
     inner: std::sync::Mutex<Vec<Track>>,
     counter: std::sync::Mutex<u64>,
-    /// When `true`, `set_visibility` refuses non-owner calls with `NotFound`.
-    owner_only: bool,
 }
 
 impl FakeTrackApi {
@@ -1111,7 +1109,8 @@ impl TrackApi for FakeTrackApi {
             .iter_mut()
             .find(|t| t.id == id && Self::visible(t, viewer))
             .ok_or(TrackError::NotFound)?;
-        if self.owner_only && Some(track.caster_id.as_deref()) != Some(viewer) {
+        // Mirror the scheduler: PATCH is owner-only, even for shared tracks.
+        if Some(track.caster_id.as_deref()) != Some(viewer) {
             return Err(TrackError::NotFound);
         }
         track.visibility = visibility.to_string();

@@ -260,7 +260,7 @@ async fn api_create_list_patch_delete_roundtrip() {
         &app,
         Method::PATCH,
         &format!("/api/v1/tracks/{id}"),
-        None,
+        Some(CASTER_A),
         Some(json!({ "title": "Renamed" })),
     )
     .await;
@@ -530,6 +530,57 @@ async fn mutation_of_foreign_private_is_404() {
         &format!("/api/v1/tracks/{b_priv}"),
         Some(CASTER_A),
         None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn shared_track_update_is_owner_only() {
+    let (_dir, pool) = setup().await;
+    let (shared, _a_priv, _b_priv) = seed_visibility(&pool).await;
+    let app = app(pool.clone());
+
+    // B sees the shared track but must not PATCH it: 404, no change.
+    let (status, body) = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/tracks/{shared}"),
+        Some(CASTER_B),
+        Some(json!({ "title": "hijacked", "visibility": "private" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let unchanged = tracks::get(&pool, &shared, Some(CASTER_A))
+        .await
+        .expect("track still exists");
+    assert_eq!(unchanged.title, "Shared", "title untouched");
+    assert_eq!(
+        unchanged.visibility,
+        Visibility::Shared,
+        "visibility untouched"
+    );
+
+    // The owner may still PATCH its own shared track.
+    let (status, body) = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/tracks/{shared}"),
+        Some(CASTER_A),
+        Some(json!({ "title": "Owner Renamed" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["title"], "Owner Renamed");
+
+    // Request without a viewer cannot match the owner scope → 404.
+    let (status, _) = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/tracks/{shared}"),
+        None,
+        Some(json!({ "title": "anon" })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
