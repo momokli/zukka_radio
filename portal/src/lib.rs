@@ -16,3 +16,5 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod templates;
 pub mod transcode;
+pub mod upload;
+pub mod upload_pipeline;

@@ -4,6 +4,8 @@
 //! over HTTPS, so a misconfiguration fails loudly at startup instead of
 //! silently issuing an insecure session.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, bail};
 
 /// Runtime configuration.
@@ -21,6 +23,18 @@ pub struct Config {
     pub session_idle_days: i64,
     /// Session absolute limit in days (default 30).
     pub session_absolute_days: i64,
+    /// Music API base URL (§3.5, `MUSIC_API_URL`).
+    pub music_api_url: String,
+    /// Music API bearer token (`MUSIC_API_TOKEN`).
+    pub music_api_token: String,
+    /// Hard cap on the summed upload size in bytes (`UPLOAD_MAX_BYTES`, D6).
+    pub upload_max_bytes: i64,
+    /// `ffprobe` binary (`FFPROBE_BIN`, default `ffprobe`).
+    pub ffprobe_bin: String,
+    /// `ffmpeg` binary (`FFMPEG_BIN`, default `ffmpeg`).
+    pub ffmpeg_bin: String,
+    /// Directory for streaming temp files (`UPLOAD_TMP_DIR`).
+    pub upload_tmp_dir: PathBuf,
 }
 
 impl Config {
@@ -34,15 +48,28 @@ impl Config {
             .context("SCHEDULER_SERVICE_TOKEN is required")?;
         let session_idle_days = env_days("SESSION_IDLE_DAYS", 7)?;
         let session_absolute_days = env_days("SESSION_ABSOLUTE_DAYS", 30)?;
+        let music_api_url = env_or("MUSIC_API_URL", "http://music-api:8082");
+        let music_api_token = env_or("MUSIC_API_TOKEN", "");
+        let upload_max_bytes = env_i64("UPLOAD_MAX_BYTES", 1_073_741_824)?;
+        let ffprobe_bin = env_or("FFPROBE_BIN", "ffprobe");
+        let ffmpeg_bin = env_or("FFMPEG_BIN", "ffmpeg");
+        let upload_tmp_dir = PathBuf::from(env_or("UPLOAD_TMP_DIR", "/tmp/zukka-uploads"));
 
-        Self::new(
+        let mut config = Self::new(
             bind,
             base_url,
             scheduler_base_url,
             service_token,
             session_idle_days,
             session_absolute_days,
-        )
+        )?;
+        config.music_api_url = music_api_url;
+        config.music_api_token = music_api_token;
+        config.upload_max_bytes = upload_max_bytes;
+        config.ffprobe_bin = ffprobe_bin;
+        config.ffmpeg_bin = ffmpeg_bin;
+        config.upload_tmp_dir = upload_tmp_dir;
+        Ok(config)
     }
 
     /// Validates and constructs a config (used by `from_env` and tests).
@@ -71,6 +98,12 @@ impl Config {
             service_token,
             session_idle_days,
             session_absolute_days,
+            music_api_url: "http://music-api:8082".to_string(),
+            music_api_token: String::new(),
+            upload_max_bytes: 1_073_741_824,
+            ffprobe_bin: "ffprobe".to_string(),
+            ffmpeg_bin: "ffmpeg".to_string(),
+            upload_tmp_dir: std::env::temp_dir().join("zukka-uploads"),
         })
     }
 
@@ -81,6 +114,19 @@ impl Config {
 }
 
 fn env_days(name: &str, default: i64) -> anyhow::Result<i64> {
+    match std::env::var(name) {
+        Ok(raw) => raw
+            .parse()
+            .with_context(|| format!("{name} must be an integer")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_i64(name: &str, default: i64) -> anyhow::Result<i64> {
     match std::env::var(name) {
         Ok(raw) => raw
             .parse()

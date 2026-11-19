@@ -25,6 +25,9 @@ pub enum PortalError {
     /// Not found → `404`.
     #[error("not found")]
     NotFound,
+    /// Upload exceeds `UPLOAD_MAX_BYTES` → `413` (portal.md D6).
+    #[error("payload too large")]
+    PayloadTooLarge,
     /// Validation failed → `422` (field-level).
     #[error("validation failed for {field}: {message}")]
     Validation { field: String, message: String },
@@ -47,6 +50,7 @@ impl PortalError {
             PortalError::Forbidden(_) => StatusCode::FORBIDDEN,
             PortalError::BadRequest(_) => StatusCode::BAD_REQUEST,
             PortalError::NotFound => StatusCode::NOT_FOUND,
+            PortalError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             PortalError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             PortalError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             PortalError::Upstream(_) => StatusCode::BAD_GATEWAY,
@@ -61,6 +65,7 @@ impl PortalError {
             PortalError::Forbidden(_) => "Zugriff verweigert.".to_string(),
             PortalError::BadRequest(_) => "Ungültige Anfrage.".to_string(),
             PortalError::NotFound => "Nicht gefunden.".to_string(),
+            PortalError::PayloadTooLarge => "Datei zu groß.".to_string(),
             PortalError::Validation { message, .. } => message.clone(),
             PortalError::TooManyRequests => {
                 "Zu viele Fehlversuche. Bitte später erneut versuchen.".to_string()

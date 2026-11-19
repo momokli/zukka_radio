@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+{% block title %}Library{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Library</h1>
+  <p class="muted">Uploads laufen streaming auf die Platte, werden geprüft und an die Music API übergeben.</p>
+  <form
+    method="post"
+    action="/library/upload"
+    enctype="multipart/form-data"
+    hx-post="/library/upload"
+    hx-encoding="multipart/form-data"
+    hx-target="#upload-jobs"
+    hx-swap="innerHTML"
+    class="stack"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Dateien
+      <input type="file" name="file" multiple required />
+    </label>
+    <p class="hint">Mehrere Dateien erlaubt. Große Dateien werden nie vollständig im RAM gepuffert.</p>
+    <button type="submit">Hochladen</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Uploads</h2>
+  <div id="upload-jobs">
+    {% if jobs.is_empty() %}
+    <p class="muted">Noch keine Uploads.</p>
+    {% endif %}
+    {% for job in jobs %}
+    {% include "partials/upload_job.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

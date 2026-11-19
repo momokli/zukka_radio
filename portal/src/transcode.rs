@@ -70,6 +70,9 @@ pub async fn transcode_to_mp3(
             "44100",
             "-ac",
             "2",
+            // Temp files have no extension: pin the muxer explicitly.
+            "-f",
+            "mp3",
         ])
         .arg(output)
         .stdin(Stdio::null())

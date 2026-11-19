@@ -383,6 +383,11 @@ impl JobError {
     pub fn is_not_found(&self) -> bool {
         matches!(self.0, JobErrorKind::NotFound)
     }
+
+    /// A `404 not found` job error.
+    pub fn not_found() -> Self {
+        JobErrorKind::NotFound.into()
+    }
 }
 
 /// Upload-job write-through operations. Implemented by [`HttpUploadJobApi`] in

@@ -9,11 +9,13 @@ use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::get;
 
-use crate::api_client::IdentityApi;
+use crate::api_client::{HttpUploadJobApi, IdentityApi, UploadJobApi};
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
 use crate::error::PortalError;
+use crate::music_api::{HttpMusicApi, MusicApi};
 use crate::rate_limit::WindowLimiter;
+use crate::upload;
 
 /// Login rate limit: 5 failures / 15 min (portal.md D3).
 pub const LOGIN_MAX_ATTEMPTS: usize = 5;
@@ -27,13 +29,18 @@ const APP_CSS: &str = include_str!("../static/app.css");
 pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityApi>,
+    pub music: Arc<dyn MusicApi>,
+    pub upload_jobs: Arc<dyn UploadJobApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
 impl AppState {
-    /// Builds state with the production login limiter.
+    /// Builds state with the production login limiter and HTTP service clients
+    /// derived from `config`.
     pub fn new(config: Config, identity: Arc<dyn IdentityApi>) -> Self {
         Self {
+            music: default_music(&config),
+            upload_jobs: default_jobs(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -47,11 +54,47 @@ impl AppState {
         limiter: Arc<WindowLimiter>,
     ) -> Self {
         Self {
+            music: default_music(&config),
+            upload_jobs: default_jobs(&config),
             config: Arc::new(config),
             identity,
             limiter,
         }
     }
+
+    /// Builds state with explicit music/job clients (upload tests).
+    pub fn with_services(
+        config: Config,
+        identity: Arc<dyn IdentityApi>,
+        limiter: Arc<WindowLimiter>,
+        music: Arc<dyn MusicApi>,
+        upload_jobs: Arc<dyn UploadJobApi>,
+    ) -> Self {
+        Self {
+            config: Arc::new(config),
+            identity,
+            music,
+            upload_jobs,
+            limiter,
+        }
+    }
+}
+
+fn default_music(config: &Config) -> Arc<dyn MusicApi> {
+    Arc::new(
+        HttpMusicApi::new(config.music_api_url.clone(), config.music_api_token.clone())
+            .expect("build music api client"),
+    )
+}
+
+fn default_jobs(config: &Config) -> Arc<dyn UploadJobApi> {
+    Arc::new(
+        HttpUploadJobApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build upload-job client"),
+    )
 }
 
 /// Builds the full portal router.
@@ -68,6 +111,9 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(handlers::account_stream_password),
         )
         .route("/logout", axum::routing::post(handlers::logout))
+        .route("/library", get(upload::library_get))
+        .route("/library/upload", axum::routing::post(upload::upload_post))
+        .route("/library/upload/{id}", get(upload::upload_fragment))
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))
         .route_layer(from_fn_with_state(
