@@ -542,6 +542,48 @@ async fn add_link_item_sets_pending_link_state() {
     assert_eq!(link.position, 0);
 }
 
+/// Proof (d), second half: the created `kind=link` item (provider + URL) is
+/// **rendered** in the authoritative htmx fragment — provider badge, the URL as
+/// the title, and the pending-state badge.
+#[tokio::test]
+async fn add_link_item_renders_provider_and_url() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues.clone(), control);
+    let (session, csrf) = login(&app).await;
+    let url = "https://open.spotify.com/track/xyz";
+    let (status, _, body) = post(
+        &app,
+        &session,
+        &csrf,
+        "/queues/q-own/items",
+        true,
+        form(&[
+            ("kind", "link"),
+            ("link_provider", "spotify"),
+            ("link_url", url),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("<html"), "fragment only");
+    assert!(
+        body.contains(r#"class="link-provider badge">spotify"#),
+        "provider badge rendered: {body}"
+    );
+    assert!(body.contains(url), "url rendered as title: {body}");
+    assert!(
+        body.contains("wird aufgelöst"),
+        "pending link-state badge rendered: {body}"
+    );
+    let link = queues
+        .all_items()
+        .into_iter()
+        .find(|i| i.kind == "link")
+        .expect("link item persisted");
+    assert_eq!(link.link_url.as_deref(), Some(url));
+    assert_eq!(link.link_provider.as_deref(), Some("spotify"));
+}
+
 // ---------------------------------------------------------------------------
 // US-5: reorder (proof a + c)
 // ---------------------------------------------------------------------------
