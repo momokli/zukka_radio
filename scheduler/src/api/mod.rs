@@ -5,6 +5,7 @@ pub mod queues;
 pub mod broadcasts;
 pub mod schedule;
 pub mod shows;
+pub mod sources;
 
 use axum::extract::{FromRequest, Request};
 use axum::routing::{get, post};
@@ -85,6 +86,12 @@ pub fn router(pool: SqlitePool) -> Router {
         .route("/broadcasts/{id}/end", post(broadcasts::end))
         .route("/schedule", get(schedule::window))
         .route("/schedule/expand", post(schedule::expand));
+
+    // C77: the six layers are fixed — read + PATCH only, no POST/DELETE/PUT.
+    let api = api.route("/sources", get(sources::list)).route(
+        "/sources/{id}",
+        get(sources::get_one).patch(sources::update),
+    );
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))

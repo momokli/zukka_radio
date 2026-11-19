@@ -6,6 +6,7 @@ pub mod queue_items;
 pub mod queues;
 pub mod schedule;
 pub mod shows;
+pub mod sources;
 
 use chrono::{SecondsFormat, Utc};
 
