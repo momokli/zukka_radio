@@ -615,3 +615,137 @@ async fn badge_hidden_when_not_live() {
     assert!(body.contains("nicht live"), "{body}");
     assert!(!body.contains("du bist live"), "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// Structural proofs: SSE route, polling fallback, live-guarded pause, undo
+// ---------------------------------------------------------------------------
+
+/// Like [`send`], but never collects the body — required for the SSE endpoint,
+/// whose stream does not end. Only status + headers are inspected.
+async fn send_headers(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, HeaderMap) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder.body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(request).await.expect("response");
+    (response.status(), response.headers().clone())
+}
+
+/// `GET /control/events` is auth-gated (unauthenticated GET redirects to
+/// `/login`) and, when authenticated, answers `text/event-stream` (D15).
+#[tokio::test]
+async fn sse_route_is_event_stream_and_auth_gated() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(caster_perms(), control);
+
+    let (status, headers) = send_headers(&app, Method::GET, "/control/events", &[]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "auth-gated: unauthenticated");
+    assert_eq!(
+        headers.get(header::LOCATION).unwrap().to_str().unwrap(),
+        "/login"
+    );
+
+    let (session, _) = login(&app).await;
+    let cookie_header = cookie(&session);
+    let (status, headers) = send_headers(
+        &app,
+        Method::GET,
+        "/control/events",
+        &[("cookie", &cookie_header)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "authenticated SSE");
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .expect("content-type")
+        .to_str()
+        .unwrap();
+    assert!(ct.starts_with("text/event-stream"), "content-type {ct}");
+}
+
+/// The panel container wires the SSE extension **and** the `every 3s` polling
+/// fallback (D15); the undo-toast window is 10 s (D16/K5).
+#[tokio::test]
+async fn panel_wires_sse_and_polling_fallback() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("sse-connect=\"/control/events\""), "{body}");
+    assert!(body.contains("every 3s"), "polling fallback: {body}");
+    assert!(body.contains("hx-get=\"/control/state\""), "{body}");
+    // undo toast window (10 s) rather than the 4 s info toast
+    assert!(body.contains("10000"), "undo 10 s window: {body}");
+}
+
+/// When live is active the pause control is `disabled` **and** explained
+/// (acceptance §7: "Pause ist für Live-Quellen deaktiviert und erklärt das im UI").
+#[tokio::test]
+async fn pause_is_disabled_and_explained_when_live() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(Some("c-1")));
+    let app = router(operator_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("disabled>Pause"), "pause disabled: {body}");
+    assert!(
+        body.contains("Live aktiv \u{2014} Pause nicht m\u{f6}glich."),
+        "live explanation: {body}"
+    );
+}
+
+/// The undo payload is a real, round-trippable request: reposting the previous
+/// layer restores it (D16/K5) — no server-side undo store needed.
+#[tokio::test]
+async fn undo_repost_restores_previous_layer() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut prev = sample_state(None);
+    prev.active_layer = Some("rotation".into());
+    control.set_state(prev);
+    let app = router(operator_perms(), control.clone());
+    let (session, csrf) = login(&app).await;
+
+    // switch away from `rotation` to `queue`
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/source",
+        true,
+        form(&[("target_kind", "layer"), ("target", "queue")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let trigger = headers.get("hx-trigger").unwrap().to_str().unwrap();
+    assert!(trigger.contains("rotation"), "undo carries previous");
+
+    // repost the undo payload: back to `rotation`
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/source",
+        true,
+        form(&[
+            ("target_kind", "layer"),
+            ("target", "rotation"),
+            ("reason", "R\u{fc}ckg\u{e4}ngig"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let calls = control.switches();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, "queue");
+    assert_eq!(calls[1].0, "rotation", "previous source restored");
+}
