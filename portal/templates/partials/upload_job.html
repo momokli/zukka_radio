@@ -1,0 +1,20 @@
+<div
+  class="card job job-{{ job.state }}"
+  id="job-{{ job.id }}"
+  {% if job.state == "pending" || job.state == "running" %}hx-get="/library/upload/{{ job.id }}" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}
+>
+  <h3 class="job-filename">{{ job.filename }}</h3>
+  <dl class="facts">
+    <dt>Status</dt>
+    <dd><span class="state state-{{ job.state }}">{{ job.state }}</span></dd>
+    <dt>Größe</dt>
+    <dd>{% if let Some(size) = job.size_bytes %}{{ size }} B{% else %}—{% endif %}</dd>
+    <dt>Track</dt>
+    <dd>{% if let Some(track) = job.track_id %}<code>{{ track }}</code>{% else %}—{% endif %}</dd>
+    <dt>Versuche</dt>
+    <dd>{{ job.attempts }}</dd>
+  </dl>
+  {% if let Some(error) = job.error %}
+  <p class="alert alert-error" role="alert">{{ error }}</p>
+  {% endif %}
+</div>

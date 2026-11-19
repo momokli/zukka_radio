@@ -19,6 +19,26 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("failed to sync rotation.m3u at boot: {err}");
     }
 
+    // US-10: no `running` upload job may survive a restart without a timeout.
+    let timeout = zukka_scheduler::recovery::timeout_secs_from_env();
+    match zukka_scheduler::recovery::recover_stale_uploads(
+        &pool,
+        timeout,
+        zukka_scheduler::recovery::DEFAULT_MAX_ATTEMPTS,
+    )
+    .await
+    {
+        Ok(report) if report.requeued + report.failed > 0 => {
+            tracing::warn!(
+                "recovered stale upload jobs: {} requeued, {} failed (timeout {timeout}s)",
+                report.requeued,
+                report.failed
+            );
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("upload recovery failed: {err}"),
+    }
+
     let app = zukka_scheduler::api::router(pool);
 
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());

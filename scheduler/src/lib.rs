@@ -9,6 +9,7 @@ pub mod dto;
 pub mod error;
 pub mod priority;
 pub mod rate_limit;
+pub mod recovery;
 pub mod rrule;
 pub mod store;
 pub mod time;

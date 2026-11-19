@@ -1,0 +1,15 @@
+{
+  "streams": [
+    {
+      "codec_name": "mp3",
+      "codec_type": "audio",
+      "duration": "180.000000",
+      "bit_rate": "320000"
+    }
+  ],
+  "format": {
+    "format_name": "mp3",
+    "duration": "180.000000",
+    "bit_rate": "320000"
+  }
+}

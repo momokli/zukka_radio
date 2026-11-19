@@ -2,6 +2,8 @@
 
 use askama::Template;
 
+use crate::api_client::UploadJob;
+
 /// Login page (`GET /login`).
 #[derive(Template)]
 #[template(path = "login.html")]
@@ -43,4 +45,37 @@ pub struct AccountPage {
 pub struct ErrorPage {
     pub status: u16,
     pub message: String,
+}
+
+/// Library page (`GET /library`): recent jobs + upload form.
+#[derive(Template)]
+#[template(path = "library.html")]
+pub struct LibraryPage {
+    pub csrf_token: String,
+    pub jobs: Vec<UploadJob>,
+}
+
+/// Fragment returned by `POST /library/upload`: the freshly created jobs.
+#[derive(Template)]
+#[template(path = "library_upload.html")]
+pub struct LibraryUploadPage {
+    pub csrf_token: String,
+    pub jobs: Vec<UploadJob>,
+}
+
+/// Single job fragment (`GET /library/upload/{id}`), the polling target.
+#[derive(Template)]
+#[template(path = "partials/upload_job.html")]
+pub struct UploadJobFragment {
+    pub csrf_token: String,
+    pub job: UploadJob,
+}
+
+/// Inline SVG rendering of a track waveform (D8, `partials/waveform.html`).
+/// `peaks` is the interleaved 8-bit `(min, max)` pair sequence (`2 * bars`).
+#[derive(Template)]
+#[template(path = "partials/waveform.html")]
+pub struct WaveformSvg {
+    pub bars: i64,
+    pub peaks: Vec<u8>,
 }

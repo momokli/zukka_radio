@@ -93,8 +93,16 @@ pub async fn require_csrf(
         return Err(PortalError::Forbidden("cross-origin request".into()));
     }
 
-    // Buffer the body so the token can be read from the form and the handler
-    // can still consume it afterwards.
+    // Fast path: htmx sends the token in a header for every request, so large
+    // bodies (e.g. multipart uploads) never need to be buffered here.
+    if let Some(presented) = csrf::header_token(req.headers()) {
+        if csrf::tokens_match(&ctx.csrf_token, &presented) {
+            return Ok(next.run(req).await);
+        }
+        return Err(PortalError::Forbidden("invalid CSRF token".into()));
+    }
+
+    // Fallback: classic forms carry the token in a urlencoded body.
     let (parts, body) = req.into_parts();
     let bytes = to_bytes(body, CSRF_BODY_LIMIT)
         .await

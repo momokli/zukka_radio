@@ -1,0 +1,19 @@
+{
+  "streams": [
+    {
+      "codec_name": "vp9",
+      "codec_type": "video",
+      "duration": "210.000000"
+    },
+    {
+      "codec_name": "opus",
+      "codec_type": "audio",
+      "duration": "210.000000",
+      "bit_rate": "128000"
+    }
+  ],
+  "format": {
+    "format_name": "matroska,webm",
+    "duration": "210.000000"
+  }
+}

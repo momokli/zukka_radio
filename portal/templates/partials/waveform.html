@@ -1,0 +1,13 @@
+{# Inline SVG waveform (D8). `peaks` is the interleaved 8-bit (min, max) pair
+   sequence (2 * bars). One <rect> per bar, spanning min..max. #}
+<svg
+  class="waveform"
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 {{ bars }} 256"
+  preserveAspectRatio="none"
+  role="img"
+  aria-label="Waveform"
+>
+  <rect class="waveform-bg" x="0" y="0" width="{{ bars }}" height="256" />
+  {% for peak in peaks %}{% if loop.index0 % 2 == 0 %}<rect class="waveform-bar" x="{{ loop.index0 / 2 }}" y="{{ peak }}" width="1" height="{{ peaks[loop.index0 + 1] - peak + 1 }}" />{% endif %}{% endfor %}
+</svg>

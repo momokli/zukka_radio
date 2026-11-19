@@ -11,6 +11,8 @@ pub mod rotation;
 pub mod schedule;
 pub mod shows;
 pub mod sources;
+pub mod upload_jobs;
+pub mod waveforms;
 
 use chrono::{SecondsFormat, Utc};
 
