@@ -1,0 +1,54 @@
+{% extends "layout.html" %}
+{% block title %}{{ show.name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ show.name }}</h1>
+  <p class="muted">
+    <span class="badge">{{ show.slug }}</span>
+    {% if has_recurrence %}<span class="badge">wiederkehrend</span>{% endif %}
+  </p>
+  {% if show.description != "" %}
+  <p>{{ show.description }}</p>
+  {% endif %}
+  {% if has_recurrence %}
+  <p class="hint">RRULE: <code>{{ recurrence_text }}</code></p>
+  {% endif %}
+  {% if let Some(error) = error %}
+  <p class="alert alert-error">{{ error }}</p>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card">
+  <h2>Bearbeiten</h2>
+  <form
+    method="post"
+    action="/shows/{{ show.id }}"
+    hx-post="/shows/{{ show.id }}"
+    hx-swap="none"
+    class="stack"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Slug
+      <input type="text" name="slug" value="{{ show.slug }}" required />
+    </label>
+    <label>
+      Name
+      <input type="text" name="name" value="{{ show.name }}" required />
+    </label>
+    <label>
+      Beschreibung
+      <input type="text" name="description" value="{{ show.description }}" />
+    </label>
+    <label>
+      Wiederholung (RRULE)
+      <input type="text" name="recurrence" value="{{ recurrence_text }}" />
+    </label>
+    <button type="submit">Speichern</button>
+  </form>
+</section>
+{% endif %}
+
+<p><a class="button" href="/shows">Zurück zu Shows</a></p>
+{% endblock %}

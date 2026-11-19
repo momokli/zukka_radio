@@ -2,7 +2,7 @@
 
 use askama::Template;
 
-use crate::api_client::{Queue, QueueItem, Track, UploadJob};
+use crate::api_client::{Queue, QueueItem, Show, Track, UploadJob};
 
 /// Login page (`GET /login`).
 #[derive(Template)]
@@ -240,5 +240,163 @@ pub struct QueueListFragment {
 #[template(path = "partials/queue_form.html")]
 pub struct QueueFormFragment {
     pub csrf_token: String,
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #21: shows & schedule (calendar UI)
+// ---------------------------------------------------------------------------
+
+/// One calendar column (a Berlin day) with its broadcast cards.
+#[derive(Clone)]
+pub struct CalendarCell {
+    /// ISO date in Berlin (`2026-11-18`).
+    pub date: String,
+    pub day_code: String,
+    pub day_num: String,
+    pub in_month: bool,
+    pub is_today: bool,
+    pub entries: Vec<BroadcastCard>,
+}
+
+/// One calendar row (7 cells, Monday-first).
+#[derive(Clone)]
+pub struct CalendarWeek {
+    pub cells: Vec<CalendarCell>,
+}
+
+/// A broadcast slot rendered in the calendar (open bar when `ends_at` is null).
+#[derive(Clone)]
+pub struct BroadcastCard {
+    pub id: String,
+    pub persisted: bool,
+    pub title: String,
+    pub kind: String,
+    pub status: String,
+    pub caster_id: String,
+    pub time_label: String,
+    pub open_end: bool,
+    pub warnings: Vec<WarningView>,
+}
+
+/// A soft conflict warning as rendered (D12 — never blocks).
+#[derive(Clone)]
+pub struct WarningView {
+    pub code: String,
+    pub message: String,
+    pub severity: String,
+}
+
+/// The calendar grid fragment (`partials/calendar_grid.html`), also embedded in
+/// the full page so `{% include %}`-d fields stay in scope.
+#[derive(Template)]
+#[template(path = "partials/calendar_grid.html")]
+pub struct CalendarGridFragment {
+    pub csrf_token: String,
+    pub view: String,
+    pub view_label: String,
+    pub anchor: String,
+    pub prev_anchor: String,
+    pub next_anchor: String,
+    pub title: String,
+    pub weeks: Vec<CalendarWeek>,
+    pub can_write: bool,
+}
+
+/// Schedule page (`GET /schedule`).
+#[derive(Template)]
+#[template(path = "schedule.html")]
+pub struct SchedulePage {
+    pub csrf_token: String,
+    pub view: String,
+    pub view_label: String,
+    pub anchor: String,
+    pub prev_anchor: String,
+    pub next_anchor: String,
+    pub title: String,
+    pub weeks: Vec<CalendarWeek>,
+    pub can_write: bool,
+    /// Server-side inline error (e.g. a hard `show_overlap` reload).
+    pub error: Option<String>,
+}
+
+/// One `<option>` of the show selector.
+pub struct ShowOption {
+    pub id: String,
+    pub name: String,
+}
+
+/// One `<option>` of the queue selector.
+pub struct QueueOption {
+    pub id: String,
+    pub name: String,
+}
+
+/// The broadcast form state (shared by page + fragment).
+pub struct BroadcastForm {
+    pub id: String,
+    pub version: i64,
+    pub title: String,
+    pub description: String,
+    pub kind: String,
+    pub show_id: String,
+    /// Berlin wall-clock `datetime-local` values (`""` when unset).
+    pub starts_at: String,
+    pub ends_at: String,
+    pub tape_id: String,
+    pub queue_id: String,
+    pub shows: Vec<ShowOption>,
+    pub queues: Vec<QueueOption>,
+}
+
+/// Broadcast form page (`GET /schedule/new`, `GET /schedule/{id}/edit`).
+#[derive(Template)]
+#[template(path = "broadcast_form.html")]
+pub struct BroadcastFormPage {
+    pub csrf_token: String,
+    pub form: BroadcastForm,
+    pub warnings: Vec<WarningView>,
+    pub error: Option<String>,
+}
+
+/// Broadcast form fragment (`HX-Request` → date change re-preview, `422`/`409`
+/// re-render).
+#[derive(Template)]
+#[template(path = "partials/broadcast_form.html")]
+pub struct BroadcastFormFragment {
+    pub csrf_token: String,
+    pub form: BroadcastForm,
+    pub warnings: Vec<WarningView>,
+    pub error: Option<String>,
+}
+
+/// A show plus the per-viewer capabilities.
+pub struct ShowRow {
+    pub show: Show,
+    pub can_write: bool,
+    pub is_own: bool,
+    pub has_recurrence: bool,
+}
+
+/// Show list (`GET /shows`) + create form.
+#[derive(Template)]
+#[template(path = "shows.html")]
+pub struct ShowsPage {
+    pub csrf_token: String,
+    pub can_write: bool,
+    pub shows: Vec<ShowRow>,
+    pub error: Option<String>,
+}
+
+/// Show detail (`GET /shows/{id}`) incl. edit form.
+#[derive(Template)]
+#[template(path = "show_detail.html")]
+pub struct ShowDetailPage {
+    pub csrf_token: String,
+    pub show: Show,
+    pub can_write: bool,
+    pub has_recurrence: bool,
+    /// The raw rule string (`""` when none) — precomputed for the form field.
+    pub recurrence_text: String,
     pub error: Option<String>,
 }

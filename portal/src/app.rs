@@ -11,8 +11,9 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 
 use crate::api_client::{
-    ControlApi, HttpControlApi, HttpQueueApi, HttpTrackApi, HttpUploadJobApi, HttpWaveformApi,
-    IdentityApi, QueueApi, TrackApi, UploadJobApi, WaveformApi,
+    BroadcastApi, ControlApi, HttpBroadcastApi, HttpControlApi, HttpQueueApi, HttpScheduleApi,
+    HttpShowApi, HttpTrackApi, HttpUploadJobApi, HttpWaveformApi, IdentityApi, QueueApi,
+    ScheduleApi, ShowApi, TrackApi, UploadJobApi, WaveformApi,
 };
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
@@ -40,6 +41,9 @@ pub struct AppState {
     pub tracks: Arc<dyn TrackApi>,
     pub queues: Arc<dyn QueueApi>,
     pub control: Arc<dyn ControlApi>,
+    pub schedule: Arc<dyn ScheduleApi>,
+    pub shows: Arc<dyn ShowApi>,
+    pub broadcasts: Arc<dyn BroadcastApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
@@ -54,6 +58,9 @@ impl AppState {
             tracks: default_tracks(&config),
             queues: default_queues(&config),
             control: default_control(&config),
+            schedule: default_schedule(&config),
+            shows: default_shows(&config),
+            broadcasts: default_broadcasts(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -73,6 +80,9 @@ impl AppState {
             tracks: default_tracks(&config),
             queues: default_queues(&config),
             control: default_control(&config),
+            schedule: default_schedule(&config),
+            shows: default_shows(&config),
+            broadcasts: default_broadcasts(&config),
             config: Arc::new(config),
             identity,
             limiter,
@@ -92,6 +102,9 @@ impl AppState {
         queues: Arc<dyn QueueApi>,
         control: Arc<dyn ControlApi>,
     ) -> Self {
+        let schedule = default_schedule(&config);
+        let shows = default_shows(&config);
+        let broadcasts = default_broadcasts(&config);
         Self {
             config: Arc::new(config),
             identity,
@@ -101,6 +114,36 @@ impl AppState {
             tracks,
             queues,
             control,
+            schedule,
+            shows,
+            broadcasts,
+            limiter,
+        }
+    }
+
+    /// Builds state with explicit schedule/show/broadcast clients (schedule
+    /// tests); the remaining clients are the production HTTP ones.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_schedule_clients(
+        config: Config,
+        identity: Arc<dyn IdentityApi>,
+        limiter: Arc<WindowLimiter>,
+        schedule: Arc<dyn ScheduleApi>,
+        shows: Arc<dyn ShowApi>,
+        broadcasts: Arc<dyn BroadcastApi>,
+    ) -> Self {
+        Self {
+            music: default_music(&config),
+            upload_jobs: default_jobs(&config),
+            waveforms: default_waveforms(&config),
+            tracks: default_tracks(&config),
+            queues: default_queues(&config),
+            control: default_control(&config),
+            schedule,
+            shows,
+            broadcasts,
+            config: Arc::new(config),
+            identity,
             limiter,
         }
     }
@@ -160,6 +203,36 @@ fn default_control(config: &Config) -> Arc<dyn ControlApi> {
             config.service_token.clone(),
         )
         .expect("build control client"),
+    )
+}
+
+fn default_schedule(config: &Config) -> Arc<dyn ScheduleApi> {
+    Arc::new(
+        HttpScheduleApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build schedule client"),
+    )
+}
+
+fn default_shows(config: &Config) -> Arc<dyn ShowApi> {
+    Arc::new(
+        HttpShowApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build show client"),
+    )
+}
+
+fn default_broadcasts(config: &Config) -> Arc<dyn BroadcastApi> {
+    Arc::new(
+        HttpBroadcastApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build broadcast client"),
     )
 }
 
@@ -232,6 +305,31 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/queues/{id}/delete",
             axum::routing::post(crate::queues::queue_delete),
+        )
+        .route(
+            "/shows",
+            get(crate::shows::shows_get).post(crate::shows::show_create),
+        )
+        .route(
+            "/shows/{id}",
+            get(crate::shows::show_detail).post(crate::shows::show_update),
+        )
+        .route(
+            "/schedule",
+            get(crate::schedule::schedule_get).post(crate::schedule::broadcast_create),
+        )
+        .route("/schedule/new", get(crate::schedule::broadcast_new))
+        .route(
+            "/schedule/{id}/edit",
+            get(crate::schedule::broadcast_edit_get),
+        )
+        .route(
+            "/schedule/{id}",
+            axum::routing::post(crate::schedule::broadcast_update),
+        )
+        .route(
+            "/schedule/{id}/delete",
+            axum::routing::post(crate::schedule::broadcast_delete),
         )
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))

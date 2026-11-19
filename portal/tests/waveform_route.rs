@@ -180,6 +180,7 @@ async fn inject(mut req: Request<Body>, next: Next) -> Response {
 }
 
 fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
     let state = AppState {
         config: Arc::new(config()),
         identity: Arc::new(NoIdentity),
@@ -189,6 +190,9 @@ fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
         tracks: Arc::new(FakeTrackApi::new()),
         queues: Arc::new(FakeQueueApi::new()),
         control: Arc::new(FakeControlApi::new()),
+        schedule: Arc::new(backend.schedule()),
+        shows: Arc::new(backend.shows()),
+        broadcasts: Arc::new(backend.broadcasts()),
         limiter: Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
     };
     Router::new()

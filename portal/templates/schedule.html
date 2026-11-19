@@ -1,0 +1,15 @@
+{% extends "layout.html" %}
+{% block title %}Kalender{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Kalender</h1>
+  <p class="muted">
+    Woche oder Monat in <strong>Europe/Berlin</strong>. Überlappungen werden als
+    Hinweis angezeigt und blockieren nie (D12).
+  </p>
+  {% if let Some(error) = error %}
+  <p class="alert alert-error">{{ error }}</p>
+  {% endif %}
+</section>
+{% include "partials/calendar_grid.html" %}
+{% endblock %}

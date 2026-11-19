@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block title %}Shows{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Shows</h1>
+  <p class="muted">Eigene Shows sind bearbeitbar, fremde Shows lesbar.</p>
+  {% if let Some(error) = error %}
+  <p class="alert alert-error">{{ error }}</p>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card">
+  <h2>Neue Show</h2>
+  <form method="post" action="/shows" hx-post="/shows" hx-swap="none" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Slug
+      <input type="text" name="slug" required />
+    </label>
+    <label>
+      Name
+      <input type="text" name="name" required />
+    </label>
+    <label>
+      Beschreibung
+      <input type="text" name="description" />
+    </label>
+    <label>
+      Wiederholung (RRULE, optional)
+      <input
+        type="text"
+        name="recurrence"
+        placeholder="DTSTART=20260105T200000;FREQ=WEEKLY;INTERVAL=1;BYDAY=MO;DURATION=PT2H"
+      />
+    </label>
+    <button type="submit">Anlegen</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Übersicht</h2>
+  <ul class="show-overview">
+    {% if shows.is_empty() %}
+    <li class="muted">Noch keine Show.</li>
+    {% endif %}
+    {% for row in shows %}
+    <li class="show-row">
+      <a href="/shows/{{ row.show.id }}">{{ row.show.name }}</a>
+      <span class="muted">{{ row.show.slug }}</span>
+      {% if row.has_recurrence %}<span class="badge">wiederkehrend</span>{% endif %}
+      {% if row.is_own %}<span class="badge badge-own">eigene</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
