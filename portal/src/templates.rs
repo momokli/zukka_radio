@@ -217,6 +217,9 @@ pub struct QueueEditorPage {
     pub version: i64,
     pub items: Vec<QueueItemRow>,
     pub can_write: bool,
+    /// Whether the viewer may skip (`control.write`, §6.10.1) — global control,
+    /// independent of queue write permission.
+    pub can_control: bool,
 }
 
 /// The authoritative item list (`partials/queue_list.html`), returned by every

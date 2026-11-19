@@ -302,7 +302,7 @@ Alle Pfade unter eigenem Host (`studio.<domain>`), damit das
 | POST    | `/queues/{id}/items`               | Track/Link hinzufügen                                    | `queue.write.own`/`.any` |
 | POST    | `/queues/{id}/items/{item}/move`   | Umsortieren (`before_id`/`after_id`)                     | s. o.                    |
 | POST    | `/queues/{id}/items/{item}/delete` | Entfernen                                                | s. o.                    |
-| POST    | `/queues/{id}/skip`                | Skip                                                     | s. o.                    |
+| POST    | `/queues/{id}/skip`                | Skip (global control)                                    | `control.write`          |
 | POST    | `/queues/{id}/rename`              | Umbenennen                                               | s. o.                    |
 | GET     | `/shows`                           | Show-Liste                                               | login                    |
 | GET     | `/shows/{id}`                      | Show-Detail                                              | login                    |

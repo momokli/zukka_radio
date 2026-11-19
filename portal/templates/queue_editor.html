@@ -86,17 +86,6 @@
 
   <form
     method="post"
-    action="/queues/{{ queue_id }}/skip"
-    hx-post="/queues/{{ queue_id }}/skip"
-    hx-swap="none"
-    class="inline"
-  >
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-    <button type="submit">Skip (laufendes Programm)</button>
-  </form>
-
-  <form
-    method="post"
     action="/queues/{{ queue_id }}/delete"
     hx-post="/queues/{{ queue_id }}/delete"
     hx-confirm="Queue wirklich löschen?"
@@ -105,6 +94,24 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
     <input type="hidden" name="version" value="{{ version }}" />
     <button type="submit">Queue löschen</button>
+  </form>
+</section>
+{% endif %}
+
+{# Skip is a global control action (`control.write`), independent of queue
+   write permission — gated on `can_control`, not `can_write`. #}
+{% if can_control %}
+<section class="card">
+  <h2>Control</h2>
+  <form
+    method="post"
+    action="/queues/{{ queue_id }}/skip"
+    hx-post="/queues/{{ queue_id }}/skip"
+    hx-swap="none"
+    class="inline"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit">Skip (laufendes Programm)</button>
   </form>
 </section>
 {% endif %}

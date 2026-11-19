@@ -851,9 +851,32 @@ async fn delete_item_updates_list() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn skip_calls_control_api() {
+async fn skip_requires_control_write() {
+    // A caster has no `control.write` (§6.10.1) → the global skip is forbidden,
+    // and the scheduler must never be called.
     let (queues, control) = seeded();
     let app = router(caster_perms(), queues, control.clone());
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/queues/q-own/skip",
+        true,
+        form(&[("reason", "manual")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "caster lacks control.write");
+    assert!(
+        control.calls().is_empty(),
+        "no control call without control.write"
+    );
+}
+
+#[tokio::test]
+async fn skip_calls_control_api() {
+    let (queues, control) = seeded();
+    let app = router(operator_perms(), queues, control.clone());
     let (session, csrf) = login(&app).await;
     let (status, headers, _) = post(
         &app,
@@ -870,10 +893,49 @@ async fn skip_calls_control_api() {
 }
 
 #[tokio::test]
+async fn skip_form_only_with_control_write() {
+    // caster (no `control.write`): own queue editor hides the skip form.
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues.clone(), control.clone());
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("/skip"),
+        "caster must not see skip form: {body}"
+    );
+
+    // operator (`control.write`): the skip form is rendered.
+    let (queues, control) = seeded();
+    let app = router(operator_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("/queues/q-own/skip"),
+        "operator sees skip form: {body}"
+    );
+}
+
+#[tokio::test]
 async fn skip_conflict_is_a_friendly_toast() {
     let (queues, control) = seeded();
     control.fail_with("nothing playing");
-    let app = router(caster_perms(), queues, control);
+    let app = router(operator_perms(), queues, control);
     let (session, csrf) = login(&app).await;
     let (status, headers, _) = post(
         &app,

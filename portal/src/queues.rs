@@ -51,6 +51,12 @@ fn queue_error(err: QueueError) -> PortalError {
     }
 }
 
+// TODO(auth): The ownership check below (`can_write`/`authorize_write`) is a
+// portal-side stopgap; the authoritative queue-scoped ownership must move into
+// the scheduler's RBAC. Mirror of `scheduler/src/api/queues.rs` TODO(auth);
+// tracked under Issue #16 (Auth) and specified in
+// `docs/consolidated-architecture.md` §6.10.1.
+
 /// `true` when the viewer may write `queue` (server-side ownership, §4).
 fn can_write(ctx: &AuthContext, queue: &Queue) -> bool {
     if ctx.has("queue.write.any") {
@@ -296,6 +302,7 @@ pub async fn queue_editor(
         version: queue.version,
         items: QueueItemRow::from_items(items),
         can_write: writable,
+        can_control: ctx.has("control.write"),
         queue,
     })
 }
@@ -589,7 +596,9 @@ pub async fn queue_skip(
     Path(id): Path<String>,
     Form(form): Form<SkipForm>,
 ) -> Result<Response, PortalError> {
-    authorize_write(&state, &ctx, &id).await?;
+    // Skip is a global control action (`POST /control/skip`, §6.10.1): it is
+    // bound to `control.write`, not to queue ownership. No queue.write gate.
+    rbac::check(&ctx, "control.write")?;
     let reason = form
         .reason
         .clone()
