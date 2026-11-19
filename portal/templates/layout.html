@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content="{{ csrf_token }}" />
+    <title>{% block title %}zukka{% endblock %} · zukka radio</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/htmx.min.js" defer></script>
+  </head>
+  <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+    <header class="topbar">
+      <a class="brand" href="/">zukka&nbsp;radio</a>
+      <nav class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/account">Konto</a>
+      </nav>
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+      <span>portal · thin UI over the scheduler identity authority</span>
+    </footer>
+  </body>
+</html>
