@@ -44,6 +44,7 @@ Slot belegt → **nichts dispatchen**.
    - „Fokus-Milestone: <titel>. Basis-Branch: **`v2`**. PR-Ziel: **`v2`**."
    - „Lies zuerst `docs/consolidated-architecture.md` (Source of Truth) und die betroffenen Detail-Docs."
    - „**Deliverable = gepushter Branch + offener PR gegen `v2`.** PR-Body mit `Closes #<n>`."
+   - „**Vor dem Push: `cargo fmt --all`** — die CI prüft `cargo fmt --all -- --check` und ist sonst rot."
    - „Schwere Rust-Builds/Tests gehören auf `planet` (`exec host=node`), nicht auf den Gateway-Host."
    - Agent: `coding-orchestrator` (Code/Bug/Feature).
 9. **Nach dem Dispatch**: `clanker-gh issue edit <n> --add-label orchestrator:dispatched`.
