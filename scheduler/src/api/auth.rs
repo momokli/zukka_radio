@@ -1,21 +1,48 @@
-//! Liquidsoap token auth (§2.1, §4.1, Issue #13).
+//! Auth layer (Issues #13 + #16).
 //!
-//! The token layer guards **only** the `/playback/*` sub-router (wired in
-//! [`crate::api::playback`]); every other route stays open until the RBAC
-//! issue lands. The check is fail-closed: a missing or empty configured token
-//! rejects every request.
+//! Two distinct concerns live here:
+//!
+//! * The **Liquidsoap token** layer ([`require_token`]) guards only the
+//!   `/playback/*` sub-router (wired in [`crate::api::playback`]). Fail-closed.
+//! * The **identity authority** (Issue #16): service-token-guarded `/internal`
+//!   handlers for `verify`, session write-through and password changes. The
+//!   scheduler is the only writer of `casters`/`sessions`/`roles` (§4.1/§4.3).
 
-use axum::extract::Request;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use axum::Json;
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use sqlx::SqlitePool;
 
-use crate::error::ApiError;
+use crate::api::ApiJson;
+use crate::dto::{
+    CasterDto, ChangePasswordRequest, CreateSessionRequest, CreatedSessionDto,
+    SessionValidationDto, StreamPasswordRequest, StreamPasswordResponse, VerifyRequest,
+    VerifyResponse,
+};
+use crate::error::{ApiError, ApiResult};
+use crate::rate_limit::WindowLimiter;
+use crate::store;
 
 /// Header carrying the presented token (§4.1).
 pub const TOKEN_HEADER: &str = "x-liquidsoap-token";
 
 /// Environment variable holding the configured token.
 pub const TOKEN_ENV: &str = "LIQUIDSOAP_TOKEN";
+
+/// Environment variable holding the portal↔scheduler service token (§4.1).
+pub const SERVICE_TOKEN_ENV: &str = "SCHEDULER_SERVICE_TOKEN";
+
+/// Header carrying the raw browser session token on the read route.
+pub const SESSION_TOKEN_HEADER: &str = "x-session-token";
+
+/// Fail-closed login rate limit: 5 failures / 15 min (§portal.md D3).
+pub const LOGIN_MAX_ATTEMPTS: usize = 5;
+pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// Fail-closed token comparison (§2.1).
 ///
@@ -59,6 +86,148 @@ pub async fn require_token(req: Request, next: Next) -> Result<Response, ApiErro
         return Err(ApiError::Unauthorized);
     }
     Ok(next.run(req).await)
+}
+
+/// Middleware requiring `Authorization: Bearer $SCHEDULER_SERVICE_TOKEN` on
+/// every `/internal/*` route (§4.1). Read at request time; fail-closed.
+pub async fn require_service_token(req: Request, next: Next) -> Result<Response, ApiError> {
+    let configured = std::env::var(SERVICE_TOKEN_ENV).ok();
+    let presented = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned);
+    if !check_token(configured.as_deref(), presented.as_deref()) {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(next.run(req).await)
+}
+
+fn login_limiter() -> &'static WindowLimiter {
+    static LIMITER: OnceLock<WindowLimiter> = OnceLock::new();
+    LIMITER.get_or_init(|| WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW))
+}
+
+/// Clears the process-global login limiter (test helper).
+pub fn reset_login_limiter() {
+    login_limiter().clear();
+}
+
+/// Rate-limit key: `username` (case-insensitive) + client IP.
+fn login_key(username: &str, headers: &HeaderMap) -> String {
+    let ip = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown");
+    format!("{}|{}", username.to_lowercase(), ip)
+}
+
+/// `POST /internal/auth/verify` — verify a login (§4.2).
+pub async fn verify(
+    State(pool): State<SqlitePool>,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<VerifyRequest>,
+) -> ApiResult<Json<VerifyResponse>> {
+    let limiter = login_limiter();
+    let key = login_key(&req.username, &headers);
+    if limiter.is_blocked(&key) {
+        return Err(ApiError::TooManyRequests);
+    }
+    match store::auth::verify_login(&pool, &req.username, &req.password).await {
+        Ok(caster) => {
+            limiter.reset(&key);
+            Ok(Json(VerifyResponse { caster }))
+        }
+        Err(ApiError::Unauthorized) => {
+            limiter.record_failure(&key);
+            Err(ApiError::Unauthorized)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// `POST /internal/sessions` — create a session (portal login).
+pub async fn create_session(
+    State(pool): State<SqlitePool>,
+    ApiJson(req): ApiJson<CreateSessionRequest>,
+) -> ApiResult<(StatusCode, Json<CreatedSessionDto>)> {
+    let created = store::auth::create_session(&pool, &req).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// `GET /internal/sessions/current` — validate the session identified by the
+/// `X-Session-Token` header. The portal holds no authoritative session state;
+/// it re-reads `{caster, role, permissions, csrf_token}` from here.
+pub async fn current_session(
+    State(pool): State<SqlitePool>,
+    headers: HeaderMap,
+) -> ApiResult<Json<SessionValidationDto>> {
+    let token = headers
+        .get(SESSION_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+    match store::auth::validate_session(&pool, token).await? {
+        Some(validation) => Ok(Json(validation)),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
+/// `PATCH /internal/sessions/{id}` — slide the idle window (batched ≤ 1×/min).
+pub async fn touch_session(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if store::auth::touch_session(&pool, &id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("session", id))
+    }
+}
+
+/// `DELETE /internal/sessions/{id}` — revoke a session (logout).
+pub async fn revoke_session(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if store::auth::revoke_session(&pool, &id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("session", id))
+    }
+}
+
+/// `GET /internal/casters/{id}` — caster lookup for the portal.
+pub async fn get_caster(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<CasterDto>> {
+    Ok(Json(store::auth::get_caster(&pool, &id).await?))
+}
+
+/// `POST /internal/casters/{id}/password` — set the login password (rotation).
+pub async fn change_password(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<ChangePasswordRequest>,
+) -> ApiResult<StatusCode> {
+    store::auth::change_password(&pool, &id, &req.password, req.keep_session_id.as_deref()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /internal/casters/{id}/stream-password` — set or generate the stream
+/// password. The generated value is returned exactly once.
+pub async fn change_stream_password(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<StreamPasswordRequest>,
+) -> ApiResult<Json<StreamPasswordResponse>> {
+    let generated =
+        store::auth::change_stream_password(&pool, &id, req.password.as_deref()).await?;
+    Ok(Json(StreamPasswordResponse {
+        password: generated,
+    }))
 }
 
 #[cfg(test)]

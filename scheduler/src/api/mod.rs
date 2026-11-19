@@ -11,7 +11,7 @@ pub mod shows;
 pub mod sources;
 
 use axum::extract::{FromRequest, Request};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
@@ -102,6 +102,25 @@ pub fn router(pool: SqlitePool) -> Router {
 
     // Issue #15: operator control endpoints — open for now (TODO(auth)).
     let api = api.nest("/control", control::router());
+
+    // Issue #16: identity authority. Every `/internal/*` route requires the
+    // portal service token (§4.1); RBAC stays a portal concern (§6.10.1).
+    let internal = Router::new()
+        .route("/auth/verify", post(auth::verify))
+        .route("/sessions", post(auth::create_session))
+        .route("/sessions/current", get(auth::current_session))
+        .route(
+            "/sessions/{id}",
+            patch(auth::touch_session).delete(auth::revoke_session),
+        )
+        .route("/casters/{id}", get(auth::get_caster))
+        .route("/casters/{id}/password", post(auth::change_password))
+        .route(
+            "/casters/{id}/stream-password",
+            post(auth::change_stream_password),
+        )
+        .route_layer(axum::middleware::from_fn(auth::require_service_token));
+    let api = api.nest("/internal", internal);
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
