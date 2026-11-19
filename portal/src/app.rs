@@ -11,7 +11,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 
 use crate::api_client::{
-    HttpUploadJobApi, HttpWaveformApi, IdentityApi, UploadJobApi, WaveformApi,
+    HttpTrackApi, HttpUploadJobApi, HttpWaveformApi, IdentityApi, TrackApi, UploadJobApi,
+    WaveformApi,
 };
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
@@ -35,6 +36,7 @@ pub struct AppState {
     pub music: Arc<dyn MusicApi>,
     pub upload_jobs: Arc<dyn UploadJobApi>,
     pub waveforms: Arc<dyn WaveformApi>,
+    pub tracks: Arc<dyn TrackApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
@@ -46,6 +48,7 @@ impl AppState {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
             waveforms: default_waveforms(&config),
+            tracks: default_tracks(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -62,20 +65,22 @@ impl AppState {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
             waveforms: default_waveforms(&config),
+            tracks: default_tracks(&config),
             config: Arc::new(config),
             identity,
             limiter,
         }
     }
 
-    /// Builds state with explicit music/job/waveform clients (upload tests).
-    pub fn with_services(
+    /// Builds state with explicit clients (upload + library tests).
+    pub fn with_clients(
         config: Config,
         identity: Arc<dyn IdentityApi>,
         limiter: Arc<WindowLimiter>,
         music: Arc<dyn MusicApi>,
         upload_jobs: Arc<dyn UploadJobApi>,
         waveforms: Arc<dyn WaveformApi>,
+        tracks: Arc<dyn TrackApi>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -83,6 +88,7 @@ impl AppState {
             music,
             upload_jobs,
             waveforms,
+            tracks,
             limiter,
         }
     }
@@ -115,6 +121,16 @@ fn default_waveforms(config: &Config) -> Arc<dyn WaveformApi> {
     )
 }
 
+fn default_tracks(config: &Config) -> Arc<dyn TrackApi> {
+    Arc::new(
+        HttpTrackApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build track client"),
+    )
+}
+
 /// Builds the full portal router.
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
@@ -129,7 +145,16 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(handlers::account_stream_password),
         )
         .route("/logout", axum::routing::post(handlers::logout))
-        .route("/library", get(upload::library_get))
+        .route("/library", get(crate::library::library_get))
+        .route("/library/tracks/{id}", get(crate::library::track_detail))
+        .route(
+            "/library/tracks/{id}/visibility",
+            axum::routing::post(crate::library::track_visibility),
+        )
+        .route(
+            "/library/tracks/{id}/delete",
+            axum::routing::post(crate::library::track_delete),
+        )
         // Lift axum's default 2 MiB Multipart body limit for this route only:
         // the streaming staging in `upload::stage_multipart` is the sole size
         // gate (`UPLOAD_MAX_BYTES` → 413 + temp cleanup), so large uploads

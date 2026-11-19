@@ -2,7 +2,7 @@
 
 use askama::Template;
 
-use crate::api_client::UploadJob;
+use crate::api_client::{Track, UploadJob};
 
 /// Login page (`GET /login`).
 #[derive(Template)]
@@ -47,12 +47,54 @@ pub struct ErrorPage {
     pub message: String,
 }
 
-/// Library page (`GET /library`): recent jobs + upload form.
+/// Library page (`GET /library`): search + filter + track list + upload form.
 #[derive(Template)]
 #[template(path = "library.html")]
 pub struct LibraryPage {
     pub csrf_token: String,
     pub jobs: Vec<UploadJob>,
+    pub tracks: Vec<Track>,
+    pub q: String,
+    pub visibility: String,
+    pub owner: String,
+    pub can_delete: bool,
+    pub page: i64,
+    pub prev_page: Option<i64>,
+    pub next_page: Option<i64>,
+}
+
+/// Fragment returned for a search/filter request (`HX-Request` on `/library`):
+/// the track list + paging only.
+#[derive(Template)]
+#[template(path = "partials/library_results.html")]
+pub struct LibraryResultsFragment {
+    pub csrf_token: String,
+    pub tracks: Vec<Track>,
+    pub q: String,
+    pub visibility: String,
+    pub owner: String,
+    pub can_delete: bool,
+    pub page: i64,
+    pub prev_page: Option<i64>,
+    pub next_page: Option<i64>,
+}
+
+/// A single track row (visibility toggle result, `outerHTML` swap).
+#[derive(Template)]
+#[template(path = "partials/track_row.html")]
+pub struct TrackRowFragment {
+    pub csrf_token: String,
+    pub track: Track,
+    pub can_delete: bool,
+}
+
+/// Track detail page (`GET /library/tracks/{id}`).
+#[derive(Template)]
+#[template(path = "track_detail.html")]
+pub struct TrackDetailPage {
+    pub csrf_token: String,
+    pub track: Track,
+    pub can_delete: bool,
 }
 
 /// Fragment returned by `POST /library/upload`: the freshly created jobs.

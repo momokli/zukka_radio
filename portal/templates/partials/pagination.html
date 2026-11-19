@@ -1,0 +1,21 @@
+<nav class="pagination">
+  {% if let Some(prev) = prev_page %}
+  <a
+    href="/library?q={{ q }}&amp;visibility={{ visibility }}&amp;owner={{ owner }}&amp;page={{ prev }}"
+    hx-get="/library?q={{ q }}&amp;visibility={{ visibility }}&amp;owner={{ owner }}&amp;page={{ prev }}"
+    hx-target="#library-results"
+    hx-swap="innerHTML"
+    >Zurück</a
+  >
+  {% endif %}
+  <span>Seite {{ page }}</span>
+  {% if let Some(next) = next_page %}
+  <a
+    href="/library?q={{ q }}&amp;visibility={{ visibility }}&amp;owner={{ owner }}&amp;page={{ next }}"
+    hx-get="/library?q={{ q }}&amp;visibility={{ visibility }}&amp;owner={{ owner }}&amp;page={{ next }}"
+    hx-target="#library-results"
+    hx-swap="innerHTML"
+    >Weiter</a
+  >
+  {% endif %}
+</nav>

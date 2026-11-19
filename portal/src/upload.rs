@@ -21,7 +21,7 @@ use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::PortalError;
 use crate::rbac;
-use crate::templates::{LibraryPage, LibraryUploadPage, UploadJobFragment, WaveformSvg};
+use crate::templates::{LibraryUploadPage, UploadJobFragment, WaveformSvg};
 use crate::upload_pipeline::{self, PipelineDeps};
 
 /// A multipart file streamed to a temp file, with its hash and size.
@@ -127,19 +127,6 @@ fn job_error(err: JobError) -> PortalError {
     }
 }
 
-/// `GET /library` — recent upload jobs + the upload form.
-pub async fn library_get(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-) -> Result<Response, PortalError> {
-    rbac::check(&ctx, "library.read")?;
-    let jobs = state.upload_jobs.list_jobs(50).await.unwrap_or_default();
-    render(&LibraryPage {
-        csrf_token: ctx.csrf_token.clone(),
-        jobs,
-    })
-}
-
 /// `POST /library/upload` — stage, run the pipeline, return the job fragment.
 pub async fn upload_post(
     State(state): State<AppState>,
@@ -162,6 +149,7 @@ pub async fn upload_post(
         upload_jobs: state.upload_jobs.as_ref(),
         music: state.music.as_ref(),
         waveforms: state.waveforms.as_ref(),
+        tracks: state.tracks.as_ref(),
         ffprobe_bin: &state.config.ffprobe_bin,
         ffmpeg_bin: &state.config.ffmpeg_bin,
         tmp_dir: &state.config.upload_tmp_dir,

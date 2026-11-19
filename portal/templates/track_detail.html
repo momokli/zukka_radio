@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% block title %}{{ track.title }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ track.title }}</h1>
+  <p class="muted">
+    <span class="badge badge-{{ track.visibility }}">{{ track.visibility }}</span>
+  </p>
+  <img
+    class="waveform"
+    src="/library/tracks/{{ track.id }}/waveform.svg"
+    alt="Waveform von {{ track.title }}"
+  />
+  <dl class="facts">
+    <dt>Titel</dt>
+    <dd>{{ track.title }}</dd>
+    <dt>Artist</dt>
+    <dd>{{ track.artist }}</dd>
+    <dt>Album</dt>
+    <dd>{{ track.album }}</dd>
+    <dt>Dauer (ms)</dt>
+    <dd>{{ track.duration_ms }}</dd>
+    <dt>Music-API-ID</dt>
+    <dd><code>{{ track.music_api_id }}</code></dd>
+  </dl>
+
+  <div class="actions">
+    <a class="button" href="/library">Zur Library</a>
+    <a class="button" href="/library">In Queue (P4)</a>
+    {% if can_delete %}
+    <form
+      method="post"
+      action="/library/tracks/{{ track.id }}/delete"
+      hx-post="/library/tracks/{{ track.id }}/delete"
+      hx-confirm="Track wirklich löschen?"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit">Löschen</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
