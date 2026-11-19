@@ -3,6 +3,48 @@
 {% block content %}
 <section class="card">
   <h1>Library</h1>
+  <p class="muted">Gemeinsame und eigene Tracks. Private Tracks sind nur für den Owner sichtbar.</p>
+  <form
+    method="get"
+    action="/library"
+    class="stack"
+    hx-get="/library"
+    hx-trigger="keyup changed delay:300ms from:input[type=search], change from:input[type=radio]"
+    hx-target="#library-results"
+    hx-swap="innerHTML"
+  >
+    <label>
+      Suche
+      <input type="search" name="q" value="{{ q }}" placeholder="Titel, Artist, Album, ISRC" />
+    </label>
+    <fieldset>
+      <legend>Sichtbarkeit</legend>
+      <label>
+        <input type="radio" name="visibility" value="all" {% if visibility == "all" %}checked{% endif %} />
+        Alle
+      </label>
+      <label>
+        <input type="radio" name="visibility" value="shared" {% if visibility == "shared" %}checked{% endif %} />
+        Shared
+      </label>
+      <label>
+        <input type="radio" name="visibility" value="private" {% if visibility == "private" %}checked{% endif %} />
+        Private
+      </label>
+    </fieldset>
+    <button type="submit">Suchen</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Tracks</h2>
+  <div id="library-results">
+    {% include "partials/library_results.html" %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Upload</h2>
   <p class="muted">Uploads laufen streaming auf die Platte, werden geprüft und an die Music API übergeben.</p>
   <form
     method="post"

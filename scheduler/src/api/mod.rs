@@ -9,10 +9,12 @@ pub mod playback;
 pub mod schedule;
 pub mod shows;
 pub mod sources;
+pub mod tracks;
 pub mod upload_jobs;
 pub mod waveforms;
 
 use axum::extract::{FromRequest, Request};
+use axum::http::HeaderMap;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
@@ -43,6 +45,20 @@ where
             ))),
         }
     }
+}
+
+/// The canonical viewer-context header (§4.1). The portal sets it from the
+/// session; it is never taken from client input.
+const VIEWER_HEADER: &str = "x-caster-id";
+
+/// Reads the viewer `caster_id` from `X-Caster-Id`; `None` when absent/blank.
+pub fn viewer_caster_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(VIEWER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 /// Builds the full application router: `/healthz` + `/api/v1`.
@@ -97,6 +113,18 @@ pub fn router(pool: SqlitePool) -> Router {
         "/sources/{id}",
         get(sources::get_one).patch(sources::update),
     );
+
+    // Issue #19: track library. Viewer context via `X-Caster-Id` (TODO(auth));
+    // `/tracks/import` is a static segment, matched before `/tracks/{id}`.
+    let api = api
+        .route("/tracks", get(tracks::list).post(tracks::create))
+        .route("/tracks/import", post(tracks::import))
+        .route(
+            "/tracks/{id}",
+            get(tracks::get_one)
+                .patch(tracks::update)
+                .delete(tracks::delete),
+        );
 
     // Issue #13: the token layer lives inside the playback sub-router, so it
     // guards only `/playback/*`; every route above stays open (TODO(auth)).

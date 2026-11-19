@@ -11,7 +11,9 @@
 
 use std::path::Path;
 
-use crate::api_client::{NewUploadJob, NewWaveform, UploadJobApi, UploadJobPatch, WaveformApi};
+use crate::api_client::{
+    NewTrackRequest, NewUploadJob, NewWaveform, TrackApi, UploadJobApi, UploadJobPatch, WaveformApi,
+};
 use crate::error::PortalError;
 use crate::ffprobe;
 use crate::music_api::{MusicApi, NewTrack};
@@ -24,6 +26,7 @@ pub struct PipelineDeps<'a> {
     pub upload_jobs: &'a dyn UploadJobApi,
     pub music: &'a dyn MusicApi,
     pub waveforms: &'a dyn WaveformApi,
+    pub tracks: &'a dyn TrackApi,
     pub ffprobe_bin: &'a str,
     pub ffmpeg_bin: &'a str,
     pub tmp_dir: &'a Path,
@@ -33,7 +36,11 @@ pub struct PipelineDeps<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineOutcome {
     pub job_id: String,
+    /// The Music-API track id (external authority).
     pub track_id: String,
+    /// The local `tracks.id` (US-8); `None` when an existing track was reused
+    /// and the local registration hit a `409` (already present).
+    pub local_track_id: Option<String>,
     /// `true` when dedupe matched an existing track (no new track created).
     pub deduped: bool,
     /// `true` when a stream derivate was produced (D7).
@@ -97,8 +104,8 @@ pub async fn run(
         )
         .await;
 
-    match run_inner(deps, &staged).await {
-        Ok((track_id, deduped, derivate)) => {
+    match run_inner(deps, caster_id, &staged).await {
+        Ok((track_id, local_track_id, deduped, derivate)) => {
             let _ = deps
                 .upload_jobs
                 .patch_job(
@@ -106,7 +113,7 @@ pub async fn run(
                     &UploadJobPatch {
                         state: "done".into(),
                         sha256: None,
-                        track_id: Some(track_id.clone()),
+                        track_id: local_track_id.clone(),
                         error: None,
                     },
                 )
@@ -114,6 +121,7 @@ pub async fn run(
             Ok(PipelineOutcome {
                 job_id,
                 track_id,
+                local_track_id,
                 deduped,
                 derivate,
             })
@@ -136,15 +144,37 @@ pub async fn run(
     }
 }
 
-/// Steps 3–5; returns `(track_id, deduped, derivate)` or a human-readable
-/// reason string.
+/// Steps 3–6; returns `(music_id, local_id, deduped, derivate)` or a
+/// human-readable reason string.
 async fn run_inner(
     deps: &PipelineDeps<'_>,
+    caster_id: &str,
     staged: &StagedUpload,
-) -> Result<(String, bool, bool), String> {
+) -> Result<(String, Option<String>, bool, bool), String> {
     // 3. dedupe: an existing track with the same bytes short-circuits.
     match deps.music.find_by_hash(&staged.sha256).await {
-        Ok(Some(existing)) => return Ok((existing.id, true, false)),
+        Ok(Some(existing)) => {
+            // The local row already exists from the first upload: a `409`
+            // (`duplicate_track`) is treated as "already present".
+            let _ = deps
+                .tracks
+                .create(
+                    Some(caster_id),
+                    &NewTrackRequest {
+                        music_api_id: existing.id.clone(),
+                        title: existing.title.clone(),
+                        storage_key: existing.id.clone(),
+                        duration_ms: existing.duration_ms.unwrap_or(0),
+                        artist: existing.artist.clone(),
+                        album: None,
+                        artwork_url: None,
+                        visibility: Some("private".into()),
+                        caster_id: Some(caster_id.to_string()),
+                    },
+                )
+                .await;
+            return Ok((existing.id, None, true, false));
+        }
         Ok(None) => {}
         Err(err) => return Err(format!("hash lookup failed: {err}")),
     }
@@ -179,7 +209,7 @@ async fn run_inner(
     let track = deps
         .music
         .create_track(&NewTrack {
-            title,
+            title: title.clone(),
             artist: None,
             sha256: Some(staged.sha256.clone()),
         })
@@ -197,7 +227,34 @@ async fn run_inner(
             .map_err(|e| format!("derivate upload failed: {e}"))?;
     }
 
+    // 5b. register the local library track (US-8). A `409` (duplicate
+    // `music_api_id`) is tolerated as "already present".
+    let local_track_id = match deps
+        .tracks
+        .create(
+            Some(caster_id),
+            &NewTrackRequest {
+                music_api_id: track.id.clone(),
+                title,
+                storage_key: track.id.clone(),
+                duration_ms: probe.duration_ms.unwrap_or(0),
+                artist: track.artist.clone(),
+                album: None,
+                artwork_url: None,
+                visibility: Some("private".into()),
+                caster_id: Some(caster_id.to_string()),
+            },
+        )
+        .await
+    {
+        Ok(local) => Some(local.id),
+        Err(err) if err.is_conflict() => None,
+        Err(err) => return Err(format!("track registration failed: {err}")),
+    };
+
     // 6. waveform peaks (D8): computed from the master, stored write-through.
+    // Keyed by the local track id so the portal detail route can resolve it.
+    let subject_id = local_track_id.clone().unwrap_or_else(|| track.id.clone());
     let peaks = waveform::compute_peaks(
         deps.ffmpeg_bin,
         &staged.path,
@@ -213,7 +270,7 @@ async fn run_inner(
     deps.waveforms
         .put_waveform(&NewWaveform {
             subject_kind: "track".into(),
-            subject_id: track.id.clone(),
+            subject_id,
             scheme: waveform::SCHEME,
             algorithm: waveform::ALGORITHM.into(),
             ms_per_bar,
@@ -223,5 +280,5 @@ async fn run_inner(
         .await
         .map_err(|e| format!("waveform write failed: {e}"))?;
 
-    Ok((track.id, false, needs))
+    Ok((track.id, local_track_id, false, needs))
 }

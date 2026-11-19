@@ -1,0 +1,21 @@
+{% if tracks.is_empty() %}
+<p class="muted">{% if q.is_empty() %}Library leer.{% else %}Keine Treffer.{% endif %}</p>
+{% else %}
+<table class="tracks">
+  <thead>
+    <tr>
+      <th>Titel</th>
+      <th>Artist</th>
+      <th>Sichtbarkeit</th>
+      <th>Aktion</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in tracks %}
+    {% include "partials/track_row.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% include "partials/pagination.html" %}

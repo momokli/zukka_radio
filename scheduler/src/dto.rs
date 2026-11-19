@@ -870,6 +870,122 @@ pub struct UploadJobDto {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #19: tracks (Library)
+// ---------------------------------------------------------------------------
+
+/// `tracks.visibility` — `shared` | `private` (§3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum Visibility {
+    Shared,
+    Private,
+}
+
+impl Visibility {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "shared" => Ok(Visibility::Shared),
+            "private" => Ok(Visibility::Private),
+            other => Err(ApiError::validation(
+                field,
+                format!("unknown visibility '{other}', expected 'shared' or 'private'"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Shared => "shared",
+            Visibility::Private => "private",
+        }
+    }
+}
+
+/// Full track representation (`tracks` row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackDto {
+    pub id: String,
+    pub music_api_id: String,
+    pub isrc: Option<String>,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: i64,
+    pub storage_key: String,
+    pub artwork_url: Option<String>,
+    pub visibility: Visibility,
+    pub caster_id: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Body of `POST /tracks` — the local projection of a Music-API track.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTrackRequest {
+    pub music_api_id: String,
+    pub title: String,
+    pub storage_key: String,
+    #[serde(default)]
+    pub duration_ms: i64,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub album: Option<String>,
+    #[serde(default)]
+    pub isrc: Option<String>,
+    #[serde(default)]
+    pub artwork_url: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub caster_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Body of `PATCH /tracks/{id}` — COALESCE patch (no `version`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateTrackRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub album: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub artwork_url: Option<Option<String>>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub caster_id: Option<Option<String>>,
+}
+
+/// Body of `POST /tracks/import` — a track created from Music-API fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportTrackRequest {
+    pub music_api_id: String,
+    pub title: String,
+    pub storage_key: String,
+    #[serde(default)]
+    pub duration_ms: i64,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub album: Option<String>,
+    #[serde(default)]
+    pub isrc: Option<String>,
+    #[serde(default)]
+    pub artwork_url: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub caster_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Issue #18: waveforms (D8/C05; write-through to `/internal/waveforms`)
 // ---------------------------------------------------------------------------
 

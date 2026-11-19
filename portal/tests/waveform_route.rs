@@ -18,9 +18,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use zukka_portal::api_client::{
-    CasterDto, CreatedSessionDto, IdentityApi, IdentityError, JobError, NewUploadJob, NewWaveform,
-    SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform, WaveformApi,
-    WaveformApiError,
+    CasterDto, CreatedSessionDto, FakeTrackApi, IdentityApi, IdentityError, JobError, NewUploadJob,
+    NewWaveform, SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform,
+    WaveformApi, WaveformApiError,
 };
 use zukka_portal::app::AppState;
 use zukka_portal::auth::AuthContext;
@@ -186,6 +186,7 @@ fn router(waveforms: Arc<dyn WaveformApi>) -> Router {
         music: Arc::new(FakeMusicApi::new()),
         upload_jobs: Arc::new(NoJobs),
         waveforms,
+        tracks: Arc::new(FakeTrackApi::new()),
         limiter: Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
     };
     Router::new()

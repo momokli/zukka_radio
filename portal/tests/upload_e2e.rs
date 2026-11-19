@@ -26,9 +26,9 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use zukka_portal::api_client::{
-    CasterDto, CreatedSessionDto, IdentityApi, IdentityError, JobError, NewUploadJob, NewWaveform,
-    SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform, WaveformApi,
-    WaveformApiError,
+    CasterDto, CreatedSessionDto, FakeTrackApi, IdentityApi, IdentityError, JobError, NewUploadJob,
+    NewWaveform, SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform,
+    WaveformApi, WaveformApiError,
 };
 use zukka_portal::app::{AppState, build_router};
 use zukka_portal::config::Config;
@@ -324,6 +324,7 @@ struct Services {
     music: Arc<FakeMusicApi>,
     jobs: Arc<FakeJobs>,
     waveforms: Arc<FakeWaveforms>,
+    tracks: Arc<FakeTrackApi>,
 }
 
 fn config(tmp: &Path, max_bytes: i64) -> Config {
@@ -345,13 +346,15 @@ fn router(identity: FakeIdentity, cfg: Config) -> (Router, Services) {
     let music = Arc::new(FakeMusicApi::new());
     let jobs = Arc::new(FakeJobs::new());
     let waveforms = Arc::new(FakeWaveforms::new());
-    let state = AppState::with_services(
+    let tracks = Arc::new(FakeTrackApi::new());
+    let state = AppState::with_clients(
         cfg,
         Arc::new(identity),
         Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
         music.clone(),
         jobs.clone(),
         waveforms.clone(),
+        tracks.clone(),
     );
     (
         build_router(state),
@@ -359,6 +362,7 @@ fn router(identity: FakeIdentity, cfg: Config) -> (Router, Services) {
             music,
             jobs,
             waveforms,
+            tracks,
         },
     )
 }
@@ -659,10 +663,13 @@ async fn duplicate_upload_creates_no_second_track() {
     // Hash-Dedupe: the second upload short-circuits to the existing track.
     assert_eq!(svc.music.created_count(), 1, "no second track");
     assert_eq!(svc.waveforms.count(), 1, "no second waveform");
+    assert_eq!(svc.tracks.all().len(), 1, "no second local track");
     let jobs = svc.jobs.all();
     assert_eq!(jobs.len(), 2, "both uploads are tracked as jobs");
     assert!(jobs.iter().all(|j| j.state == "done"));
-    assert_eq!(jobs[0].track_id, jobs[1].track_id, "same track id");
+    // The first upload registered the local track; the dedupe run reuses it
+    // (its local id is unknown to the pipeline, so the second job has none).
+    assert!(jobs[0].track_id.is_some(), "first job carries the local id");
 }
 
 // ---------------------------------------------------------------------------
