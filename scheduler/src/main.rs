@@ -13,6 +13,12 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to initialize database at {db_path}"))?;
     tracing::info!("database ready at {db_path}");
 
+    // Boot guarantee: the rotation file exists as soon as the process starts,
+    // so Liquidsoap's `watch` reload always sees a valid playlist (§3c).
+    if let Err(err) = zukka_scheduler::store::rotation::sync(&pool).await {
+        tracing::warn!("failed to sync rotation.m3u at boot: {err}");
+    }
+
     let app = zukka_scheduler::api::router(pool);
 
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());

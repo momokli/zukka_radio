@@ -25,7 +25,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::store::now_ts;
 
 /// Base URL of the Music API (C46/C85), overridable via `MUSIC_API_BASE_URL`.
-fn music_api_base() -> String {
+pub(crate) fn music_api_base() -> String {
     std::env::var("MUSIC_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:5001".to_string())
 }
 

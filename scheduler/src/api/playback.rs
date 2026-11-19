@@ -4,8 +4,10 @@
 //! ([`crate::api::auth::require_token`]); every other route stays open until
 //! the RBAC issue lands (the `TODO(auth)` in [`crate::api`] remains).
 
+use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
@@ -34,6 +36,7 @@ pub fn router() -> Router<SqlitePool> {
         .route("/started", post(started))
         .route("/ended", post(ended))
         .route("/error", post(error))
+        .route("/rotation.m3u", get(rotation_m3u))
         .layer(middleware::from_fn(auth::require_token))
 }
 
@@ -73,6 +76,22 @@ pub async fn ended(
 ) -> ApiResult<StatusCode> {
     store::playback::ended(&pool, &req).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /playback/rotation.m3u`
+///
+/// Renders the rotation, best-effort refreshes the on-disk file (`watch`
+/// reload) and returns the rendered content with `audio/x-mpegurl`. A write
+/// failure never turns the response into a `500` — the body is served anyway.
+pub async fn rotation_m3u(State(pool): State<SqlitePool>) -> ApiResult<Response> {
+    let body = store::rotation::render(&pool).await?;
+    if let Err(err) = store::rotation::sync(&pool).await {
+        tracing::warn!("failed to sync rotation.m3u: {err}");
+    }
+    Response::builder()
+        .header(CONTENT_TYPE, "audio/x-mpegurl")
+        .body(Body::from(body))
+        .map_err(|err| crate::error::ApiError::Internal(anyhow::Error::new(err)))
 }
 
 /// `POST /playback/error`
