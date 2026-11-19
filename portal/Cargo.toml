@@ -39,6 +39,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+futures-util = "0.3"
 http-body-util = "0.1"
 mime = "0.3"
 tempfile.workspace = true

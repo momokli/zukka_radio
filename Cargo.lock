@@ -2864,6 +2864,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "form_urlencoded",
+ "futures-util",
  "hmac",
  "http-body-util",
  "mime",
