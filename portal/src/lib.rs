@@ -18,3 +18,4 @@ pub mod templates;
 pub mod transcode;
 pub mod upload;
 pub mod upload_pipeline;
+pub mod waveform;

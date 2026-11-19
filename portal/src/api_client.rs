@@ -545,3 +545,149 @@ impl UploadJobApi for HttpUploadJobApi {
 struct CreateJobResponse {
     id: String,
 }
+
+// ---------------------------------------------------------------------------
+// Issue #18: waveforms (write-through to `/internal/waveforms`, D8/C05)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /internal/waveforms` — one waveform upsert.
+#[derive(Debug, Clone)]
+pub struct NewWaveform {
+    /// `track` | `tape`.
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub scheme: i64,
+    pub algorithm: String,
+    pub ms_per_bar: i64,
+    pub bars: i64,
+    /// `2 * bars` bytes of interleaved 8-bit `(min, max)` pairs.
+    pub data: Vec<u8>,
+}
+
+/// A waveform as returned by the scheduler (`data` is a JSON byte array).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Waveform {
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub scheme: i64,
+    pub algorithm: String,
+    pub ms_per_bar: i64,
+    pub bars: i64,
+    #[serde(default)]
+    pub data: Vec<u8>,
+    pub created_at: String,
+}
+
+/// Waveform operation failure.
+#[derive(Debug, thiserror::Error)]
+pub enum WaveformApiError {
+    /// The waveform does not exist (HTTP `404`).
+    #[error("waveform not found")]
+    NotFound,
+    /// Transport/parse failure or unexpected status.
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+/// Waveform write-through operations. Implemented by [`HttpWaveformApi`] in
+/// production and by a fake in tests.
+#[async_trait]
+pub trait WaveformApi: Send + Sync {
+    /// Upserts the waveform for `(subject_kind, subject_id)`.
+    async fn put_waveform(&self, waveform: &NewWaveform) -> Result<Waveform, WaveformApiError>;
+
+    /// Fetches one waveform; `Ok(None)` on `404`.
+    async fn get_waveform(
+        &self,
+        subject_kind: &str,
+        subject_id: &str,
+    ) -> Result<Option<Waveform>, WaveformApiError>;
+}
+
+/// HTTP client for `/internal/waveforms` (service-token bearer).
+pub struct HttpWaveformApi {
+    client: reqwest::Client,
+    base_url: String,
+    service_token: String,
+}
+
+impl HttpWaveformApi {
+    /// Builds a client against `base_url` (e.g. `http://scheduler:8080`).
+    pub fn new(
+        base_url: impl Into<String>,
+        service_token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            service_token: service_token.into(),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/v1/internal{path}", self.base_url)
+    }
+}
+
+#[async_trait]
+impl WaveformApi for HttpWaveformApi {
+    async fn put_waveform(&self, waveform: &NewWaveform) -> Result<Waveform, WaveformApiError> {
+        let response = self
+            .client
+            .post(self.url("/waveforms"))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({
+                "subject_kind": waveform.subject_kind,
+                "subject_id": waveform.subject_id,
+                "scheme": waveform.scheme,
+                "algorithm": waveform.algorithm,
+                "ms_per_bar": waveform.ms_per_bar,
+                "bars": waveform.bars,
+                "data": waveform.data,
+            }))
+            .send()
+            .await
+            .map_err(|e| WaveformApiError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(WaveformApiError::Upstream(format!(
+                "scheduler returned {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| WaveformApiError::Upstream(e.to_string()))
+    }
+
+    async fn get_waveform(
+        &self,
+        subject_kind: &str,
+        subject_id: &str,
+    ) -> Result<Option<Waveform>, WaveformApiError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/waveforms/{subject_kind}/{subject_id}")))
+            .bearer_auth(&self.service_token)
+            .send()
+            .await
+            .map_err(|e| WaveformApiError::Upstream(e.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(WaveformApiError::Upstream(format!(
+                "scheduler returned {}",
+                response.status()
+            )));
+        }
+        let waveform = response
+            .json()
+            .await
+            .map_err(|e| WaveformApiError::Upstream(e.to_string()))?;
+        Ok(Some(waveform))
+    }
+}

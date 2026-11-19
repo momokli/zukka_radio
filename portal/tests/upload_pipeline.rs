@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
-use zukka_portal::api_client::{JobError, NewUploadJob, UploadJob, UploadJobApi, UploadJobPatch};
+use zukka_portal::api_client::{
+    JobError, NewUploadJob, NewWaveform, UploadJob, UploadJobApi, UploadJobPatch, Waveform,
+    WaveformApi, WaveformApiError,
+};
 use zukka_portal::error::PortalError;
 use zukka_portal::music_api::FakeMusicApi;
 use zukka_portal::templates::{LibraryPage, UploadJobFragment};
@@ -119,6 +122,70 @@ impl UploadJobApi for FakeJobs {
 
     async fn list_jobs(&self, _limit: i64) -> Result<Vec<UploadJob>, JobError> {
         Ok(self.inner.lock().unwrap().jobs.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fake waveforms
+// ---------------------------------------------------------------------------
+
+/// In-memory [`WaveformApi`] recording every upsert.
+#[derive(Default)]
+struct FakeWaveforms {
+    written: Mutex<Vec<NewWaveform>>,
+}
+
+impl FakeWaveforms {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn count(&self) -> usize {
+        self.written.lock().unwrap().len()
+    }
+
+    fn last(&self) -> Option<NewWaveform> {
+        self.written.lock().unwrap().last().cloned()
+    }
+}
+
+#[async_trait]
+impl WaveformApi for FakeWaveforms {
+    async fn put_waveform(&self, waveform: &NewWaveform) -> Result<Waveform, WaveformApiError> {
+        self.written.lock().unwrap().push(waveform.clone());
+        Ok(Waveform {
+            subject_kind: waveform.subject_kind.clone(),
+            subject_id: waveform.subject_id.clone(),
+            scheme: waveform.scheme,
+            algorithm: waveform.algorithm.clone(),
+            ms_per_bar: waveform.ms_per_bar,
+            bars: waveform.bars,
+            data: waveform.data.clone(),
+            created_at: "2026-11-18T12:00:00.000Z".into(),
+        })
+    }
+
+    async fn get_waveform(
+        &self,
+        subject_kind: &str,
+        subject_id: &str,
+    ) -> Result<Option<Waveform>, WaveformApiError> {
+        Ok(self
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|w| w.subject_kind == subject_kind && w.subject_id == subject_id)
+            .map(|w| Waveform {
+                subject_kind: w.subject_kind.clone(),
+                subject_id: w.subject_id.clone(),
+                scheme: w.scheme,
+                algorithm: w.algorithm.clone(),
+                ms_per_bar: w.ms_per_bar,
+                bars: w.bars,
+                data: w.data.clone(),
+                created_at: "2026-11-18T12:00:00.000Z".into(),
+            }))
     }
 }
 
@@ -294,10 +361,16 @@ async fn over_limit_is_413_and_cleans_up() {
 // US-8 — pipeline orchestration + dedupe
 // ---------------------------------------------------------------------------
 
-fn deps<'a>(jobs: &'a FakeJobs, music: &'a FakeMusicApi, tmp: &'a Path) -> PipelineDeps<'a> {
+fn deps<'a>(
+    jobs: &'a FakeJobs,
+    music: &'a FakeMusicApi,
+    waveforms: &'a FakeWaveforms,
+    tmp: &'a Path,
+) -> PipelineDeps<'a> {
     PipelineDeps {
         upload_jobs: jobs,
         music,
+        waveforms,
         ffprobe_bin: "ffprobe",
         ffmpeg_bin: "ffmpeg",
         tmp_dir: tmp,
@@ -315,9 +388,10 @@ async fn pipeline_master_only_for_accepted_codec() {
 
     let jobs = FakeJobs::new();
     let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
     let staged = stage_file(dir.path(), "tone.wav", "audio/wav", &wav);
 
-    let outcome = run(&deps(&jobs, &music, dir.path()), "c-1", staged)
+    let outcome = run(&deps(&jobs, &music, &waveforms, dir.path()), "c-1", staged)
         .await
         .expect("pipeline");
     assert!(!outcome.deduped);
@@ -325,6 +399,13 @@ async fn pipeline_master_only_for_accepted_codec() {
     assert_eq!(music.created_count(), 1);
     assert_eq!(music.asset_count(), 1, "master only");
     assert_eq!(jobs.state_of(&outcome.job_id).as_deref(), Some("done"));
+    // D8: the pipeline computed and stored a waveform for the new track.
+    assert_eq!(waveforms.count(), 1, "waveform written once");
+    let wf = waveforms.last().expect("waveform");
+    assert_eq!(wf.subject_kind, "track");
+    assert_eq!(wf.subject_id, outcome.track_id);
+    assert_eq!(wf.bars, 800);
+    assert_eq!(wf.data.len(), 800 * 2, "2 * bars min/max bytes");
 }
 
 #[tokio::test]
@@ -339,9 +420,10 @@ async fn pipeline_creates_derivate_for_unaccepted_codec() {
 
     let jobs = FakeJobs::new();
     let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
     let staged = stage_file(dir.path(), "tone.ac3", "audio/ac3", &ac3);
 
-    let outcome = run(&deps(&jobs, &music, dir.path()), "c-1", staged)
+    let outcome = run(&deps(&jobs, &music, &waveforms, dir.path()), "c-1", staged)
         .await
         .expect("pipeline");
     assert!(outcome.derivate, "derivate expected for ac3");
@@ -363,9 +445,10 @@ async fn pipeline_dedupes_identical_bytes() {
     let wav = make_audio(dir.path(), "tone.wav", &[]);
     let jobs = FakeJobs::new();
     let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
 
     let first = run(
-        &deps(&jobs, &music, dir.path()),
+        &deps(&jobs, &music, &waveforms, dir.path()),
         "c-1",
         stage_file(dir.path(), "tone.wav", "audio/wav", &wav),
     )
@@ -373,9 +456,10 @@ async fn pipeline_dedupes_identical_bytes() {
     .expect("first");
     assert!(!first.deduped);
     assert_eq!(music.created_count(), 1);
+    assert_eq!(waveforms.count(), 1);
 
     let second = run(
-        &deps(&jobs, &music, dir.path()),
+        &deps(&jobs, &music, &waveforms, dir.path()),
         "c-1",
         stage_file(dir.path(), "tone.wav", "audio/wav", &wav),
     )
@@ -385,6 +469,8 @@ async fn pipeline_dedupes_identical_bytes() {
     assert_eq!(music.created_count(), 1, "no second track");
     assert_eq!(second.track_id, first.track_id);
     assert_eq!(jobs.state_of(&second.job_id).as_deref(), Some("done"));
+    // The dedupe short-circuit skips waveform computation (track already has one).
+    assert_eq!(waveforms.count(), 1, "no second waveform on dedupe");
 }
 
 #[tokio::test]
@@ -396,6 +482,7 @@ async fn pipeline_ffprobe_error_marks_job_failed() {
     let dir = tempfile::tempdir().unwrap();
     let jobs = FakeJobs::new();
     let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
     let staged = stage_bytes(
         dir.path(),
         "garbage.bin",
@@ -403,7 +490,7 @@ async fn pipeline_ffprobe_error_marks_job_failed() {
         b"not audio",
     );
 
-    let err = run(&deps(&jobs, &music, dir.path()), "c-1", staged)
+    let err = run(&deps(&jobs, &music, &waveforms, dir.path()), "c-1", staged)
         .await
         .expect_err("ffprobe must fail");
     assert!(matches!(err, PipelineError { .. }));
@@ -411,6 +498,7 @@ async fn pipeline_ffprobe_error_marks_job_failed() {
     let job = jobs.job_of(&err.job_id).unwrap();
     assert!(job.error.unwrap().contains("ffprobe"));
     assert_eq!(music.created_count(), 0);
+    assert_eq!(waveforms.count(), 0);
 }
 
 // ---------------------------------------------------------------------------

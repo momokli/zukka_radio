@@ -50,7 +50,7 @@ impl Config {
         let session_absolute_days = env_days("SESSION_ABSOLUTE_DAYS", 30)?;
         let music_api_url = env_or("MUSIC_API_URL", "http://music-api:8082");
         let music_api_token = env_or("MUSIC_API_TOKEN", "");
-        let upload_max_bytes = env_i64("UPLOAD_MAX_BYTES", 1_073_741_824)?;
+        let upload_max_bytes = env_i64("UPLOAD_MAX_BYTES", 524_288_000)?;
         let ffprobe_bin = env_or("FFPROBE_BIN", "ffprobe");
         let ffmpeg_bin = env_or("FFMPEG_BIN", "ffmpeg");
         let upload_tmp_dir = PathBuf::from(env_or("UPLOAD_TMP_DIR", "/tmp/zukka-uploads"));
@@ -100,7 +100,7 @@ impl Config {
             session_absolute_days,
             music_api_url: "http://music-api:8082".to_string(),
             music_api_token: String::new(),
-            upload_max_bytes: 1_073_741_824,
+            upload_max_bytes: 524_288_000,
             ffprobe_bin: "ffprobe".to_string(),
             ffmpeg_bin: "ffmpeg".to_string(),
             upload_tmp_dir: std::env::temp_dir().join("zukka-uploads"),

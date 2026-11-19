@@ -9,7 +9,9 @@ use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::get;
 
-use crate::api_client::{HttpUploadJobApi, IdentityApi, UploadJobApi};
+use crate::api_client::{
+    HttpUploadJobApi, HttpWaveformApi, IdentityApi, UploadJobApi, WaveformApi,
+};
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
 use crate::error::PortalError;
@@ -31,6 +33,7 @@ pub struct AppState {
     pub identity: Arc<dyn IdentityApi>,
     pub music: Arc<dyn MusicApi>,
     pub upload_jobs: Arc<dyn UploadJobApi>,
+    pub waveforms: Arc<dyn WaveformApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
@@ -41,6 +44,7 @@ impl AppState {
         Self {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
+            waveforms: default_waveforms(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -56,25 +60,28 @@ impl AppState {
         Self {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
+            waveforms: default_waveforms(&config),
             config: Arc::new(config),
             identity,
             limiter,
         }
     }
 
-    /// Builds state with explicit music/job clients (upload tests).
+    /// Builds state with explicit music/job/waveform clients (upload tests).
     pub fn with_services(
         config: Config,
         identity: Arc<dyn IdentityApi>,
         limiter: Arc<WindowLimiter>,
         music: Arc<dyn MusicApi>,
         upload_jobs: Arc<dyn UploadJobApi>,
+        waveforms: Arc<dyn WaveformApi>,
     ) -> Self {
         Self {
             config: Arc::new(config),
             identity,
             music,
             upload_jobs,
+            waveforms,
             limiter,
         }
     }
@@ -97,6 +104,16 @@ fn default_jobs(config: &Config) -> Arc<dyn UploadJobApi> {
     )
 }
 
+fn default_waveforms(config: &Config) -> Arc<dyn WaveformApi> {
+    Arc::new(
+        HttpWaveformApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build waveform client"),
+    )
+}
+
 /// Builds the full portal router.
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
@@ -114,6 +131,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/library", get(upload::library_get))
         .route("/library/upload", axum::routing::post(upload::upload_post))
         .route("/library/upload/{id}", get(upload::upload_fragment))
+        .route(
+            "/library/tracks/{id}/waveform.json",
+            get(upload::waveform_json),
+        )
+        .route(
+            "/library/tracks/{id}/waveform.svg",
+            get(upload::waveform_svg),
+        )
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))
         .route_layer(from_fn_with_state(

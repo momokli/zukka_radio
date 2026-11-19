@@ -10,17 +10,19 @@
 
 use std::path::Path;
 
-use crate::api_client::{NewUploadJob, UploadJobApi, UploadJobPatch};
+use crate::api_client::{NewUploadJob, NewWaveform, UploadJobApi, UploadJobPatch, WaveformApi};
 use crate::error::PortalError;
 use crate::ffprobe;
 use crate::music_api::{MusicApi, NewTrack};
 use crate::transcode;
 use crate::upload::StagedUpload;
+use crate::waveform;
 
 /// Collaborators the pipeline needs (all swappable for tests).
 pub struct PipelineDeps<'a> {
     pub upload_jobs: &'a dyn UploadJobApi,
     pub music: &'a dyn MusicApi,
+    pub waveforms: &'a dyn WaveformApi,
     pub ffprobe_bin: &'a str,
     pub ffmpeg_bin: &'a str,
     pub tmp_dir: &'a Path,
@@ -193,6 +195,32 @@ async fn run_inner(
             .await
             .map_err(|e| format!("derivate upload failed: {e}"))?;
     }
+
+    // 6. waveform peaks (D8): computed from the master, stored write-through.
+    let peaks = waveform::compute_peaks(
+        deps.ffmpeg_bin,
+        &staged.path,
+        waveform::WAVEFORM_BARS as usize,
+        probe.duration_ms,
+    )
+    .await
+    .map_err(|e| format!("waveform computation failed: {e}"))?;
+    let ms_per_bar = probe
+        .duration_ms
+        .map(|ms| (ms / waveform::WAVEFORM_BARS).max(0))
+        .unwrap_or(0);
+    deps.waveforms
+        .put_waveform(&NewWaveform {
+            subject_kind: "track".into(),
+            subject_id: track.id.clone(),
+            scheme: waveform::SCHEME,
+            algorithm: waveform::ALGORITHM.into(),
+            ms_per_bar,
+            bars: waveform::WAVEFORM_BARS,
+            data: peaks,
+        })
+        .await
+        .map_err(|e| format!("waveform write failed: {e}"))?;
 
     Ok((track.id, false, needs))
 }

@@ -70,3 +70,12 @@ pub struct UploadJobFragment {
     pub csrf_token: String,
     pub job: UploadJob,
 }
+
+/// Inline SVG rendering of a track waveform (D8, `partials/waveform.html`).
+/// `peaks` is the interleaved 8-bit `(min, max)` pair sequence (`2 * bars`).
+#[derive(Template)]
+#[template(path = "partials/waveform.html")]
+pub struct WaveformSvg {
+    pub bars: i64,
+    pub peaks: Vec<u8>,
+}

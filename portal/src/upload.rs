@@ -21,7 +21,7 @@ use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::PortalError;
 use crate::rbac;
-use crate::templates::{LibraryPage, LibraryUploadPage, UploadJobFragment};
+use crate::templates::{LibraryPage, LibraryUploadPage, UploadJobFragment, WaveformSvg};
 use crate::upload_pipeline::{self, PipelineDeps};
 
 /// A multipart file streamed to a temp file, with its hash and size.
@@ -161,6 +161,7 @@ pub async fn upload_post(
     let deps = PipelineDeps {
         upload_jobs: state.upload_jobs.as_ref(),
         music: state.music.as_ref(),
+        waveforms: state.waveforms.as_ref(),
         ffprobe_bin: &state.config.ffprobe_bin,
         ffmpeg_bin: &state.config.ffmpeg_bin,
         tmp_dir: &state.config.upload_tmp_dir,
@@ -198,4 +199,44 @@ pub async fn upload_fragment(
         csrf_token: ctx.csrf_token.clone(),
         job,
     })
+}
+
+/// Fetches a track waveform via the write-through client; `404` when absent.
+async fn fetch_track_waveform(
+    state: &AppState,
+    id: &str,
+) -> Result<crate::api_client::Waveform, PortalError> {
+    state
+        .waveforms
+        .get_waveform("track", id)
+        .await
+        .map_err(|e| PortalError::Upstream(e.to_string()))?
+        .ok_or(PortalError::NotFound)
+}
+
+/// `GET /library/tracks/{id}/waveform.json` — the raw peaks as JSON (D8).
+pub async fn waveform_json(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, PortalError> {
+    rbac::check(&ctx, "library.read")?;
+    let waveform = fetch_track_waveform(&state, &id).await?;
+    Ok(axum::Json(waveform).into_response())
+}
+
+/// `GET /library/tracks/{id}/waveform.svg` — inline SVG rendering of the peaks.
+pub async fn waveform_svg(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, PortalError> {
+    rbac::check(&ctx, "library.read")?;
+    let waveform = fetch_track_waveform(&state, &id).await?;
+    let html = WaveformSvg {
+        bars: waveform.bars,
+        peaks: waveform.data,
+    }
+    .render()?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], html).into_response())
 }
