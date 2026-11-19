@@ -45,6 +45,10 @@ pub enum ApiError {
     #[error("{message}")]
     BadRequest { message: String },
 
+    /// Missing or invalid service token → `401 unauthorized` (§4.6, Issue #13).
+    #[error("unauthorized")]
+    Unauthorized,
+
     /// Unexpected server failure → `500 internal_error` (details never leak).
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -119,6 +123,12 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest { message } => {
                 (StatusCode::BAD_REQUEST, "bad_request", message, None)
             }
+            ApiError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing or invalid token".to_string(),
+                None,
+            ),
             ApiError::Internal(err) => {
                 tracing::error!("internal error: {err:#}");
                 (

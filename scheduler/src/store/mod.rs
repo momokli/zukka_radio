@@ -2,6 +2,7 @@
 //! works without a database).
 
 pub mod broadcasts;
+pub mod playback;
 pub mod queue_items;
 pub mod queues;
 pub mod schedule;

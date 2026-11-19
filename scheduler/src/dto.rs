@@ -561,6 +561,131 @@ pub struct UpdateSourceRequest {
     pub config: Option<Option<serde_json::Value>>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #13: playback API
+// ---------------------------------------------------------------------------
+
+/// Playable media kind for [`PlaybackItemDto`] — `track` | `tape` (§2.3).
+///
+/// Deliberately separate from [`QueueItemKind`]: a `link` is never directly
+/// playable (its Music-API URL only exists after resolution, O7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackKind {
+    Track,
+    Tape,
+}
+
+impl PlaybackKind {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "track" => Ok(PlaybackKind::Track),
+            "tape" => Ok(PlaybackKind::Tape),
+            other => Err(ApiError::validation(
+                field,
+                format!("unknown kind '{other}', expected 'track' or 'tape'"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlaybackKind::Track => "track",
+            PlaybackKind::Tape => "tape",
+        }
+    }
+}
+
+/// Requested playback layer — only `show` | `queue` are resolvable (§2.2).
+///
+/// Any other value (`live`, `rotation`, `relay`, `fun`) becomes
+/// `422 validation_error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackLayer {
+    Show,
+    Queue,
+}
+
+impl PlaybackLayer {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "show" => Ok(PlaybackLayer::Show),
+            "queue" => Ok(PlaybackLayer::Queue),
+            other => Err(ApiError::validation(
+                field,
+                format!("unknown layer '{other}', expected 'show' or 'queue'"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlaybackLayer::Show => "show",
+            PlaybackLayer::Queue => "queue",
+        }
+    }
+}
+
+/// One resolvable playback item (§3.4). `uri` is a Music-API URL (C46).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackItemDto {
+    /// `null` when the item does not come from a queue (e.g. `show` tape).
+    pub queue_item_id: Option<String>,
+    pub kind: PlaybackKind,
+    pub track_id: Option<String>,
+    pub tape_id: Option<String>,
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration_ms: i64,
+    pub uri: String,
+    /// Cue points arrive with the link-/cue issue (#13: always `null`).
+    pub cue_in_ms: Option<i64>,
+    pub cue_out_ms: Option<i64>,
+}
+
+/// Body of `POST /playback/started` (§3.5; `source_id` → `layer` per C79/C §4.2).
+///
+/// Only `queue_item_id` is mandatory; the remaining fields are informational
+/// (logging).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaybackStartedRequest {
+    #[serde(default)]
+    pub queue_item_id: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub track_id: Option<String>,
+    #[serde(default)]
+    pub tape_id: Option<String>,
+    #[serde(default)]
+    pub layer: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+}
+
+/// Body of `POST /playback/ended`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaybackEndedRequest {
+    #[serde(default)]
+    pub queue_item_id: Option<String>,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+}
+
+/// Body of `POST /playback/error`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaybackErrorRequest {
+    #[serde(default)]
+    pub queue_item_id: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub occurred_at: Option<String>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
