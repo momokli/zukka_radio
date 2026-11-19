@@ -2,8 +2,8 @@
 //!
 //! C77: the layer set is fixed — only `GET` and `PATCH` are registered.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use sqlx::SqlitePool;
 
 use crate::api::ApiJson;

@@ -88,12 +88,10 @@ pub fn router(pool: SqlitePool) -> Router {
         .route("/schedule/expand", post(schedule::expand));
 
     // C77: the six layers are fixed — read + PATCH only, no POST/DELETE/PUT.
-    let api = api
-        .route("/sources", get(sources::list))
-        .route(
-            "/sources/{id}",
-            get(sources::get_one).patch(sources::update),
-        );
+    let api = api.route("/sources", get(sources::list)).route(
+        "/sources/{id}",
+        get(sources::get_one).patch(sources::update),
+    );
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))

@@ -79,10 +79,7 @@ async fn seed_layers_via_api() {
     assert_eq!(status, StatusCode::OK, "list: {body}");
     let layers = body.as_array().expect("array");
 
-    let names: Vec<&str> = layers
-        .iter()
-        .map(|s| s["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = layers.iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
         vec!["live", "show", "queue", "rotation", "relay", "fun"],
@@ -243,7 +240,11 @@ async fn validation_cases() {
         Some(json!({})),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "empty body: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "empty body: {body}"
+    );
     assert_eq!(body["error"]["code"], "validation_error");
 
     // config null → 422
@@ -254,7 +255,11 @@ async fn validation_cases() {
         Some(json!({ "config": null })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "config null: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "config null: {body}"
+    );
     assert_eq!(body["error"]["details"]["field"], "config");
 
     // config non-object → 422
@@ -265,11 +270,19 @@ async fn validation_cases() {
         Some(json!({ "config": [1, 2] })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "config array: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "config array: {body}"
+    );
     assert_eq!(body["error"]["details"]["field"], "config");
 
     // enabled wrong type → 422 (field-level, not the extractor's 400)
-    for bad in [json!({ "enabled": 0 }), json!({ "enabled": 1 }), json!({ "enabled": "true" })] {
+    for bad in [
+        json!({ "enabled": 0 }),
+        json!({ "enabled": 1 }),
+        json!({ "enabled": "true" }),
+    ] {
         let (status, body) = send(
             &app,
             Method::PATCH,
@@ -320,7 +333,13 @@ async fn create_delete_put_are_not_registered() {
         "POST /sources must not succeed, got {status}"
     );
 
-    let (status, _) = send(&app, Method::DELETE, &format!("/api/v1/sources/{LIVE}"), None).await;
+    let (status, _) = send(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/sources/{LIVE}"),
+        None,
+    )
+    .await;
     assert!(
         !status.is_success(),
         "DELETE /sources/{{id}} must not succeed, got {status}"

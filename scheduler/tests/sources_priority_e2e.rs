@@ -115,7 +115,10 @@ async fn http_patch_toggles_active_layer_and_persists() {
         .find(|s| s["name"] == "live")
         .expect("live entry");
     assert_eq!(live["enabled"], json!(false));
-    assert_eq!(live["priority"], 100, "list still reports immutable priority");
+    assert_eq!(
+        live["priority"], 100,
+        "list still reports immutable priority"
+    );
 
     // 5. Re-enabling via HTTP restores the original selection.
     let (status, _) = send(
