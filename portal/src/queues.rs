@@ -610,7 +610,9 @@ pub async fn queue_skip(
             "info",
             "Diese Queue ist gerade nicht die aktive Quelle — Skip wirkt auf das laufende Programm.",
         ),
-        Err(ControlError::Upstream(_)) => toast_only("error", "Scheduler nicht erreichbar."),
+        Err(ControlError::LiveActive(_)) | Err(ControlError::Upstream(_)) => {
+            toast_only("error", "Scheduler nicht erreichbar.")
+        }
     };
     if is_htmx(&headers) {
         Ok(response)
