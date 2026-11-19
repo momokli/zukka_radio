@@ -117,7 +117,7 @@ async fn live_broadcast(pool: &SqlitePool) -> ApiResult<Option<LiveBroadcast>> {
 }
 
 /// The queue currently on air (layer 60) — §2.2 priority chain.
-async fn active_queue_id(pool: &SqlitePool) -> ApiResult<Option<String>> {
+pub(crate) async fn active_queue_id(pool: &SqlitePool) -> ApiResult<Option<String>> {
     // 1. the `slot`-queue of the running playlist broadcast.
     let from_broadcast: Option<String> = sqlx::query_scalar(
         "SELECT queue_id FROM broadcasts \

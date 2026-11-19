@@ -734,6 +734,57 @@ pub struct ControlPauseRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #22: control-panel state (read-only composition)
+// ---------------------------------------------------------------------------
+
+/// The live-layer slice of [`ControlStateDto`] (Issue #22, US-1).
+///
+/// `connected` is derived from `event_log` (K4) and is usually empty until
+/// `POST /live/events` (#32) starts writing live events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveStateDto {
+    /// `settings['live.override_caster_id']`, or `null`.
+    pub override_caster_id: Option<String>,
+    /// Override, else the running live broadcast's caster, else `null`.
+    pub active_caster_id: Option<String>,
+    /// Casters observed connected, derived from `event_log` (K4), sorted.
+    pub connected: Vec<ConnectedCasterDto>,
+}
+
+/// One connected caster, derived from `event_log` (K4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectedCasterDto {
+    pub caster_id: String,
+    /// `casters.harbor_mount` of the caster, when known.
+    pub mount: Option<String>,
+    /// `occurred_at` of the latest `live_connected` event (ISO-8601 UTC).
+    pub since: String,
+}
+
+/// Full read-only control-panel state (`GET /control/state`, Issue #22, US-1).
+///
+/// Composed entirely from existing tables (`sources`, `settings`,
+/// `broadcasts`, `queue_items`, `tracks`, `event_log`) — no writes, no
+/// migration. `derived` marks `active_layer` as the scheduler's deterministic
+/// approximation of the output layer (K2/K3) until #32 provides real status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlStateDto {
+    /// All six layers (`priority DESC, name ASC`) incl. `enabled`.
+    pub sources: Vec<SourceDto>,
+    /// `settings['control.paused'] == "true"` (absent ⇒ `false`).
+    pub paused: bool,
+    /// `settings['control.forced_layer']` as a layer, or `null`.
+    pub forced_layer: Option<SourceLayer>,
+    /// K3 derivation of the active output layer, or `null`.
+    pub active_layer: Option<SourceLayer>,
+    /// Always `true` in #22 — `active_layer` is an approximation (K2).
+    pub derived: bool,
+    pub live: LiveStateDto,
+    /// `store::playback::current`, or `null`.
+    pub now_playing: Option<PlaybackItemDto>,
+}
+
+// ---------------------------------------------------------------------------
 // Issue #16: auth (identity authority)
 // ---------------------------------------------------------------------------
 
