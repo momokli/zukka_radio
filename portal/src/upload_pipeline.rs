@@ -6,7 +6,8 @@
 //! 3. `find_by_hash` — a hit marks the job `done` with the existing track.
 //! 4. `ffprobe` → D7 decision → optional MP3 derivate.
 //! 5. `create_track` + `upload_asset` (master, then derivate) at the Music API.
-//! 6. `patch_job` → `done` + `track_id`; any failure → `failed` + `error`.
+//! 6. Waveform: compute peaks from the staged master and `put_waveform` (D8).
+//! 7. `patch_job` → `done` + `track_id`; any failure → `failed` + `error`.
 
 use std::path::Path;
 

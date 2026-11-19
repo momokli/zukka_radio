@@ -16,7 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Multipart, State};
+use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::routing::post;
 use futures_util::StreamExt;
@@ -912,18 +912,21 @@ async fn streaming_chunked_body_stages_and_hashes() {
 
 /// AC §7 "200-MB-FLAC-Upload läuft ohne RAM-Spitze (Streaming)".
 ///
-/// BLOCKED (→ issue #58): axum's `Multipart` extractor applies the default
-/// `DefaultBodyLimit` of 2 MiB (it calls `with_limited_body`), and the portal
-/// never disables it, so any body > 2 MiB is rejected before staging. This test
-/// documents the intended behaviour; it must be un-ignored once
-/// `DefaultBodyLimit::disable()` (or a `UPLOAD_MAX_BYTES`-sized limit) is wired
-/// into the upload route.
+/// Regression test for issue #58: axum's `Multipart` extractor applies the
+/// default `DefaultBodyLimit` of 2 MiB (it calls `with_limited_body`), so
+/// without the route-level `DefaultBodyLimit::disable()` any body > 2 MiB is
+/// rejected before staging. The stage router below mirrors the production
+/// `/library/upload` route's body-limit layer (see `app::build_router`), so a
+/// 16 MiB streamed body must stage successfully (the handler's own
+/// `StageState::max` stays the size gate).
 #[tokio::test]
-#[ignore = "blocked by #58: portal never disables axum's default 2 MiB Multipart body limit"]
 async fn large_streamed_upload_stages_without_body_limit() {
     let dir = tempfile::tempdir().unwrap();
     let app = Router::new()
-        .route("/stage", post(stage_handler))
+        .route(
+            "/stage",
+            post(stage_handler).layer(DefaultBodyLimit::disable()),
+        )
         .with_state(StageState {
             dir: dir.path().to_path_buf(),
             max: 500 * 1024 * 1024,

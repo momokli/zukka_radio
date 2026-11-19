@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::header;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
@@ -129,7 +130,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/logout", axum::routing::post(handlers::logout))
         .route("/library", get(upload::library_get))
-        .route("/library/upload", axum::routing::post(upload::upload_post))
+        // Lift axum's default 2 MiB Multipart body limit for this route only:
+        // the streaming staging in `upload::stage_multipart` is the sole size
+        // gate (`UPLOAD_MAX_BYTES` → 413 + temp cleanup), so large uploads
+        // never get buffered or rejected at the framework layer (Issue #18/#58).
+        .route(
+            "/library/upload",
+            axum::routing::post(upload::upload_post).layer(DefaultBodyLimit::disable()),
+        )
         .route("/library/upload/{id}", get(upload::upload_fragment))
         .route(
             "/library/tracks/{id}/waveform.json",
