@@ -1049,6 +1049,10 @@ impl TrackApi for FakeTrackApi {
                     .as_deref()
                     .is_none_or(|o| t.caster_id.as_deref() == Some(o))
             })
+            // Mirror the scheduler's `ORDER BY` pagination: honour offset/limit
+            // so the fake cannot mask paging bugs in the portal.
+            .skip(query.offset.unwrap_or(0).max(0) as usize)
+            .take(query.limit.unwrap_or(i64::MAX).max(0) as usize)
             .cloned()
             .collect();
         Ok(matches)

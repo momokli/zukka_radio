@@ -440,6 +440,51 @@ async fn library_empty_state() {
     assert!(body.contains("Library leer"), "{body}");
 }
 
+#[tokio::test]
+async fn library_paginates_results() {
+    // PAGE_SIZE is 20; 21 shared tracks span two pages.
+    let api = FakeTrackApi::new();
+    for i in 0..21 {
+        api.seed(track(
+            &format!("t-{i:02}"),
+            &format!("Song {i:02}"),
+            "shared",
+            Some("c-2"),
+        ));
+    }
+    let app = router(caster_perms(), Arc::new(api));
+    let (session, _csrf) = login(&app).await;
+
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/library",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Seite 1"), "pager rendered: {body}");
+    assert!(body.contains("page=2"), "next-page link: {body}");
+    assert_eq!(body.matches("id=\"track-t-").count(), 20, "page size is 20");
+
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/library?page=2",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Seite 2"), "{body}");
+    assert_eq!(
+        body.matches("id=\"track-t-").count(),
+        1,
+        "one row left on page 2"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // US-5: detail
 // ---------------------------------------------------------------------------

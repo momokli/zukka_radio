@@ -585,3 +585,196 @@ async fn shared_track_update_is_owner_only() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Uebersicht der verbleibenden Endpunkt-Codes + Query-Filter (US-2)
+// ---------------------------------------------------------------------------
+
+/// `POST /tracks` with an already used `music_api_id` → `409 duplicate_track`
+/// (the store path is covered above; this exercises the HTTP envelope).
+#[tokio::test]
+async fn api_create_duplicate_music_api_id_is_409() {
+    let (_dir, pool) = setup().await;
+    let app = app(pool);
+    let payload = json!({
+        "music_api_id": "dup-1",
+        "title": "Song",
+        "storage_key": "key/1",
+        "duration_ms": 10,
+    });
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/v1/tracks",
+        None,
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = send(&app, Method::POST, "/api/v1/tracks", None, Some(payload)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "duplicate_track");
+}
+
+/// `PATCH`/`DELETE` on an id nobody owns → `404` (never `403`).
+#[tokio::test]
+async fn api_patch_and_delete_unknown_is_404() {
+    let (_dir, pool) = setup().await;
+    caster(&pool, CASTER_A).await;
+    let app = app(pool);
+    let ghost = "0192cccc-0001-7000-8000-00000000000f";
+
+    let (status, _) = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/tracks/{ghost}"),
+        Some(CASTER_A),
+        Some(json!({ "title": "x" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = send(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/tracks/{ghost}"),
+        Some(CASTER_A),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// `q` searches `title|artist|album|isrc` case-insensitively.
+#[tokio::test]
+async fn search_matches_artist_album_isrc_case_insensitive() {
+    let (_dir, pool) = setup().await;
+    let app = app(pool.clone());
+
+    let mut a = create_req("Alpha", None, None);
+    a.artist = Some("Nina Simone".into());
+    a.album = Some("Pastel Blues".into());
+    a.isrc = Some("USABC1234567".into());
+    tracks::create(&pool, &a).await.expect("alpha");
+
+    let mut b = create_req("Beta", None, None);
+    b.artist = Some("Miles Davis".into());
+    b.album = Some("Kind of Blue".into());
+    b.isrc = Some("USDEF7654321".into());
+    tracks::create(&pool, &b).await.expect("beta");
+
+    // Each needle matches exactly one track, regardless of case / field.
+    for q in [
+        "Alpha",
+        "nina",
+        "PASTEL",
+        "usabc",
+        "Kind%20of%20Blue",
+        "MILES",
+    ] {
+        let (status, hits) = send(
+            &app,
+            Method::GET,
+            &format!("/api/v1/tracks?q={q}"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(hits.as_array().unwrap().len(), 1, "q={q}: {hits}");
+    }
+
+    // A needle that matches nothing yields an empty list.
+    let (status, hits) = send(
+        &app,
+        Method::GET,
+        "/api/v1/tracks?q=zzzznomatch",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(hits.as_array().unwrap().is_empty());
+}
+
+/// `owner_caster_id` / `visibility` filters stay inside the §1 scope, and
+/// `limit`/`offset` page the result.
+#[tokio::test]
+async fn list_owner_visibility_filter_and_paging() {
+    let (_dir, pool) = setup().await;
+    caster(&pool, CASTER_A).await;
+    caster(&pool, CASTER_B).await;
+
+    for i in 0..3 {
+        let mut req = create_req(&format!("A Shared {i}"), None, Some(CASTER_A));
+        req.music_api_id = format!("a-shared-{i}");
+        tracks::create(&pool, &req).await.unwrap();
+    }
+    let mut a_priv = create_req("A Secret", Some("private"), Some(CASTER_A));
+    a_priv.music_api_id = "a-priv".into();
+    tracks::create(&pool, &a_priv).await.unwrap();
+
+    let mut b_shared = create_req("B Shared", None, Some(CASTER_B));
+    b_shared.music_api_id = "b-shared".into();
+    tracks::create(&pool, &b_shared).await.unwrap();
+
+    let app = app(pool);
+    let count = |v: &Value| v.as_array().unwrap().len();
+
+    // owner_caster_id=A as A → 3 shared + 1 private = 4.
+    let (status, hits) = send(
+        &app,
+        Method::GET,
+        &format!("/api/v1/tracks?owner_caster_id={CASTER_A}"),
+        Some(CASTER_A),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&hits), 4, "{hits}");
+
+    // owner_caster_id=A as B → only the 3 shared (A-private stays hidden).
+    let (status, hits) = send(
+        &app,
+        Method::GET,
+        &format!("/api/v1/tracks?owner_caster_id={CASTER_A}"),
+        Some(CASTER_B),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&hits), 3, "foreign private excluded: {hits}");
+
+    // visibility=shared as A → 3 A-shared + 1 B-shared = 4 (A-private out).
+    let (status, hits) = send(
+        &app,
+        Method::GET,
+        "/api/v1/tracks?visibility=shared",
+        Some(CASTER_A),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&hits), 4, "{hits}");
+
+    // paging: limit=2 → 2 rows; a far offset → none.
+    let (_, hits) = send(
+        &app,
+        Method::GET,
+        "/api/v1/tracks?limit=2",
+        Some(CASTER_A),
+        None,
+    )
+    .await;
+    assert_eq!(count(&hits), 2, "{hits}");
+    let (_, hits) = send(
+        &app,
+        Method::GET,
+        "/api/v1/tracks?offset=100",
+        Some(CASTER_A),
+        None,
+    )
+    .await;
+    assert_eq!(count(&hits), 0, "{hits}");
+}
