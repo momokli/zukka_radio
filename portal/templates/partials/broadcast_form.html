@@ -9,6 +9,10 @@
 >
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   {% if form.id != "" %}
+  <!-- Carried so the date-change preview (hx-get="/schedule/new" +
+       hx-include="#broadcast-form") keeps the edit context (id/version/action)
+       instead of degrading into a create form. -->
+  <input type="hidden" name="id" value="{{ form.id }}" />
   <input type="hidden" name="version" value="{{ form.version }}" />
   {% endif %}
   {% if let Some(error) = error %}

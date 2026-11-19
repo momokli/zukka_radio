@@ -65,7 +65,7 @@
     {% endfor %}
   </div>
 
-  {% if weeks.is_empty() %}
-  <p class="muted">Keine Einträge im sichtbaren Bereich.</p>
+  {% if !has_entries %}
+  <p class="muted calendar-empty">Keine Einträge im sichtbaren Bereich.</p>
   {% endif %}
 </section>
