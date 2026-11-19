@@ -1,0 +1,15 @@
+{
+  "streams": [
+    {
+      "codec_name": "flac",
+      "codec_type": "audio",
+      "duration": "245.500000",
+      "bit_rate": "1012000"
+    }
+  ],
+  "format": {
+    "format_name": "flac",
+    "duration": "245.500000",
+    "bit_rate": "1012000"
+  }
+}
