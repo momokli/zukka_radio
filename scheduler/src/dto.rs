@@ -1,6 +1,8 @@
 //! Request/response DTOs and the string enums from consolidated-architecture
 //! §3.4. All enums are `snake_case` in JSON, DB and Rust.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
@@ -729,6 +731,98 @@ pub struct ControlPauseRequest {
     pub paused: Option<serde_json::Value>,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #16: auth (identity authority)
+// ---------------------------------------------------------------------------
+
+/// Full caster representation, joined with the role name and the role's
+/// permission map (§6.10.1). `role` is the role *name* (`admin`/`operator`/
+/// `caster`); the portal checks permissions, never the role string (D5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CasterDto {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub is_active: bool,
+    pub harbor_mount: Option<String>,
+    pub stream_username: Option<String>,
+    pub permissions: BTreeMap<String, bool>,
+}
+
+/// Body of `POST /internal/auth/verify` (§4.2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VerifyRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Response of `POST /internal/auth/verify` — `{caster}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyResponse {
+    pub caster: CasterDto,
+}
+
+/// Body of `POST /internal/sessions` (portal login, §4.2 write-through).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateSessionRequest {
+    pub caster_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// Response of `POST /internal/sessions`. `token` is the raw bearer value and
+/// is returned exactly once; the DB holds only `sha256(token)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedSessionDto {
+    pub id: String,
+    pub token: String,
+    pub csrf_token: String,
+    pub idle_expires_at: String,
+    pub absolute_expires_at: String,
+}
+
+/// Response of `GET /internal/sessions/current` — everything the portal needs
+/// to build its `AuthContext` without holding authoritative session state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionValidationDto {
+    pub session_id: String,
+    pub caster: CasterDto,
+    pub csrf_token: String,
+    pub idle_expires_at: String,
+    pub absolute_expires_at: String,
+}
+
+/// Body of `POST /internal/casters/{id}/password`.
+///
+/// `keep_session_id` is the caller's current session; it survives the rotation
+/// triggered by a password change (all *other* sessions are revoked).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub password: String,
+    #[serde(default)]
+    pub keep_session_id: Option<String>,
+}
+
+/// Body of `POST /internal/casters/{id}/stream-password`. An absent `password`
+/// asks the scheduler to generate one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamPasswordRequest {
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Response of `POST /internal/casters/{id}/stream-password`. `password` is set
+/// only when the server generated one, and is shown exactly once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamPasswordResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).

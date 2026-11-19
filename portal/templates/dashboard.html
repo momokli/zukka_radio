@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Hallo {{ display_name }}</h1>
+  <p class="muted">Angemeldet als <strong>{{ display_name }}</strong> (Rolle <code>{{ role }}</code>).</p>
+  <dl class="facts">
+    <dt>Caster-ID</dt>
+    <dd><code>{{ caster_id }}</code></dd>
+    <dt>Rolle</dt>
+    <dd>{{ role }}</dd>
+  </dl>
+</section>
+<form method="post" action="/logout" class="inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit" class="ghost">Abmelden</button>
+</form>
+{% endblock %}

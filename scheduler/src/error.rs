@@ -49,6 +49,14 @@ pub enum ApiError {
     #[error("unauthorized")]
     Unauthorized,
 
+    /// Authenticated but not allowed → `403 forbidden` (§4.6).
+    #[error("forbidden")]
+    Forbidden,
+
+    /// Rate limit exceeded → `429 too_many_requests` (§4.6, portal.md D3).
+    #[error("too many requests")]
+    TooManyRequests,
+
     /// Unexpected server failure → `500 internal_error` (details never leak).
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -127,6 +135,18 @@ impl IntoResponse for ApiError {
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 "missing or invalid token".to_string(),
+                None,
+            ),
+            ApiError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "forbidden".to_string(),
+                None,
+            ),
+            ApiError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                "too many requests".to_string(),
                 None,
             ),
             ApiError::Internal(err) => {

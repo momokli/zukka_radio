@@ -1,0 +1,56 @@
+{% extends "layout.html" %}
+{% block title %}Konto{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Konto</h1>
+  <p class="muted">Angemeldet als <strong>{{ display_name }}</strong> ({{ username }}, Rolle <code>{{ role }}</code>).</p>
+  {% if let Some(message) = notice %}
+  <p class="alert alert-ok" role="status">{{ message }}</p>
+  {% endif %}
+  {% if let Some(message) = error %}
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Login-Passwort ändern</h2>
+  <form method="post" action="/account/password" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Aktuelles Passwort
+      <input type="password" name="current_password" autocomplete="current-password" required />
+    </label>
+    <label>
+      Neues Passwort
+      <input type="password" name="new_password" autocomplete="new-password" required />
+    </label>
+    <p class="hint">Muss sich vom Stream-Passwort unterscheiden. Andere Sitzungen werden beendet.</p>
+    <button type="submit">Passwort ändern</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Stream-Passwort</h2>
+  <dl class="facts">
+    <dt>Mount</dt>
+    <dd>{% if let Some(mount) = harbor_mount %}{{ mount }}{% else %}—{% endif %}</dd>
+    <dt>Stream-Benutzer</dt>
+    <dd>{% if let Some(user) = stream_username %}{{ user }}{% else %}—{% endif %}</dd>
+  </dl>
+  {% if let Some(password) = stream_password %}
+  <p class="alert alert-ok" role="status">
+    Neues Stream-Passwort (wird nur <strong>einmal</strong> angezeigt):
+    <code class="secret">{{ password }}</code>
+  </p>
+  {% endif %}
+  <form method="post" action="/account/stream-password" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Eigenes Stream-Passwort (leer lassen zum Generieren)
+      <input type="password" name="password" autocomplete="new-password" />
+    </label>
+    <p class="hint">Muss sich vom Login-Passwort unterscheiden. Eine laufende Harbor-Verbindung bleibt bestehen.</p>
+    <button type="submit">Stream-Passwort setzen</button>
+  </form>
+</section>
+{% endblock %}
