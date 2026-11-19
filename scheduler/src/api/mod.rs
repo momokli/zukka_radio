@@ -2,7 +2,9 @@
 
 pub mod queues;
 
+pub mod auth;
 pub mod broadcasts;
+pub mod playback;
 pub mod schedule;
 pub mod shows;
 pub mod sources;
@@ -92,6 +94,10 @@ pub fn router(pool: SqlitePool) -> Router {
         "/sources/{id}",
         get(sources::get_one).patch(sources::update),
     );
+
+    // Issue #13: the token layer lives inside the playback sub-router, so it
+    // guards only `/playback/*`; every route above stays open (TODO(auth)).
+    let api = api.nest("/playback", playback::router());
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
