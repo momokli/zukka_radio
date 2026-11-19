@@ -150,6 +150,25 @@ async fn item_state(pool: &SqlitePool, id: &str) -> String {
         .expect("fetch item state")
 }
 
+async fn event_count(pool: &SqlitePool, event: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM event_log WHERE event = ?")
+        .bind(event)
+        .fetch_one(pool)
+        .await
+        .expect("count events")
+}
+
+async fn latest_details(pool: &SqlitePool, event: &str) -> Value {
+    let raw: String = sqlx::query_scalar(
+        "SELECT details FROM event_log WHERE event = ? ORDER BY occurred_at DESC, id DESC LIMIT 1",
+    )
+    .bind(event)
+    .fetch_one(pool)
+    .await
+    .expect("fetch details");
+    serde_json::from_str(&raw).expect("details json")
+}
+
 // ---------------------------------------------------------------------------
 // T16: unknown subroute (router fallback)
 // ---------------------------------------------------------------------------
@@ -402,4 +421,131 @@ async fn t15_pause_without_reason() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["error"]["code"], "validation_error");
     assert_eq!(body["error"]["details"]["field"], "reason");
+}
+
+// ---------------------------------------------------------------------------
+// T17–T21: E2E gap coverage (event_log persistence, method handling, routing)
+// ---------------------------------------------------------------------------
+
+/// The pause flag is not only returned as `204` — it is really persisted in
+/// `settings` **and** appended to `event_log` (observable side effects).
+#[tokio::test]
+async fn t17_pause_persists_state_and_event_log() {
+    let (_dir, pool, app) = setup().await;
+    let (status, _) = post(
+        &app,
+        "/api/v1/control/pause",
+        json!({ "paused": true, "reason": "Pause vor Jingle" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        setting(&pool, "control.paused").await.as_deref(),
+        Some("true")
+    );
+    assert_eq!(event_count(&pool, "control_action").await, 1);
+    assert_eq!(
+        latest_details(&pool, "control_action").await["action"],
+        "pause"
+    );
+}
+
+/// `switch` writes `source_switched` with the layer in `source_layer`; `skip`
+/// writes a `control_action{action:"skip"}` event.
+#[tokio::test]
+async fn t18_switch_and_skip_write_event_log() {
+    let (_dir, pool, app) = setup().await;
+    let (status, _) = post(
+        &app,
+        "/api/v1/control/switch",
+        json!({ "layer": "queue", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(event_count(&pool, "source_switched").await, 1);
+    let layer: String = sqlx::query_scalar(
+        "SELECT source_layer FROM event_log WHERE event = 'source_switched' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("source_layer");
+    assert_eq!(layer, "queue");
+
+    let (status, _) = post(&app, "/api/v1/control/skip", json!({ "reason": "x" })).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let details = latest_details(&pool, "control_action").await;
+    assert_eq!(details["action"], "skip");
+    assert_eq!(details["skipped"], false);
+}
+
+/// `live` set/clear each append their own `event_log` event.
+#[tokio::test]
+async fn t19_live_set_and_clear_write_event_log() {
+    let (_dir, pool, app) = setup().await;
+    seed_caster(&pool, CASTER).await;
+    let (status, _) = post(
+        &app,
+        "/api/v1/control/live",
+        json!({ "caster_id": CASTER, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(event_count(&pool, "live_override_set").await, 1);
+
+    let (status, _) = post(
+        &app,
+        "/api/v1/control/live",
+        json!({ "caster_id": null, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(event_count(&pool, "live_override_cleared").await, 1);
+}
+
+/// A `GET` on a control route must never be a silent `200`/`204` — it is
+/// either `405` (method not allowed) or the `404` JSON envelope, never a crash.
+#[tokio::test]
+async fn t20_get_methods_not_silently_accepted() {
+    let (_dir, _pool, app) = setup().await;
+    for path in [
+        "/api/v1/control/pause",
+        "/api/v1/control/live",
+        "/api/v1/control/skip",
+        "/api/v1/control/switch",
+    ] {
+        let (status, body) = send(&app, Method::GET, path, None).await;
+        assert!(
+            status == StatusCode::METHOD_NOT_ALLOWED
+                || (status == StatusCode::NOT_FOUND && body["error"]["code"] == "not_found"),
+            "GET {path} -> {status} (body {body})"
+        );
+        assert!(
+            status.is_client_error(),
+            "GET {path} unexpectedly succeeded"
+        );
+    }
+    // unknown GET subroute still uses the JSON envelope (§4.6)
+    let (status, body) = send(&app, Method::GET, "/api/v1/control/state", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+/// The `/control` nest must not shadow `/playback`: the token-guarded playback
+/// router is still mounted (401 without token), and control stays reachable.
+#[tokio::test]
+async fn t21_control_does_not_collide_with_playback() {
+    let (_dir, _pool, app) = setup().await;
+    let (status, body) = send(&app, Method::GET, "/api/v1/playback/current", None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "playback route intact: {body}"
+    );
+    let (status, _) = post(
+        &app,
+        "/api/v1/control/pause",
+        json!({ "paused": false, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }
