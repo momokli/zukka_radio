@@ -18,6 +18,7 @@ use tower::ServiceExt;
 
 use zukka_scheduler::api::auth as api_auth;
 use zukka_scheduler::dto::{CreateUploadJobRequest, PatchUploadJobRequest};
+use zukka_scheduler::recovery;
 use zukka_scheduler::store::upload_jobs;
 use zukka_scheduler::uuid::new_id;
 
@@ -357,6 +358,98 @@ async fn list_stale_running_filters_by_age() {
         .await
         .unwrap();
     assert!(fresh.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// US-10 — startup recovery
+// ---------------------------------------------------------------------------
+
+/// Moves a job to `running`, then backdates `updated_at` so it looks stale.
+async fn make_stale_running(pool: &SqlitePool, caster: &str, attempts: i64) -> String {
+    let job = upload_jobs::create(
+        &pool,
+        &CreateUploadJobRequest {
+            caster_id: caster.to_string(),
+            filename: "stale.flac".into(),
+            size_bytes: None,
+            sha256: None,
+        },
+    )
+    .await
+    .unwrap();
+    for _ in 0..attempts {
+        upload_jobs::patch_state(
+            &pool,
+            &job.id,
+            &PatchUploadJobRequest {
+                state: "running".into(),
+                sha256: None,
+                track_id: None,
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE upload_jobs SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+        .bind(&job.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    job.id
+}
+
+#[tokio::test]
+async fn recovery_requeues_then_fails_by_attempts() {
+    let (_dir, pool) = setup().await;
+    let caster = seed_caster(&pool).await;
+
+    let requeue = make_stale_running(&pool, &caster, 1).await;
+    let give_up = make_stale_running(&pool, &caster, 3).await;
+
+    let report = recovery::recover_stale_uploads(&pool, 1800, 3)
+        .await
+        .unwrap();
+    assert_eq!(report.requeued, 1);
+    assert_eq!(report.failed, 1);
+
+    assert_eq!(
+        upload_jobs::get(&pool, &requeue).await.unwrap().state,
+        "pending"
+    );
+    let failed = upload_jobs::get(&pool, &give_up).await.unwrap();
+    assert_eq!(failed.state, "failed");
+    assert_eq!(failed.error.as_deref(), Some("timeout"));
+}
+
+#[tokio::test]
+async fn recovery_ignores_fresh_running_jobs() {
+    let (_dir, pool) = setup().await;
+    let caster = seed_caster(&pool).await;
+
+    // running, but updated_at is now → not stale for a 30-min timeout.
+    let job = upload_jobs::create(&pool, &new_job(&caster)).await.unwrap();
+    upload_jobs::patch_state(
+        &pool,
+        &job.id,
+        &PatchUploadJobRequest {
+            state: "running".into(),
+            sha256: None,
+            track_id: None,
+            error: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let report = recovery::recover_stale_uploads(&pool, 1800, 3)
+        .await
+        .unwrap();
+    assert_eq!(report, recovery::RecoveryReport::default());
+    assert_eq!(
+        upload_jobs::get(&pool, &job.id).await.unwrap().state,
+        "running"
+    );
 }
 
 // ---------------------------------------------------------------------------
