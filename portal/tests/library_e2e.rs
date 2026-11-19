@@ -482,6 +482,47 @@ async fn foreign_private_detail_is_404() {
 // US-6: visibility toggle
 // ---------------------------------------------------------------------------
 
+/// Slices the `<tr id="track-{id}">…</tr>` row out of a rendered list body.
+fn row_for(body: &str, id: &str) -> String {
+    let marker = format!("id=\"track-{id}\"");
+    let start = body
+        .find(&marker)
+        .unwrap_or_else(|| panic!("row {id} not found"));
+    let rest = &body[start..];
+    let end = rest.find("</tr>").map(|i| i + 5).unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+#[tokio::test]
+async fn row_toggle_only_for_owner() {
+    let app = router(caster_perms(), seeded());
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/library",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The viewer's own track renders the visibility toggle form.
+    let mine = row_for(&body, "t-mine");
+    assert!(
+        mine.contains("/library/tracks/t-mine/visibility"),
+        "own row has toggle: {mine}"
+    );
+
+    // A foreign shared track stays readable but has no toggle — only the badge.
+    let shared = row_for(&body, "t-shared");
+    assert!(
+        !shared.contains("/visibility"),
+        "foreign shared row must not render the toggle: {shared}"
+    );
+    assert!(shared.contains("badge-shared"), "badge stays: {shared}");
+}
+
 #[tokio::test]
 async fn visibility_toggle_roundtrip() {
     let tracks = seeded();

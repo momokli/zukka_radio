@@ -47,13 +47,21 @@ pub struct ErrorPage {
     pub message: String,
 }
 
+/// A track plus the per-viewer row capabilities. `can_toggle` is the
+/// ownership comparison (`track.caster_id == viewer`), computed server-side in
+/// [`crate::library`] — never from client input.
+pub struct TrackRow {
+    pub track: Track,
+    pub can_toggle: bool,
+}
+
 /// Library page (`GET /library`): search + filter + track list + upload form.
 #[derive(Template)]
 #[template(path = "library.html")]
 pub struct LibraryPage {
     pub csrf_token: String,
     pub jobs: Vec<UploadJob>,
-    pub tracks: Vec<Track>,
+    pub tracks: Vec<TrackRow>,
     pub q: String,
     pub visibility: String,
     pub owner: String,
@@ -69,7 +77,7 @@ pub struct LibraryPage {
 #[template(path = "partials/library_results.html")]
 pub struct LibraryResultsFragment {
     pub csrf_token: String,
-    pub tracks: Vec<Track>,
+    pub tracks: Vec<TrackRow>,
     pub q: String,
     pub visibility: String,
     pub owner: String,
@@ -84,7 +92,7 @@ pub struct LibraryResultsFragment {
 #[template(path = "partials/track_row.html")]
 pub struct TrackRowFragment {
     pub csrf_token: String,
-    pub track: Track,
+    pub row: TrackRow,
     pub can_delete: bool,
 }
 
@@ -94,6 +102,7 @@ pub struct TrackRowFragment {
 pub struct TrackDetailPage {
     pub csrf_token: String,
     pub track: Track,
+    pub can_toggle: bool,
     pub can_delete: bool,
 }
 

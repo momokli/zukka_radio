@@ -18,8 +18,16 @@ use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::{PortalError, redirect};
 use crate::rbac;
-use crate::templates::{LibraryPage, LibraryResultsFragment, TrackDetailPage, TrackRowFragment};
+use crate::templates::{
+    LibraryPage, LibraryResultsFragment, TrackDetailPage, TrackRow, TrackRowFragment,
+};
 use crate::visibility;
+
+/// Ownership comparison for row capabilities: only the owner may toggle
+/// visibility. Computed server-side, never from client input.
+fn owns(ctx: &AuthContext, track: &Track) -> bool {
+    track.caster_id.as_deref() == Some(ctx.caster_id.as_str())
+}
 
 /// Page size for the library list.
 const PAGE_SIZE: i64 = 20;
@@ -57,7 +65,7 @@ struct FilterState {
     page: i64,
     prev_page: Option<i64>,
     next_page: Option<i64>,
-    tracks: Vec<Track>,
+    tracks: Vec<TrackRow>,
     can_delete: bool,
 }
 
@@ -95,6 +103,15 @@ async fn resolve(
 
     let has_next = tracks.len() as i64 > PAGE_SIZE;
     tracks.truncate(PAGE_SIZE as usize);
+
+    // Per-row capability: only the owner sees the visibility toggle (US-6).
+    let tracks = tracks
+        .into_iter()
+        .map(|track| TrackRow {
+            can_toggle: owns(ctx, &track),
+            track,
+        })
+        .collect();
 
     Ok(FilterState {
         q,
@@ -163,9 +180,11 @@ pub async fn track_detail(
     if !visibility::visible_to(&track, &ctx) {
         return Err(PortalError::NotFound);
     }
+    let can_toggle = owns(&ctx, &track);
     render(&TrackDetailPage {
         csrf_token: ctx.csrf_token.clone(),
         track,
+        can_toggle,
         can_delete: ctx.has("library.delete"),
     })
 }
@@ -197,9 +216,10 @@ pub async fn track_visibility(
         .map_err(track_error)?;
 
     if is_htmx(&headers) {
+        let can_toggle = owns(&ctx, &track);
         return render(&TrackRowFragment {
             csrf_token: ctx.csrf_token.clone(),
-            track,
+            row: TrackRow { track, can_toggle },
             can_delete: ctx.has("library.delete"),
         });
     }

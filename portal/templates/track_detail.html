@@ -27,6 +27,20 @@
   <div class="actions">
     <a class="button" href="/library">Zur Library</a>
     <a class="button" href="/library">In Queue (P4)</a>
+    {% if can_toggle %}
+    <form
+      method="post"
+      action="/library/tracks/{{ track.id }}/visibility"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <select name="visibility" aria-label="Sichtbarkeit">
+        <option value="shared" {% if track.visibility == "shared" %}selected{% endif %}>shared</option>
+        <option value="private" {% if track.visibility == "private" %}selected{% endif %}>private</option>
+      </select>
+      <button type="submit">Sichtbarkeit setzen</button>
+    </form>
+    {% endif %}
     {% if can_delete %}
     <form
       method="post"
