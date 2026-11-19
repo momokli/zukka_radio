@@ -686,6 +686,51 @@ pub struct PlaybackErrorRequest {
     pub occurred_at: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #15: control API
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /control/live`.
+///
+/// `caster_id` present (non-null) sets the live override; absent or `null`
+/// clears it. `reason` is mandatory (validated in the store, `422 field=reason`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlLiveRequest {
+    #[serde(default)]
+    pub caster_id: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Body of `POST /control/switch` — force one of the six priority layers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlSwitchRequest {
+    #[serde(default)]
+    pub layer: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Body of `POST /control/skip` — skip the currently playing queue item.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlSkipRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Body of `POST /control/pause`.
+///
+/// `paused` is deserialized as a raw value so a non-boolean is a field-level
+/// `422 validation_error` (`details.field=paused`), not the extractor's generic
+/// `400` (Vorbild [`UpdateSourceRequest::enabled`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlPauseRequest {
+    #[serde(default)]
+    pub paused: Option<serde_json::Value>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
