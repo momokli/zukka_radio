@@ -2257,6 +2257,7 @@ pub struct FakeControlApi {
     lives: std::sync::Mutex<Vec<(Option<String>, String)>>,
     pauses: std::sync::Mutex<Vec<(bool, String)>>,
     pause_live_active: std::sync::Mutex<bool>,
+    state_error: std::sync::Mutex<bool>,
 }
 
 impl FakeControlApi {
@@ -2278,6 +2279,11 @@ impl FakeControlApi {
     /// Makes every subsequent `pause` answer with `409 live_active`.
     pub fn fail_pause_live(&self) {
         *self.pause_live_active.lock().unwrap() = true;
+    }
+
+    /// Makes every subsequent `state` answer fail (simulates an outage).
+    pub fn fail_state(&self) {
+        *self.state_error.lock().unwrap() = true;
     }
 
     /// The recorded skip reasons.
@@ -2304,6 +2310,9 @@ impl FakeControlApi {
 #[async_trait]
 impl ControlApi for FakeControlApi {
     async fn state(&self, _viewer: Option<&str>) -> Result<ControlState, ControlError> {
+        if *self.state_error.lock().unwrap() {
+            return Err(ControlError::Upstream("unreachable".into()));
+        }
         Ok(self.state.lock().unwrap().clone())
     }
 

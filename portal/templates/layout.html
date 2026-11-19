@@ -7,6 +7,7 @@
     <title>{% block title %}zukka{% endblock %} · zukka radio</title>
     <link rel="stylesheet" href="/static/app.css" />
     <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/htmx-ext-sse.js" defer></script>
     <script src="/static/sortable.min.js" defer></script>
   </head>
   <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
@@ -16,6 +17,7 @@
         <a href="/">Dashboard</a>
         <a href="/library">Library</a>
         <a href="/queues">Queues</a>
+        <a href="/control">Control</a>
         <a href="/shows">Shows</a>
         <a href="/schedule">Kalender</a>
         <a href="/account">Konto</a>
@@ -29,19 +31,52 @@
       <span>portal · thin UI over the scheduler identity authority</span>
     </footer>
     <script>
-      // Toast sink for the HX-Trigger `toast` event (Issue #20).
+      // Toast sink for the HX-Trigger `toast` event (Issue #20/#22). Renders
+      // an optional "Rückgängig" button (10 s) that re-posts the previous
+      // control values as an htmx request (Issue #22 US-5, K5).
       (function () {
+        var CSRF = (function () {
+          var meta = document.querySelector('meta[name="csrf-token"]');
+          return meta ? meta.getAttribute("content") : "";
+        })();
+
+        function clearToast(el) {
+          el.hidden = true;
+          el.textContent = "";
+        }
+
         function showToast(evt) {
           var detail = (evt && evt.detail) || {};
           var el = document.getElementById("toast");
           if (!el) return;
-          el.textContent = detail.message || "";
+          clearToast(el);
           el.className = "toast toast-" + (detail.level || "info");
           el.hidden = false;
+          var span = document.createElement("span");
+          span.textContent = detail.message || "";
+          el.appendChild(span);
+
+          if (detail.undo) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "ghost toast-undo";
+            btn.textContent = "Rückgängig";
+            btn.addEventListener("click", function () {
+              var values = Object.assign({ csrf_token: CSRF }, detail.undo);
+              window.htmx.ajax("POST", "/control/source", {
+                target: "#control-state",
+                swap: "outerHTML",
+                values: values,
+              });
+              clearToast(el);
+            });
+            el.appendChild(btn);
+          }
+
           window.clearTimeout(el._timer);
           el._timer = window.setTimeout(function () {
-            el.hidden = true;
-          }, 4000);
+            clearToast(el);
+          }, detail.undo ? 10000 : 4000);
         }
         document.body.addEventListener("toast", showToast);
       })();

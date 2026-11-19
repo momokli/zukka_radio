@@ -13,7 +13,7 @@ use crate::auth::AuthContext;
 use crate::auth::csrf;
 use crate::auth::session;
 use crate::error::{PortalError, redirect};
-use crate::templates::{AccountPage, DashboardPage, LoginPage};
+use crate::templates::{AccountPage, DashboardPage, LiveBadgeView, LoginPage};
 
 /// `POST /login` body.
 #[derive(Debug, Deserialize)]
@@ -203,12 +203,21 @@ pub async fn logout(
 // ---------------------------------------------------------------------------
 
 /// `GET /` — dashboard.
-pub async fn dashboard(Extension(ctx): Extension<AuthContext>) -> Result<Response, PortalError> {
+pub async fn dashboard(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Response, PortalError> {
+    // D5: the badge reflects only the viewer's own live status.
+    let is_live = match state.control.state(Some(&ctx.caster_id)).await {
+        Ok(snapshot) => snapshot.live.active_caster_id.as_deref() == Some(ctx.caster_id.as_str()),
+        Err(_) => false,
+    };
     let page = DashboardPage {
         csrf_token: ctx.csrf_token.clone(),
         display_name: ctx.display_name.clone(),
         role: ctx.role.clone(),
         caster_id: ctx.caster_id.clone(),
+        badge: LiveBadgeView { is_live },
     };
     render(&page)
 }

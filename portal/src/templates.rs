@@ -2,7 +2,7 @@
 
 use askama::Template;
 
-use crate::api_client::{Queue, QueueItem, Show, Track, UploadJob};
+use crate::api_client::{ConnectedCaster, ControlState, Queue, QueueItem, Show, Track, UploadJob};
 
 /// Login page (`GET /login`).
 #[derive(Template)]
@@ -21,6 +21,8 @@ pub struct DashboardPage {
     pub display_name: String,
     pub role: String,
     pub caster_id: String,
+    /// Per-viewer live indicator (D5), refreshed via SSE/polling.
+    pub badge: LiveBadgeView,
 }
 
 /// Account page (`GET /account`).
@@ -318,6 +320,138 @@ pub struct SchedulePage {
     pub can_write: bool,
     /// Server-side inline error (e.g. a hard `show_overlap` reload).
     pub error: Option<String>,
+}
+
+/// One layer row rendered by the control panel.
+pub struct ControlLayerRow {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub active: bool,
+}
+
+/// View model shared by the control page and the `control-state` fragment.
+pub struct ControlView {
+    pub layers: Vec<ControlLayerRow>,
+    pub active_layer: Option<String>,
+    pub paused: bool,
+    pub derived: bool,
+    pub live_override: Option<String>,
+    pub live_active_caster: Option<String>,
+    pub connected: Vec<ConnectedCaster>,
+    pub has_connected: bool,
+    pub now_title: Option<String>,
+    pub now_artist: Option<String>,
+    pub now_duration: String,
+    /// Whether the viewer may act (`control.write`); buttons hidden otherwise.
+    pub can_write: bool,
+    /// The scheduler was unreachable — render a hint instead of a `500` (D20).
+    pub scheduler_error: bool,
+}
+
+impl ControlView {
+    /// Builds the view from a scheduler state + the viewer's write capability.
+    pub fn from_state(state: ControlState, can_write: bool) -> Self {
+        let active_layer = state.active_layer.clone();
+        let layers = state
+            .sources
+            .into_iter()
+            .map(|source| ControlLayerRow {
+                active: active_layer.as_deref() == Some(source.name.as_str()),
+                id: source.id,
+                name: source.name,
+                enabled: source.enabled,
+            })
+            .collect();
+        let (now_title, now_artist, now_duration) = match state.now_playing {
+            Some(item) => (
+                Some(item.title),
+                item.artist,
+                format_duration(item.duration_ms),
+            ),
+            None => (None, None, String::new()),
+        };
+        let has_connected = !state.live.connected.is_empty();
+        Self {
+            layers,
+            active_layer,
+            paused: state.paused,
+            derived: state.derived,
+            live_override: state.live.override_caster_id,
+            live_active_caster: state.live.active_caster_id,
+            connected: state.live.connected,
+            has_connected,
+            now_title,
+            now_artist,
+            now_duration,
+            can_write,
+            scheduler_error: false,
+        }
+    }
+
+    /// A degraded view for an unreachable scheduler (D20: fragment, not `500`).
+    pub fn unreachable(can_write: bool) -> Self {
+        Self {
+            layers: Vec::new(),
+            active_layer: None,
+            paused: false,
+            derived: false,
+            live_override: None,
+            live_active_caster: None,
+            connected: Vec::new(),
+            has_connected: false,
+            now_title: None,
+            now_artist: None,
+            now_duration: String::new(),
+            can_write,
+            scheduler_error: true,
+        }
+    }
+}
+
+/// Formats milliseconds as `m:ss` (empty for `0`).
+fn format_duration(ms: i64) -> String {
+    if ms <= 0 {
+        return String::new();
+    }
+    let total = ms / 1000;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+/// Control panel page (`GET /control`).
+#[derive(Template)]
+#[template(path = "control.html")]
+pub struct ControlPage {
+    pub csrf_token: String,
+    pub view: ControlView,
+}
+
+/// The `control-state` fragment (`GET /control/state`), swapped via SSE/polling.
+#[derive(Template)]
+#[template(path = "partials/control_state.html")]
+pub struct ControlStateFragment {
+    pub csrf_token: String,
+    pub view: ControlView,
+}
+
+/// Per-viewer live indicator (`du bist live`), D5 — caster sees only its own.
+pub struct LiveBadgeView {
+    pub is_live: bool,
+}
+
+/// The `live-badge` fragment (`GET /control/badge`).
+#[derive(Template)]
+#[template(path = "partials/live_badge.html")]
+pub struct LiveBadgeFragment {
+    pub badge: LiveBadgeView,
+}
+
+/// A toast fragment (`partials/toast.html`), used for out-of-band swaps.
+#[derive(Template)]
+#[template(path = "partials/toast.html")]
+pub struct ToastFragment {
+    pub level: String,
+    pub message: String,
 }
 
 /// One `<option>` of the show selector.

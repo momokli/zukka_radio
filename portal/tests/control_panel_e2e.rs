@@ -1,0 +1,617 @@
+//! End-to-end tests for the Control Panel (Issue #22, US-3…US-6) through the
+//! real portal router with an in-memory [`FakeControlApi`].
+//!
+//! Explicit proofs:
+//!   (a) `caster` (no `control.write`) sees no action buttons and gets `403`
+//!       on `POST /control/*`; `operator` gets the buttons,
+//!   (b) the `control-state` fragment renders layers, now-playing and the
+//!       empty-`connected` state (O2), and a scheduler outage degrades to a
+//!       hint instead of a `500` (D20),
+//!   (c) `POST /control/source` returns an `HX-Trigger` toast with an undo
+//!       payload carrying the previous values (K5),
+//!   (d) the pause live-guard surfaces an informational toast, not an error.
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use axum::Router;
+use axum::body::Body;
+use axum::http::{HeaderMap, Method, Request, StatusCode, header};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+use zukka_portal::api_client::{
+    CasterDto, ConnectedCaster, ControlSource, ControlState, CreatedSessionDto, FakeControlApi,
+    FakeQueueApi, FakeTrackApi, IdentityApi, IdentityError, JobError, LiveState, NewUploadJob,
+    NewWaveform, NowPlaying, SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch,
+    Waveform, WaveformApi, WaveformApiError,
+};
+use zukka_portal::app::{AppState, build_router};
+use zukka_portal::config::Config;
+use zukka_portal::music_api::FakeMusicApi;
+use zukka_portal::rate_limit::WindowLimiter;
+use zukka_portal::rbac;
+
+// ---------------------------------------------------------------------------
+// Fake identity
+// ---------------------------------------------------------------------------
+
+struct FakeIdentity {
+    caster: CasterDto,
+    sessions: Mutex<HashMap<String, SessionValidationDto>>,
+    counter: Mutex<u64>,
+}
+
+impl FakeIdentity {
+    fn new(perms: BTreeMap<String, bool>) -> Self {
+        Self {
+            caster: CasterDto {
+                id: "c-1".into(),
+                username: "mira".into(),
+                display_name: "Mira".into(),
+                email: None,
+                role: "caster".into(),
+                is_active: true,
+                harbor_mount: None,
+                stream_username: None,
+                permissions: perms,
+            },
+            sessions: Mutex::new(HashMap::new()),
+            counter: Mutex::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl IdentityApi for FakeIdentity {
+    async fn verify(&self, username: &str, password: &str) -> Result<CasterDto, IdentityError> {
+        if username == "mira" && password == "pw" {
+            Ok(self.caster.clone())
+        } else {
+            Err(IdentityError::InvalidCredentials)
+        }
+    }
+
+    async fn create_session(
+        &self,
+        _caster_id: &str,
+        _ip: Option<&str>,
+        _ua: Option<&str>,
+    ) -> Result<CreatedSessionDto, IdentityError> {
+        let mut counter = self.counter.lock().unwrap();
+        *counter += 1;
+        let n = *counter;
+        let token = format!("tok-{n}");
+        let csrf_token = format!("csrf-{n}");
+        self.sessions.lock().unwrap().insert(
+            token.clone(),
+            SessionValidationDto {
+                session_id: format!("sess-{n}"),
+                caster: self.caster.clone(),
+                csrf_token: csrf_token.clone(),
+                idle_expires_at: "2999-01-01T00:00:00.000Z".into(),
+                absolute_expires_at: "2999-01-01T00:00:00.000Z".into(),
+            },
+        );
+        Ok(CreatedSessionDto {
+            id: format!("sess-{n}"),
+            token,
+            csrf_token,
+            idle_expires_at: "2999-01-01T00:00:00.000Z".into(),
+            absolute_expires_at: "2999-01-01T00:00:00.000Z".into(),
+        })
+    }
+
+    async fn validate_session(
+        &self,
+        token: &str,
+    ) -> Result<Option<SessionValidationDto>, IdentityError> {
+        Ok(self.sessions.lock().unwrap().get(token).cloned())
+    }
+
+    async fn revoke_session(&self, _session_id: &str) -> Result<(), IdentityError> {
+        Ok(())
+    }
+
+    async fn get_caster(&self, caster_id: &str) -> Result<CasterDto, IdentityError> {
+        if caster_id == self.caster.id {
+            Ok(self.caster.clone())
+        } else {
+            Err(IdentityError::NotFound)
+        }
+    }
+
+    async fn change_password(
+        &self,
+        _c: &str,
+        _p: &str,
+        _k: Option<&str>,
+    ) -> Result<(), IdentityError> {
+        Ok(())
+    }
+
+    async fn change_stream_password(
+        &self,
+        _c: &str,
+        _p: Option<&str>,
+    ) -> Result<Option<String>, IdentityError> {
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inert fakes
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct NoJobs;
+
+#[async_trait]
+impl UploadJobApi for NoJobs {
+    async fn create_job(&self, _job: &NewUploadJob) -> Result<String, JobError> {
+        Err(JobError::not_found())
+    }
+    async fn patch_job(&self, _id: &str, _p: &UploadJobPatch) -> Result<UploadJob, JobError> {
+        Err(JobError::not_found())
+    }
+    async fn get_job(&self, _id: &str) -> Result<UploadJob, JobError> {
+        Err(JobError::not_found())
+    }
+    async fn list_jobs(&self, _limit: i64) -> Result<Vec<UploadJob>, JobError> {
+        Ok(vec![])
+    }
+}
+
+#[derive(Default)]
+struct NoWaveforms;
+
+#[async_trait]
+impl WaveformApi for NoWaveforms {
+    async fn put_waveform(&self, _w: &NewWaveform) -> Result<Waveform, WaveformApiError> {
+        Err(WaveformApiError::Upstream("noop".into()))
+    }
+    async fn get_waveform(
+        &self,
+        _k: &str,
+        _id: &str,
+    ) -> Result<Option<Waveform>, WaveformApiError> {
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+fn config() -> Config {
+    Config::new(
+        "127.0.0.1:8081".into(),
+        "https://portal.example.org".into(),
+        "http://scheduler:8080".into(),
+        "svc-token".into(),
+        7,
+        30,
+    )
+    .unwrap()
+}
+
+fn router(perms: BTreeMap<String, bool>, control: Arc<FakeControlApi>) -> Router {
+    let state = AppState::with_clients(
+        config(),
+        Arc::new(FakeIdentity::new(perms)),
+        Arc::new(WindowLimiter::new(50, Duration::from_secs(900))),
+        Arc::new(FakeMusicApi::new()),
+        Arc::new(NoJobs),
+        Arc::new(NoWaveforms),
+        Arc::new(FakeTrackApi::new()),
+        Arc::new(FakeQueueApi::new()),
+        control,
+    );
+    build_router(state)
+}
+
+fn caster_perms() -> BTreeMap<String, bool> {
+    rbac::permissions_for_role("caster")
+}
+
+fn operator_perms() -> BTreeMap<String, bool> {
+    rbac::permissions_for_role("operator")
+}
+
+fn sample_state(active_caster: Option<&str>) -> ControlState {
+    ControlState {
+        sources: vec![
+            ControlSource {
+                id: "s-live".into(),
+                name: "live".into(),
+                kind: "live".into(),
+                priority: 100,
+                enabled: true,
+            },
+            ControlSource {
+                id: "s-queue".into(),
+                name: "queue".into(),
+                kind: "queue".into(),
+                priority: 60,
+                enabled: true,
+            },
+            ControlSource {
+                id: "s-fun".into(),
+                name: "fun".into(),
+                kind: "fun".into(),
+                priority: 1,
+                enabled: false,
+            },
+        ],
+        paused: false,
+        forced_layer: None,
+        active_layer: Some("queue".into()),
+        derived: true,
+        live: LiveState {
+            override_caster_id: None,
+            active_caster_id: active_caster.map(str::to_string),
+            connected: vec![ConnectedCaster {
+                caster_id: "c-1".into(),
+                mount: Some("/live/mira".into()),
+                since: "2026-11-19T12:00:00.000Z".into(),
+            }],
+        },
+        now_playing: Some(NowPlaying {
+            queue_item_id: Some("qi-1".into()),
+            kind: "track".into(),
+            title: "Nachtfahrt".into(),
+            artist: Some("Kranich".into()),
+            duration_ms: 210_000,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+
+async fn send(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<String>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = match body {
+        Some(body) => builder.body(Body::from(body)).unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = app.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn set_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    for value in headers.get_all(header::SET_COOKIE) {
+        let Ok(raw) = value.to_str() else { continue };
+        let first = raw.split(';').next().unwrap_or("");
+        if let Some(rest) = first.strip_prefix(&format!("{name}=")) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn meta_csrf(body: &str) -> Option<String> {
+    let marker = "name=\"csrf-token\" content=\"";
+    let start = body.find(marker)? + marker.len();
+    let rest = &body[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn form(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn cookie(session: &str) -> String {
+    format!("__Host-zukka_session={session}")
+}
+
+async fn login(app: &Router) -> (String, String) {
+    let (_, headers, body) = send(app, Method::GET, "/login", &[], None).await;
+    let cookie_v = set_cookie_value(&headers, "__Host-zukka_csrf").expect("csrf cookie");
+    let token = meta_csrf(&body).expect("csrf meta");
+    let payload = form(&[
+        ("username", "mira"),
+        ("password", "pw"),
+        ("csrf_token", &token),
+    ]);
+    let (status, headers, _) = send(
+        app,
+        Method::POST,
+        "/login",
+        &[
+            ("cookie", &format!("__Host-zukka_csrf={cookie_v}")),
+            ("content-type", "application/x-www-form-urlencoded"),
+        ],
+        Some(payload),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "login");
+    let session = set_cookie_value(&headers, "__Host-zukka_session").expect("session cookie");
+    let (_, _, dashboard) = send(
+        app,
+        Method::GET,
+        "/",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    let csrf = meta_csrf(&dashboard).expect("dashboard csrf");
+    (session, csrf)
+}
+
+async fn post(
+    app: &Router,
+    session: &str,
+    csrf: &str,
+    uri: &str,
+    htmx: bool,
+    body: String,
+) -> (StatusCode, HeaderMap, String) {
+    let cookie_header = cookie(session);
+    let mut headers: Vec<(&str, &str)> = vec![
+        ("cookie", &cookie_header),
+        ("x-csrf-token", csrf),
+        ("sec-fetch-site", "same-origin"),
+        ("content-type", "application/x-www-form-urlencoded"),
+    ];
+    if htmx {
+        headers.push(("hx-request", "true"));
+    }
+    send(app, Method::POST, uri, &headers, Some(body)).await
+}
+
+async fn get(app: &Router, session: &str, uri: &str, htmx: bool) -> (StatusCode, String) {
+    let cookie_header = cookie(session);
+    let mut headers: Vec<(&str, &str)> = vec![("cookie", &cookie_header)];
+    if htmx {
+        headers.push(("hx-request", "true"));
+    }
+    let (status, _, body) = send(app, Method::GET, uri, &headers, None).await;
+    (status, body)
+}
+
+// ---------------------------------------------------------------------------
+// Proof (a): read-only vs. write capability
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn caster_panel_is_read_only() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(Some("c-1")));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+
+    let (status, body) = get(&app, &session, "/control", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Control Panel"), "{body}");
+    assert!(body.contains("Nachtfahrt"), "now playing rendered");
+    assert!(!body.contains("action=\"/control/source\""), "no actions");
+    assert!(!body.contains("action=\"/control/pause\""), "no pause");
+}
+
+#[tokio::test]
+async fn operator_panel_has_actions() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(operator_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("action=\"/control/source\""));
+    assert!(body.contains("action=\"/control/pause\""));
+    assert!(body.contains("action=\"/control/skip\""));
+}
+
+#[tokio::test]
+async fn caster_source_is_403() {
+    let app = router(caster_perms(), Arc::new(FakeControlApi::new()));
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/source",
+        true,
+        form(&[("target_kind", "layer"), ("target", "queue")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Proof (b): fragment content + outage degradation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn state_fragment_renders_content() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("<html"), "fragment only");
+    assert!(body.contains("id=\"control-state\""), "{body}");
+    assert!(body.contains("Quellen"));
+    assert!(body.contains("badge-active"), "active layer marked");
+    assert!(!body.contains("Keine verbundenen Caster."));
+    assert!(body.contains("/live/mira"), "connected caster + mount");
+    assert!(body.contains("3:30"), "duration formatted");
+}
+
+#[tokio::test]
+async fn empty_connected_is_acceptance_state() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut state = sample_state(None);
+    state.live.connected = vec![];
+    control.set_state(state);
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Keine verbundenen Caster."), "{body}");
+}
+
+#[tokio::test]
+async fn scheduler_outage_degrades_to_hint() {
+    let control = Arc::new(FakeControlApi::new());
+    control.fail_state();
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "no 500 on outage: {body}");
+    assert!(body.contains("nicht erreichbar"), "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// Proof (c): source switch + undo payload
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn switch_returns_undo_toast() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut prev = sample_state(None);
+    prev.active_layer = Some("rotation".into());
+    control.set_state(prev);
+    let app = router(operator_perms(), control.clone());
+    let (session, csrf) = login(&app).await;
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/source",
+        true,
+        form(&[
+            ("target_kind", "layer"),
+            ("target", "queue"),
+            ("reason", "Handover"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let trigger = headers.get("hx-trigger").unwrap().to_str().unwrap();
+    assert!(trigger.contains("toast"), "{trigger}");
+    assert!(trigger.contains("undo"), "{trigger}");
+    assert!(
+        trigger.contains("rotation"),
+        "undo carries previous layer: {trigger}"
+    );
+    assert_eq!(
+        control.switches(),
+        vec![("queue".to_string(), "Handover".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn caster_override_clears_via_caster_target() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(operator_perms(), control.clone());
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/source",
+        true,
+        form(&[
+            ("target_kind", "caster"),
+            ("target", ""),
+            ("reason", "clear"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(control.lives(), vec![(None, "clear".to_string())]);
+}
+
+// ---------------------------------------------------------------------------
+// Proof (d): pause live guard + skip
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pause_live_active_is_info_toast() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(Some("c-1")));
+    control.fail_pause_live();
+    let app = router(operator_perms(), control);
+    let (session, csrf) = login(&app).await;
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/pause",
+        true,
+        form(&[("paused", "true"), ("reason", "x")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let trigger = headers.get("hx-trigger").unwrap().to_str().unwrap();
+    assert!(trigger.contains("Live aktiv"), "{trigger}");
+    assert!(trigger.contains("\"info\""), "{trigger}");
+}
+
+#[tokio::test]
+async fn skip_records_reason() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(operator_perms(), control.clone());
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/control/skip",
+        true,
+        form(&[("reason", "weg damit")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(control.calls(), vec!["weg damit".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// Live badge (US-4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn badge_shows_own_live_status() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(Some("c-1")));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (_, body) = get(&app, &session, "/control/badge", true).await;
+    assert!(body.contains("du bist live"), "{body}");
+    assert!(body.contains("aria-live=\"polite\""), "{body}");
+}
+
+#[tokio::test]
+async fn badge_hidden_when_not_live() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(Some("someone-else")));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (_, body) = get(&app, &session, "/control/badge", true).await;
+    assert!(body.contains("nicht live"), "{body}");
+    assert!(!body.contains("du bist live"), "{body}");
+}

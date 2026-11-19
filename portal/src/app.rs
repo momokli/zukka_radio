@@ -27,6 +27,7 @@ pub const LOGIN_MAX_ATTEMPTS: usize = 5;
 pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 const HTMX_JS: &str = include_str!("../static/htmx.min.js");
+const HTMX_SSE_JS: &str = include_str!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
 const SORTABLE_JS: &str = include_str!("../static/sortable.min.js");
 
@@ -306,6 +307,23 @@ pub fn build_router(state: AppState) -> Router {
             "/queues/{id}/delete",
             axum::routing::post(crate::queues::queue_delete),
         )
+        // Issue #22: Control Panel (SSE + polling fallback + live badge).
+        .route("/control", get(crate::control::control_get))
+        .route("/control/state", get(crate::control::control_state))
+        .route("/control/events", get(crate::control::control_events))
+        .route("/control/badge", get(crate::control::control_badge))
+        .route(
+            "/control/source",
+            axum::routing::post(crate::control::control_source),
+        )
+        .route(
+            "/control/pause",
+            axum::routing::post(crate::control::control_pause),
+        )
+        .route(
+            "/control/skip",
+            axum::routing::post(crate::control::control_skip),
+        )
         .route(
             "/shows",
             get(crate::shows::shows_get).post(crate::shows::show_create),
@@ -341,6 +359,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/static/htmx.min.js", get(htmx_js))
+        .route("/static/htmx-ext-sse.js", get(htmx_sse_js))
         .route("/static/app.css", get(app_css))
         .route("/static/sortable.min.js", get(sortable_js))
         .route(
@@ -360,6 +379,13 @@ async fn htmx_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         HTMX_JS,
+    )
+}
+
+async fn htmx_sse_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        HTMX_SSE_JS,
     )
 }
 

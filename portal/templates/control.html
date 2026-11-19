@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block title %}Control Panel{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Control Panel</h1>
+  <p class="muted">Live-Zustand, Quellen und Now-Playing. Aktualisierung per SSE, Fallback alle 3&nbsp;s.</p>
+  <div id="control-state-container"
+       hx-ext="sse"
+       sse-connect="/control/events"
+       hx-trigger="sse:state, every 3s"
+       hx-get="/control/state"
+       hx-target="#control-state"
+       hx-swap="outerHTML">
+    {% include "partials/control_state.html" %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,11 @@
+<span id="live-badge"
+      class="live-badge{% if badge.is_live %} live{% endif %}"
+      role="status"
+      aria-live="polite"
+      hx-ext="sse"
+      sse-connect="/control/events"
+      hx-trigger="sse:state, every 3s"
+      hx-get="/control/badge"
+      hx-swap="outerHTML">
+  {% if badge.is_live %}du bist live{% else %}nicht live{% endif %}
+</span>

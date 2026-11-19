@@ -348,3 +348,22 @@ button.ghost {
 .error {
   color: var(--error);
 }
+
+/* Issue #22: Control Panel */
+.control-section { margin: 0.8rem 0; }
+.control-section h2 { font-size: 1rem; margin: 0 0 0.3rem; }
+.layer-list { list-style: none; padding: 0; margin: 0; }
+.layer { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.2rem 0; }
+.layer.active .layer-name { font-weight: 700; }
+.layer.disabled { opacity: 0.5; }
+.badge-active { background: var(--accent, #2e7d32); color: #fff; }
+.badge-muted { background: var(--border); }
+.live-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 0.85rem;
+}
+.live-badge.live { background: #c62828; color: #fff; font-weight: 700; }
+.toast-undo { margin-left: 0.6rem; }
