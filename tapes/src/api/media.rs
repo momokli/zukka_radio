@@ -67,7 +67,7 @@ pub async fn get_media(
 ) -> ApiResult<Response> {
     let ctx = match prepare(&state, &headers, &file, raw.as_deref()).await {
         Ok(ctx) => ctx,
-        Err(early) => return Ok(early),
+        Err(early) => return Ok(*early),
     };
     stream_from_upstream(&state, &ctx).await
 }
@@ -81,7 +81,7 @@ pub async fn head_media(
 ) -> ApiResult<Response> {
     let ctx = match prepare(&state, &headers, &file, raw.as_deref()).await {
         Ok(ctx) => ctx,
-        Err(early) => return Ok(early),
+        Err(early) => return Ok(*early),
     };
     Ok(head_response(&ctx))
 }
@@ -106,15 +106,15 @@ async fn prepare(
     headers: &HeaderMap,
     file: &str,
     raw_query: Option<&str>,
-) -> Result<MediaCtx, Response> {
+) -> Result<MediaCtx, Box<Response>> {
     // 1. `{slug}.{ext}` — a missing dot, unknown or non-matching extension is a
     //    plain tape 404 (byte-identical to an unknown slug, R9).
     let Some((slug, ext)) = file.rsplit_once('.') else {
-        return Err(ApiError::tape_not_found().into_response());
+        return Err(Box::new(ApiError::tape_not_found().into_response()));
     };
     let ext = ext.to_ascii_lowercase();
     if !ALLOWED_EXT.contains(&ext.as_str()) {
-        return Err(ApiError::tape_not_found().into_response());
+        return Err(Box::new(ApiError::tape_not_found().into_response()));
     }
 
     // 2. Public guard (`visible = 1 AND status = 'ready'`).
@@ -129,7 +129,7 @@ async fn prepare(
         .as_deref()
         .is_some_and(|format| format.eq_ignore_ascii_case(&ext))
     {
-        return Err(ApiError::tape_not_found().into_response());
+        return Err(Box::new(ApiError::tape_not_found().into_response()));
     }
 
     // 3. ETag: prefer the object metadata, fall back to the derived hash.
@@ -167,7 +167,7 @@ async fn prepare(
 
     // 4. `If-None-Match` → 304.
     if etag::matches(headers, &ctx.etag) {
-        return Err(not_modified(&ctx));
+        return Err(Box::new(not_modified(&ctx)));
     }
 
     // 5. Range: a failing `If-Range` degrades to the full representation.
@@ -179,7 +179,9 @@ async fn prepare(
         ByteRange::Full
     };
     if matches!(range, ByteRange::Unsatisfiable) {
-        return Err(ApiError::RangeNotSatisfiable { size }.into_response());
+        return Err(Box::new(
+            ApiError::RangeNotSatisfiable { size }.into_response(),
+        ));
     }
 
     Ok(MediaCtx { range, ..ctx })
