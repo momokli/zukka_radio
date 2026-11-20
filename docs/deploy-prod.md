@@ -127,9 +127,10 @@ Hinweise:
    - Job `deploy` prüft denselben Ancestor-Check erneut (nicht beim Rollback)
      und wartet dann auf den Required Reviewer im Environment `prod`.
 
-Ein Tag außerhalb von `v2` bricht den `release`-Job ab; der `deploy`-Job
-schlägt ebenfalls am Ancestor-Check fehl (beide Pfade prüfen), `deploy` läuft
-dann nicht durch.
+Ein Tag außerhalb von `v2` bricht den `release`-Job ab; der `deploy`-Job wird
+dann über `needs` **übersprungen** (er läuft nicht) — nicht „schlägt
+ ebenfalls fehl". Der eigene Ancestor-Check im `deploy`-Job greift daher nur bei
+`workflow_dispatch`, wo kein `release`-Job vorgeschaltet ist.
 
 ## Deploy
 
@@ -151,7 +152,10 @@ sudo /usr/local/bin/zukka-deploy prod --tag <sha> [--force] --ref "$GITHUB_REF"
 ```
 
 `--ref` wird nur im `.deployed`-State protokolliert (`refs/tags/v*` bei
-Tag-Push, `refs/heads/v2` bei Dispatch); Default ist `refs/heads/v2`.
+Tag-Push, `refs/heads/v2` bei Dispatch); Default ist `refs/heads/v2`. Bewusste
+Vereinfachung: bei `workflow_dispatch` ist `$GITHUB_REF` der **Branch-Ref**
+(`refs/heads/v2`), auch wenn `tag`-Input einen Tag-SHA deployt — nur der
+Tag-Push liefert `refs/tags/v*`.
 
 Wrapper-Ablauf:
 
@@ -171,8 +175,12 @@ Wrapper-Ablauf:
 7. `repo/scripts/smoke.sh prod` als Gate.
 8. Bei grünem Smoke: `.deployed.next` schreiben, `.deployed` →
    `.deployed.prev` rotieren, `.next` → `.deployed` (crash-atomar). Bei rotem
-   Smoke und vorhandenem `.deployed.prev`: automatischer Rollback (siehe unten),
-   dann Exit ≠ 0.
+   Smoke und vorhandenem `.deployed`: automatischer Rollback auf `.deployed`
+   (siehe unten), dann Exit ≠ 0.
+
+Vor jedem Deploy/Rollback promotioniert `recover_state` ein verbliebenes
+`.deployed.next`, falls `.deployed` fehlt (Crash zwischen Rotation und
+Promotion), und protokolliert das.
 
 Der Workflow ruft nach dem Wrapper noch einmal
 `/opt/apps/radio-zukka/repo/scripts/smoke.sh prod` auf (PROD-Ports sind
@@ -208,10 +216,14 @@ unverändert bleibt, ist ein zweiter `--rollback` **idempotent**: er deployt
 denselben guten Stand erneut — kein Zurück-Togglen auf den defekten SHA.
 
 **Automatischer Rollback:** Schlägt das Smoke-Gate eines normalen Deploys fehl
-und existiert ein `.deployed.prev`, deployt der Wrapper automatisch den
-vorherigen SHA (ohne erneute Rotation, gleiches Smoke-Gate) und bricht danach
-mit Exit ≠ 0 ab. Der Deployzustand bleibt so konsistent mit `.deployed`. Eine
-Endlos-Rekursion ist ausgeschlossen (Rollback-Modus rekursiert nicht).
+und existiert ein `.deployed` mit einem SHA ≠ dem fehlgeschlagenen Tag, deployt
+der Wrapper automatisch den SHA aus `.deployed` — den zuletzt erfolgreich
+ausgerollten, aktuell laufenden Stand (nicht `.deployed.prev`, den Stand
+davor; der bleibt unangetastet) — mit gleichem Smoke-Gate, ohne erneute
+Rotation, und bricht danach mit Exit ≠ 0 ab. Der Deployzustand bleibt so
+konsistent mit `.deployed`. Beim ersten Deploy (kein `.deployed`) findet kein
+automatischer Rollback statt. Eine Endlos-Rekursion ist ausgeschlossen
+(Rollback-Modus rekursiert nicht).
 
 Voraussetzung: Migrationen sind expand/contract — die alte Binary muss mit dem
 neuen Schema starten (`docs/consolidated-architecture.md` §5.7).
@@ -222,9 +234,9 @@ neuen Schema starten (`docs/consolidated-architecture.md` §5.7).
   PROD-Deploy; mit `--tag` deployen.
 - **GHCR `denied`** — `docker login ghcr.io` auf dem Host erneuern
   (`read:packages`).
-- **Smoke rot, Deploy abgebrochen** — bei vorhandenem `.deployed.prev` wurde
-  automatisch zurückgerollt; ohne `.deployed.prev` bleibt `.deployed`
-  unverändert. Logs:
+- **Smoke rot, Deploy abgebrochen** — bei vorhandenem `.deployed` (SHA ≠
+  fehlgeschlagener Tag) wurde automatisch auf diesen guten Stand zurückgerollt;
+  beim ersten Deploy (kein `.deployed`) findet kein Auto-Rollback statt. Logs:
   `docker compose -f /opt/apps/radio-zukka/repo/compose/prod.yml logs <svc>`.
 - **Reviewer-Gate blockiert workflow_dispatch** — Environment `prod` im
   GitHub-UI unter Settings → Environments prüfen (Reviewer + **beide**

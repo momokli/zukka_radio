@@ -76,6 +76,19 @@ record_deploy() {
     mv -f "${dir}/.deployed.next" "${dir}/.deployed"
 }
 
+# Crash recovery: `record_deploy` writes `.deployed.next` before it rotates
+# `.deployed` -> `.deployed.prev`. A crash in that window leaves `.deployed`
+# missing but a fully written `.deployed.next`. Promote it on the next run so
+# the deploy state converges.
+recover_state() {
+    local dir="$1"
+
+    if [[ ! -f "${dir}/.deployed" && -f "${dir}/.deployed.next" ]]; then
+        echo "==> recover deploy state: promoting leftover ${dir}/.deployed.next" >&2
+        mv -f "${dir}/.deployed.next" "${dir}/.deployed"
+    fi
+}
+
 # Commit a rollback deploy WITHOUT rotating: `.deployed.prev` stays the last
 # known-good stand, so a repeated `--rollback` is idempotent.
 write_deployed() {
@@ -234,13 +247,18 @@ deploy_prod() {
     echo "==> smoke gate"
     if ! "$smoke" prod; then
         echo "zukka-deploy: smoke gate failed for ${tag}" >&2
-        if [[ "$is_rollback" -eq 0 && -f "${state}/.deployed.prev" ]]; then
-            local prev_sha prev_ref
-            prev_sha="$(state_field "${state}/.deployed.prev" sha)"
-            prev_ref="$(state_field "${state}/.deployed.prev" ref)"
-            if [[ -n "$prev_sha" ]]; then
-                echo "==> automatic rollback to ${prev_sha}"
-                deploy_prod "$prev_sha" 0 "${prev_ref:-refs/heads/v2}" 1
+        # Roll back to the last successfully deployed (currently good) stand:
+        # that is `.deployed`, NOT `.deployed.prev` (the stand before it).
+        # `.deployed.prev` is left untouched. Only when a prior good deploy
+        # exists and differs from the failed tag; on a first deploy there is no
+        # `.deployed`, so no automatic rollback happens.
+        if [[ "$is_rollback" -eq 0 && -f "${state}/.deployed" ]]; then
+            local cur_sha cur_ref
+            cur_sha="$(state_field "${state}/.deployed" sha)"
+            cur_ref="$(state_field "${state}/.deployed" ref)"
+            if [[ -n "$cur_sha" && "$cur_sha" != "$tag" ]]; then
+                echo "==> automatic rollback to ${cur_sha}"
+                deploy_prod "$cur_sha" 0 "${cur_ref:-refs/heads/v2}" 1
             fi
         fi
         exit 1
@@ -322,6 +340,9 @@ deploy_prod_cmd() {
         echo "zukka-deploy: --ref must not be empty" >&2
         exit 2
     fi
+
+    # Heal a state left mid-rotation by a crash before we read/deploy it.
+    recover_state "${APP_ROOT}/prod"
 
     if [[ "$rollback" -eq 1 ]]; then
         if [[ -n "$tag" || "$force" -eq 1 ]]; then
