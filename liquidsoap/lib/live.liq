@@ -1,4 +1,4 @@
-# Live selection layer (issue #30).
+# Live selection layer (issue #30/#31).
 #
 # Exactly one connected caster is on air: the FCFS winner from harbor.liq's
 # registry. `switch` (not `fallback`) is the only mechanism that picks one
