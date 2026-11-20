@@ -13,9 +13,15 @@ def is_live(m) =
   live_select(live_order(), live_override()) == m
 end
 
-# TODO(#31): add transitions=[live_transition] and transition_length=0.5 for the
-#   handoff fade. #30 is a hard cut on purpose so the selection stays reviewable.
+# Handoff fade (#31): short 0.5 s out / 0.5 s in instead of a full crossfade.
+# After a caster disconnects, its harbor source is no longer reliably
+# deliverable, so fading out over a long window would fade into nothing (D11).
+def live_transition(old, new) =
+  add([fade.out(duration=0.5, old), fade.in(duration=0.5, new)])
+end
+
 live = switch(
   track_sensitive=false,
+  transitions=[live_transition], transition_length=0.5,
   list.map(fun ((m, s)) -> ((fun () -> is_live(m)), s), casters)
 )
