@@ -14,6 +14,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use zukka_scheduler::announcement::events::{self, DedupeContext};
+use zukka_scheduler::announcement::retry;
 use zukka_scheduler::dto::AnnouncementEvent;
 use zukka_scheduler::store::announcements::{self, NewAnnouncement};
 
@@ -517,6 +518,15 @@ async fn retry_attempts_until_failed() {
     let id = created["id"].as_str().unwrap().to_string();
     let at = zukka_scheduler::time::parse_api_time("at", TS).unwrap();
 
+    // Parses a DTO timestamp back into a UTC instant for exact comparison.
+    fn at_of(dto: &zukka_scheduler::dto::AnnouncementDto) -> chrono::DateTime<chrono::Utc> {
+        zukka_scheduler::time::parse_api_time(
+            "next_attempt_at",
+            dto.next_attempt_at.as_deref().unwrap(),
+        )
+        .expect("next_attempt_at is RFC3339")
+    }
+
     let first = announcements::mark_failed(&pool, &id, "boom", at)
         .await
         .expect("fail 1");
@@ -524,6 +534,8 @@ async fn retry_attempts_until_failed() {
     assert_eq!(first.status.as_str(), "pending");
     assert!(first.next_attempt_at.is_some());
     assert_eq!(first.error.as_deref(), Some("boom"));
+    // Retry policy is actually applied: next attempt is at + backoff(attempts).
+    assert_eq!(at_of(&first), at + retry::backoff(1), "first backoff");
 
     let mut last = first;
     for attempt in 2..=5 {
@@ -531,6 +543,13 @@ async fn retry_attempts_until_failed() {
             .await
             .expect("fail n");
         assert_eq!(last.attempts, attempt);
+        if attempt < retry::MAX_ATTEMPTS {
+            assert_eq!(
+                at_of(&last),
+                at + retry::backoff(attempt),
+                "backoff at {attempt}"
+            );
+        }
     }
     assert_eq!(last.status.as_str(), "failed");
     assert!(last.next_attempt_at.is_none(), "{last:?}");
