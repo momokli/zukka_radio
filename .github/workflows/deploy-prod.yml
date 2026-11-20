@@ -1,0 +1,151 @@
+name: deploy-prod
+
+# PROD deploy: annotated/lightweight release tags `v*` or manual dispatch.
+# The `prod` environment carries the Required Reviewer gate; PROD deploys never
+# run unattended on a plain branch push.
+#
+# NOT in scope here:
+#   - audience/deploy-window gate (#42): the workflow will call
+#     `zukka-deploy prod --check-window` (GET /internal/ops/audience) before the
+#     deploy step once #42 lands. Today the wrapper deploys without that query.
+#   - pre-deploy backup (#43): happens inside the wrapper.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Ref/Tag/SHA to deploy (empty = tagged ref on push, github.sha on dispatch)"
+        type: string
+        required: false
+        default: ""
+      force:
+        description: "Restart liquidsoap/icecast as well (audible, max 1x/day)"
+        type: boolean
+        required: false
+        default: false
+      rollback:
+        description: "Redeploy the tag from .deployed.prev instead of the given tag"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Only a tag push creates a GitHub Release; manual dispatch never does.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag commit is an ancestor of origin/v2
+        run: |
+          set -euo pipefail
+          git fetch origin v2 --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/v2
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release ${tag} already exists"
+            exit 0
+          fi
+          # Annotated tags carry the release notes as tag message; lightweight
+          # tags fall back to a minimal note.
+          notes="$(git tag -l --format='%(contents)' "$tag")"
+          gh release create "$tag" \
+            --verify-tag \
+            --title "$tag" \
+            --notes "${notes:-Release ${tag}}"
+
+  deploy:
+    needs: [release]
+    # `release` is skipped on workflow_dispatch; run regardless in that case.
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-24.04
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve deploy SHA
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          target="${INPUT_TAG:-}"
+          if [[ -z "$target" ]]; then
+            target="$GITHUB_SHA_VALUE"
+          fi
+          if [[ "$target" =~ ^[0-9a-f]{7,40}$ ]]; then
+            sha="$target"
+          else
+            git fetch --tags --force
+            sha="$(git rev-parse "${target}^{commit}")"
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "could not resolve '${target}' to a commit" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
+          chmod 600 "$HOME/.ssh/deploy"
+          # Pin the deploy host key so the fresh runner can verify it.
+          ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      # #42 will insert the audience/window gate (`--check-window`) here.
+      - name: Deploy (prod)
+        if: ${{ !inputs.rollback }}
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          args=(prod --tag "$SHA")
+          if [[ "$FORCE" == "true" ]]; then
+            args+=(--force)
+          fi
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+            zukka-deploy@cast.zukkafabrik.de \
+            "sudo /usr/local/bin/zukka-deploy ${args[*]}"
+
+      - name: Rollback (prod)
+        if: ${{ inputs.rollback }}
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+            zukka-deploy@cast.zukkafabrik.de \
+            "sudo /usr/local/bin/zukka-deploy prod --rollback"
+
+      # Smoke runs from the host checkout: the PROD listeners are loopback-only.
+      - name: Smoke (prod)
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+            zukka-deploy@cast.zukkafabrik.de \
+            "/opt/apps/radio-zukka/repo/scripts/smoke.sh prod"
