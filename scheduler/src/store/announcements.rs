@@ -445,6 +445,7 @@ pub async fn resolve_template(
 // ---------------------------------------------------------------------------
 
 /// Seam: `live_on` / `live_off`, emitted from the broadcast transition hook.
+/// `scheduled_at` (API time) carries the configured delay; `None` = due now.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_live_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -454,6 +455,7 @@ pub(crate) async fn emit_live_tx(
     caster_id: &str,
     start_time: Option<String>,
     end_time: Option<String>,
+    scheduled_at: Option<String>,
 ) -> ApiResult<Option<AnnouncementDto>> {
     let show_name: Option<String> = match show_id {
         Some(show_id) => {
@@ -498,7 +500,7 @@ pub(crate) async fn emit_live_tx(
             channel: AnnouncementChannel::Telegram,
             payload: events::build_payload(event, &ctx),
             dedupe_key: dedupe,
-            scheduled_at: None,
+            scheduled_at,
         },
     )
     .await
@@ -644,6 +646,116 @@ pub async fn emit_show_reminder(
         },
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// show_reminder planning inside a caller transaction (#36)
+// ---------------------------------------------------------------------------
+
+/// Everything the reminder emitter needs beyond the resolved timing.
+pub(crate) struct ShowReminderInput<'a> {
+    pub broadcast_id: &'a str,
+    pub show_id: Option<&'a str>,
+    pub show_name: Option<&'a str>,
+    pub caster_id: Option<&'a str>,
+    pub starts_at: DateTime<Utc>,
+    /// `None` = immediately due.
+    pub scheduled_at: Option<DateTime<Utc>>,
+}
+
+fn show_reminder_dedupe(broadcast_id: &str) -> Option<String> {
+    events::dedupe_key(
+        AnnouncementEvent::ShowReminder,
+        &events::DedupeContext {
+            broadcast_id: Some(broadcast_id),
+            ..Default::default()
+        },
+    )
+}
+
+fn show_reminder_payload(input: &ShowReminderInput<'_>) -> serde_json::Value {
+    let ctx = events::PayloadContext {
+        broadcast_id: Some(input.broadcast_id.to_string()),
+        show_id: input.show_id.map(str::to_string),
+        show_name: input.show_name.map(str::to_string),
+        start_time: Some(fmt_api_time(input.starts_at)),
+        ..Default::default()
+    };
+    events::build_payload(AnnouncementEvent::ShowReminder, &ctx)
+}
+
+/// Idempotent `show_reminder` emit inside a caller transaction (dedupe key
+/// `show_reminder:<broadcast_id>`); carries `show_id`/`show_name`/`start_time`
+/// so per-show templates resolve (unlike the legacy pool seam).
+pub(crate) async fn emit_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    input: ShowReminderInput<'_>,
+) -> ApiResult<Option<AnnouncementDto>> {
+    let scheduled = input.scheduled_at.map(fmt_api_time);
+    emit_tx(
+        tx,
+        NewAnnouncement {
+            event: AnnouncementEvent::ShowReminder,
+            show_id: input.show_id,
+            broadcast_id: Some(input.broadcast_id),
+            caster_id: input.caster_id,
+            template_id: None,
+            channel: AnnouncementChannel::Telegram,
+            payload: show_reminder_payload(&input),
+            dedupe_key: show_reminder_dedupe(input.broadcast_id),
+            scheduled_at: scheduled,
+        },
+    )
+    .await
+}
+
+/// Reschedules an existing pending reminder (a `UPDATE`, never a second
+/// `INSERT`). When no pending row exists (`kind`-switch, cancelled) a fresh
+/// reminder is emitted.
+pub(crate) async fn reschedule_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    input: ShowReminderInput<'_>,
+) -> ApiResult<Option<AnnouncementDto>> {
+    let Some(key) = show_reminder_dedupe(input.broadcast_id) else {
+        return Ok(None);
+    };
+    let scheduled = input.scheduled_at.map(fmt_storage_time);
+    let ts = now_ts();
+    let res = sqlx::query(
+        "UPDATE announcements SET scheduled_at = ?, payload = ?, updated_at = ? \
+         WHERE dedupe_key = ? AND status = 'pending'",
+    )
+    .bind(scheduled.as_deref())
+    .bind(show_reminder_payload(&input).to_string())
+    .bind(&ts)
+    .bind(&key)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return emit_show_reminder_tx(tx, input).await;
+    }
+    Ok(None)
+}
+
+/// Cancels the pending reminder for `broadcast_id` (idempotent no-op when
+/// none is pending).
+pub(crate) async fn cancel_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    broadcast_id: &str,
+) -> ApiResult<()> {
+    let Some(key) = show_reminder_dedupe(broadcast_id) else {
+        return Ok(());
+    };
+    let ts = now_ts();
+    sqlx::query(
+        "UPDATE announcements SET status = 'cancelled', updated_at = ? \
+         WHERE dedupe_key = ? AND status = 'pending'",
+    )
+    .bind(&ts)
+    .bind(&key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

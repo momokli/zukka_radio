@@ -3,6 +3,7 @@
 pub mod queues;
 
 pub mod announcement_templates;
+pub mod announcement_timings;
 pub mod announcements;
 pub mod auth;
 pub mod broadcasts;
@@ -128,6 +129,20 @@ pub fn router(pool: SqlitePool) -> Router {
         .route(
             "/announcement-templates/{id}/render",
             post(announcement_templates::render_preview),
+        );
+
+    // Issue #36: announcement timings. `shows/{show_id}` is a longer static
+    // suffix than `/announcement-timings`, so Axum matches it first.
+    let api = api
+        .route(
+            "/announcement-timings",
+            get(announcement_timings::get_global).patch(announcement_timings::patch_global),
+        )
+        .route(
+            "/announcement-timings/shows/{show_id}",
+            get(announcement_timings::get_show)
+                .put(announcement_timings::put_show)
+                .delete(announcement_timings::delete_show),
         );
 
     // Issue #35: announcements (M5 — Events) + the read-only event log.

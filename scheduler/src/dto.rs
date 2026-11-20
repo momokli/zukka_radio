@@ -1505,6 +1505,58 @@ pub struct AnnouncementListParams {
     pub event: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #36: announcement timings
+// ---------------------------------------------------------------------------
+
+/// Effective announcement timings in seconds (§7 O11: 900 / 0 / 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnouncementTimingsDto {
+    pub show_reminder_lead_seconds: i64,
+    pub live_on_delay_seconds: i64,
+    pub live_off_delay_seconds: i64,
+}
+
+/// Per-show timings: the effective values plus the explicit overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShowAnnouncementTimingsDto {
+    pub show_id: String,
+    pub effective: AnnouncementTimingsDto,
+    /// Only set fields; `null` = inherits the global value.
+    pub overrides: AnnouncementTimingsOverridesDto,
+}
+
+/// Per-show overrides; `null` per field = inherit the global value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnnouncementTimingsOverridesDto {
+    pub show_reminder_lead_seconds: Option<i64>,
+    pub live_on_delay_seconds: Option<i64>,
+    pub live_off_delay_seconds: Option<i64>,
+}
+
+/// `PATCH /announcement-timings` — only the set fields change.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateAnnouncementTimingsRequest {
+    #[serde(default)]
+    pub show_reminder_lead_seconds: Option<i64>,
+    #[serde(default)]
+    pub live_on_delay_seconds: Option<i64>,
+    #[serde(default)]
+    pub live_off_delay_seconds: Option<i64>,
+}
+
+/// `PUT /announcement-timings/shows/{show_id}` —
+/// absent = unchanged, `null` = inherit, number = override.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateShowAnnouncementTimingsRequest {
+    #[serde(default, deserialize_with = "double_option")]
+    pub show_reminder_lead_seconds: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub live_on_delay_seconds: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub live_off_delay_seconds: Option<Option<i64>>,
+}
+
 /// One `event_log` row (`GET /event-log`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventLogEntryDto {

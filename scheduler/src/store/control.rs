@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnection;
 
 use crate::dto::{
     ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlSkipRequest,
@@ -49,15 +50,34 @@ const PAUSED_KEY: &str = "control.paused";
 
 /// Reads one `settings` value, `None` when the key is absent.
 pub(crate) async fn get_setting(pool: &SqlitePool, key: &str) -> ApiResult<Option<String>> {
+    let mut conn = pool.acquire().await?;
+    get_setting_conn(&mut conn, key).await
+}
+
+/// Reads one `settings` value on a caller-supplied connection (pool or tx).
+pub(crate) async fn get_setting_conn(
+    conn: &mut SqliteConnection,
+    key: &str,
+) -> ApiResult<Option<String>> {
     let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(key)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
     Ok(value)
 }
 
 /// Upserts one `settings` value (`INSERT … ON CONFLICT(key) DO UPDATE …`).
 pub(crate) async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> ApiResult<()> {
+    let mut conn = pool.acquire().await?;
+    set_setting_conn(&mut conn, key, value).await
+}
+
+/// Upserts one `settings` value on a caller-supplied connection (pool or tx).
+pub(crate) async fn set_setting_conn(
+    conn: &mut SqliteConnection,
+    key: &str,
+    value: &str,
+) -> ApiResult<()> {
     let ts = now_ts();
     sqlx::query(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) \
@@ -66,7 +86,7 @@ pub(crate) async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Ap
     .bind(key)
     .bind(value)
     .bind(&ts)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
