@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # zukka-deploy — root deploy wrapper (installed as /usr/local/bin/zukka-deploy).
 #
-# Scope #40: DEV only.
-#   zukka-deploy dev --tag <sha>
+#   zukka-deploy dev --tag <sha>               deploy the DEV stack
+#   zukka-deploy prod --tag <sha> [--force]    deploy the PROD stack
+#   zukka-deploy prod --rollback               redeploy PROD from .deployed.prev
 #
-# PROD (#41), deploy window/audience gate (#42) and rollback are NOT part of
-# this issue and exit with a pointer.
+# PROD deploy window / audience gate is #42 and still out of scope.
+# Pre-deploy backup is #43 and still out of scope (see the TODO below).
 set -euo pipefail
 
 readonly SHA_RE='^[0-9a-f]{7,40}$'
@@ -14,15 +15,15 @@ readonly APP_ROOT="${ZUKKA_APP_ROOT:-/opt/apps/radio-zukka}"
 usage() {
     cat >&2 <<'EOF'
 usage:
-  zukka-deploy dev --tag <sha>     deploy the DEV stack
-  zukka-deploy prod ...            not implemented (#41)
-  zukka-deploy --check-window      not implemented (#42)
-  zukka-deploy --rollback          not implemented (#41)
+  zukka-deploy dev --tag <sha>                deploy the DEV stack
+  zukka-deploy prod --tag <sha> [--force]     deploy the PROD stack
+  zukka-deploy prod --rollback                redeploy the previous PROD tag
+  zukka-deploy prod --check-window            not implemented (#42)
 EOF
 }
 
 out_of_scope() {
-    echo "zukka-deploy: $1 is not part of #40 (DEV only); see $2" >&2
+    echo "zukka-deploy: $1 is not implemented yet; see $2" >&2
     exit 1
 }
 
@@ -87,6 +88,176 @@ deploy_dev() {
     echo "==> dev deploy ${tag}: done"
 }
 
+# Rotate `.deployed` -> `.deployed.prev` and write the new state atomically
+# (write to `.next`, then rename). Only called after a green smoke run.
+record_deploy() {
+    local dir="$1"
+    local tag="$2"
+
+    if [[ -f "${dir}/.deployed" ]]; then
+        mv "${dir}/.deployed" "${dir}/.deployed.prev"
+    fi
+
+    local next="${dir}/.deployed.next"
+    {
+        printf 'sha=%s\n' "$tag"
+        printf 'image_tag=%s\n' "$tag"
+        printf 'timestamp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'ref=refs/heads/v2\n'
+    } >"$next"
+    mv "$next" "${dir}/.deployed"
+}
+
+smoke_script() {
+    local dir="$1"
+    if [[ -x "${dir}/scripts/smoke.sh" ]]; then
+        printf '%s\n' "${dir}/scripts/smoke.sh"
+    else
+        printf '%s\n' "${APP_ROOT}/repo/scripts/smoke.sh"
+    fi
+}
+
+deploy_prod() {
+    local tag="$1"
+    local force="$2"
+    validate_tag "$tag"
+
+    local dir="${APP_ROOT}/prod"
+    local compose_file="${dir}/compose/prod.yml"
+    local env_file="${dir}/env/prod.env"
+
+    if [[ ! -f "$compose_file" ]]; then
+        echo "zukka-deploy: missing ${compose_file}" >&2
+        exit 1
+    fi
+    if [[ ! -f "$env_file" ]]; then
+        echo "zukka-deploy: missing ${env_file}" >&2
+        exit 1
+    fi
+
+    # TODO(#43): pre-deploy DB snapshot (`zukka-backup predeploy <sha>`) is out
+    # of scope here; it belongs in front of the pull below once #43 lands.
+
+    export ZUKKA_TAG="$tag"
+    cd "$dir"
+    local compose=(docker compose -f "$compose_file" --env-file "$env_file")
+
+    echo "==> prod deploy ${tag}: pull images"
+    "${compose[@]}" pull scheduler portal tapes
+    if [[ "$force" -eq 1 ]]; then
+        echo "==> prod deploy ${tag}: pull audio images (--force)"
+        "${compose[@]}" pull icecast
+    fi
+
+    echo "==> recreate scheduler"
+    "${compose[@]}" up -d --no-deps --wait scheduler
+    echo "==> recreate portal"
+    "${compose[@]}" up -d --no-deps --wait portal
+    echo "==> recreate tapes"
+    "${compose[@]}" up -d --no-deps --wait tapes
+
+    # Caddy runs with `admin off` in Caddyfile.prod, so no admin-API reload:
+    # validate the file inside the container and reload via the same config.
+    if ! "${compose[@]}" exec -T caddy caddy version >/dev/null 2>&1; then
+        echo "==> start caddy"
+        "${compose[@]}" up -d --no-deps --wait caddy
+    fi
+    echo "==> caddy validate"
+    "${compose[@]}" exec -T caddy \
+        caddy validate --config /etc/caddy/Caddyfile.prod --adapter caddyfile
+    echo "==> caddy reload"
+    "${compose[@]}" exec -T caddy \
+        caddy reload --config /etc/caddy/Caddyfile.prod --adapter caddyfile
+
+    # Audio path: only a forced deploy may restart liquidsoap/icecast
+    # (docs/consolidated-architecture.md §5.7). Window gate: #42.
+    if [[ "$force" -eq 1 ]]; then
+        echo "==> recreate icecast (--force)"
+        "${compose[@]}" up -d --no-deps --wait icecast
+        echo "==> recreate liquidsoap (--force)"
+        "${compose[@]}" up -d --no-deps --wait liquidsoap
+    fi
+
+    echo "==> converge stack (compose --wait)"
+    "${compose[@]}" up -d --wait
+
+    echo "==> smoke gate"
+    "$(smoke_script "$dir")" prod
+
+    record_deploy "$dir" "$tag"
+
+    echo "==> prod deploy ${tag}: done"
+}
+
+deploy_prod_rollback() {
+    local dir="${APP_ROOT}/prod"
+    local prev="${dir}/.deployed.prev"
+
+    if [[ ! -f "$prev" ]]; then
+        echo "zukka-deploy: no ${prev} to roll back to" >&2
+        exit 1
+    fi
+
+    local sha
+    sha="$(sed -n 's/^sha=//p' "$prev" | head -n 1)"
+    if [[ -z "$sha" ]]; then
+        echo "zukka-deploy: ${prev} has no sha= line" >&2
+        exit 1
+    fi
+
+    echo "==> prod rollback to ${sha}"
+    # Rotation swaps .deployed <-> .deployed.prev, so a second rollback toggles
+    # back.
+    deploy_prod "$sha" 0
+}
+
+deploy_prod_cmd() {
+    local tag=""
+    local force=0
+    local rollback=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag)
+                if [[ $# -lt 2 ]]; then
+                    usage
+                    exit 2
+                fi
+                tag="$2"
+                shift 2
+                ;;
+            --force)
+                force=1
+                shift
+                ;;
+            --rollback)
+                rollback=1
+                shift
+                ;;
+            *)
+                echo "zukka-deploy: unknown argument '$1'" >&2
+                usage
+                exit 2
+                ;;
+        esac
+    done
+
+    if [[ "$rollback" -eq 1 ]]; then
+        if [[ -n "$tag" || "$force" -eq 1 ]]; then
+            echo "zukka-deploy: --rollback does not take --tag/--force" >&2
+            exit 2
+        fi
+        deploy_prod_rollback
+        return
+    fi
+
+    if [[ -z "$tag" ]]; then
+        echo "zukka-deploy: prod requires --tag <sha>" >&2
+        exit 2
+    fi
+    deploy_prod "$tag" "$force"
+}
+
 main() {
     local cmd="${1:-}"
     case "$cmd" in
@@ -116,9 +287,11 @@ main() {
             fi
             deploy_dev "$tag"
             ;;
-        prod) out_of_scope "prod deploy" "#41" ;;
+        prod)
+            shift
+            deploy_prod_cmd "$@"
+            ;;
         --check-window) out_of_scope "--check-window" "#42" ;;
-        --rollback) out_of_scope "--rollback" "#41" ;;
         -h | --help | "") usage ;;
         *)
             echo "zukka-deploy: unknown command '$cmd'" >&2
