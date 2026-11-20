@@ -168,7 +168,12 @@ Wrapper-Ablauf:
 4. `caddy validate` mit `/etc/caddy/Caddyfile.prod`, dann Recreate:
    `up -d --no-deps --force-recreate --wait caddy`
    (kein Admin-API-Reload, `admin off`).
-5. `liquidsoap`/`icecast` **nur** mit `--force`.
+5. `liquidsoap`/`icecast` **nur** mit `--force`. **Erster Deploy auf leerem
+   Host:** fehlt der `icecast`-Container (`docker compose ps -q icecast` leer),
+   setzt der Wrapper selbstständig `force=1` und loggt „no audio containers yet;
+   enabling --force for first deploy" — so starten `icecast` + `liquidsoap`
+   auch beim ersten Deploy automatisch, ohne dass `--force` manuell gesetzt
+   werden muss.
 6. `compose up -d --wait scheduler portal tapes caddy` (Konvergenz **ohne**
    Audio — ein frischer `ZUKKA_TAG` darf `icecast`/`liquidsoap` nicht implizit
    recreaten).
@@ -183,8 +188,12 @@ Vor jedem Deploy/Rollback promotioniert `recover_state` ein verbliebenes
 Promotion), und protokolliert das.
 
 Der Workflow ruft nach dem Wrapper noch einmal
-`/opt/apps/radio-zukka/repo/scripts/smoke.sh prod` auf (PROD-Ports sind
-loopback-only, der Runner kommt nicht direkt dran).
+`/opt/apps/radio-zukka/repo/scripts/smoke.sh prod` auf (der Control-Plane- und
+Caddy-Pfad ist loopback-only, der Runner kommt nicht direkt dran). **Ausnahme:**
+der Harbor-Fallback von `liquidsoap` bindet absichtlich auf
+`0.0.0.0:${ZUKKA_PORT_HARBOR:-12001}` (roher TCP-Ingest für Caster,
+`docs/infrastructure.md` §2.2) — dieser eine Port ist bewusst öffentlich am
+Caddy vorbei erreichbar und wird vom Smoke-Test nicht abgedeckt.
 
 Smoke-Prüfungen (`scripts/smoke.sh prod`, Defaults, Overrides über
 `ZUKKA_SMOKE_*`):
@@ -238,6 +247,16 @@ neuen Schema starten (`docs/consolidated-architecture.md` §5.7).
   fehlgeschlagener Tag) wurde automatisch auf diesen guten Stand zurückgerollt;
   beim ersten Deploy (kein `.deployed`) findet kein Auto-Rollback statt. Logs:
   `docker compose -f /opt/apps/radio-zukka/repo/compose/prod.yml logs <svc>`.
+- **Erster Deploy auf leerem Host startet kein Audio?** — braucht es nicht
+  mehr: der Wrapper erkennt fehlende Audio-Container und aktiviert `--force`
+  automatisch (siehe Deploy-Ablauf Schritt 5). Alternativ explizit
+  `-f force=true` setzen; ohne das würde nur der Control-Plane-Stack starten
+  und `cast.*`/`/stream.mp3` blieben tot (HLS ist non-fatal).
+- **`pull` scheitert mit `manifest unknown`** — der getaggte Commit war nie
+  v2-Tip, d. h. es existieren keine `zukka-*:<sha>`-Images für ihn (CI baut/pusht
+  nur auf `push: v2`). Abhilfe: den Tag auf einen Commit setzen, für den Images
+  gebaut wurden (ein ehemaliger v2-Tip). Der Fehler tritt vor jedem Recreate auf
+  — der laufende Stand bleibt unverändert.
 - **Reviewer-Gate blockiert workflow_dispatch** — Environment `prod` im
   GitHub-UI unter Settings → Environments prüfen (Reviewer + **beide**
   Policies: Tag `v*` und Branch `v2`).

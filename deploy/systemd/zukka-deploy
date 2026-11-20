@@ -16,6 +16,9 @@
 set -euo pipefail
 
 readonly SHA_RE='^[0-9a-f]{7,40}$'
+# `--ref` reaches the wrapper from a tag/branch name; restrict it to plain
+# heads/tags refs (git refnames may otherwise contain `;`, `$`, backticks, …).
+readonly REF_RE='^refs/(heads|tags)/[A-Za-z0-9._/-]+$'
 readonly APP_ROOT="${ZUKKA_APP_ROOT:-/opt/apps/radio-zukka}"
 readonly REPO_DIR="${APP_ROOT}/repo"
 readonly PROD_ENV_FILE="${ZUKKA_PROD_ENV_FILE:-/etc/zukka/prod.env}"
@@ -39,6 +42,14 @@ validate_tag() {
     local tag="$1"
     if [[ ! "$tag" =~ $SHA_RE ]]; then
         echo "zukka-deploy: invalid tag '${tag}' (expected ${SHA_RE})" >&2
+        exit 2
+    fi
+}
+
+validate_ref() {
+    local ref="$1"
+    if [[ ! "$ref" =~ $REF_RE ]]; then
+        echo "zukka-deploy: invalid --ref '${ref}' (expected ${REF_RE})" >&2
         exit 2
     fi
 }
@@ -203,6 +214,15 @@ deploy_prod() {
     export ZUKKA_ENV_FILE="$env_file"
     local compose=(docker compose -f "$compose_file" --env-file "$env_file")
 
+    # First deploy on an empty host: no icecast container exists yet, so without
+    # --force the audio path would stay dead (smoke HLS is non-fatal) while the
+    # deploy still reports success. Detect that and enable --force so icecast
+    # and liquidsoap start on the very first deploy.
+    if [[ "$force" -eq 0 ]] && [[ -z "$("${compose[@]}" ps -q icecast 2>/dev/null)" ]]; then
+        echo "==> no audio containers yet; enabling --force for first deploy"
+        force=1
+    fi
+
     echo "==> prod deploy ${tag} (ref=${ref} force=${force} rollback=${is_rollback}): pull images"
     "${compose[@]}" pull scheduler portal tapes
     if [[ "$force" -eq 1 ]]; then
@@ -290,6 +310,17 @@ deploy_prod_rollback() {
         exit 1
     fi
 
+    # No-op when `.deployed` already equals the rollback target: avoids an
+    # unnecessary recreate (brief UI interruption) of portal/tapes/caddy.
+    if [[ -f "${state}/.deployed" ]]; then
+        local cur_sha
+        cur_sha="$(state_field "${state}/.deployed" sha)"
+        if [[ -n "$cur_sha" && "$cur_sha" == "$sha" ]]; then
+            echo "==> prod rollback no-op: .deployed and .deployed.prev are both ${sha}"
+            exit 0
+        fi
+    fi
+
     echo "==> prod rollback to ${sha}"
     # `is_rollback=1` keeps `.deployed.prev` as the last known-good stand, so a
     # second `--rollback` is idempotent (no toggle back to the bad stand).
@@ -340,6 +371,7 @@ deploy_prod_cmd() {
         echo "zukka-deploy: --ref must not be empty" >&2
         exit 2
     fi
+    validate_ref "$ref"
 
     # Heal a state left mid-rotation by a crash before we read/deploy it.
     recover_state "${APP_ROOT}/prod"

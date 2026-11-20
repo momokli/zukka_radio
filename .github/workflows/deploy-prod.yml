@@ -65,8 +65,9 @@ jobs:
             echo "release ${tag} already exists"
             exit 0
           fi
-          # Annotated tags carry the release notes as tag message; lightweight
-          # tags fall back to a minimal note.
+          # `%(contents)` is the annotated tag message; for lightweight tags it
+          # prints the tagged commit's message (not empty in practice). The
+          # fallback therefore only fires when the result is truly empty.
           notes="$(git tag -l --format='%(contents)' "$tag")"
           gh release create "$tag" \
             --verify-tag \
@@ -145,14 +146,25 @@ jobs:
           GIT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          # `github.ref` is attacker-influenced on tag pushes: git refnames may
+          # contain `;`, `&`, `|`, `$`, backticks, `(`, `)` (e.g. a tag `v1;id`
+          # is valid). Reject anything that is not a plain heads/tags ref before
+          # it reaches the remote shell (see zukka-deploy REF_RE too).
+          if [[ ! "$GIT_REF" =~ ^refs/(heads|tags)/[A-Za-z0-9._/-]+$ ]]; then
+            echo "refusing unsafe ref '${GIT_REF}' (expected ^refs/(heads|tags)/[A-Za-z0-9._/-]+$)" >&2
+            exit 1
+          fi
           args=(prod --tag "$SHA")
           if [[ "$FORCE" == "true" ]]; then
             args+=(--force)
           fi
           args+=(--ref "$GIT_REF")
+          # Belt-and-braces on top of the regex: shell-quote every argument so
+          # it is passed as a single literal word to the remote shell.
+          printf -v quoted_args '%q ' "${args[@]}"
           ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
             zukka-deploy@cast.zukkafabrik.de \
-            "sudo /usr/local/bin/zukka-deploy ${args[*]}"
+            "sudo /usr/local/bin/zukka-deploy ${quoted_args}"
 
       - name: Rollback (prod)
         if: ${{ inputs.rollback }}
@@ -162,7 +174,9 @@ jobs:
             zukka-deploy@cast.zukkafabrik.de \
             "sudo /usr/local/bin/zukka-deploy prod --rollback"
 
-      # Smoke runs from the host checkout: the PROD listeners are loopback-only.
+      # Smoke runs from the host checkout: the PROD control-plane/Caddy path is
+      # loopback-only. The Harbor raw-TCP fallback (liquidsoap 0.0.0.0:12001,
+      # infrastructure.md §2.2) is intentionally public and not covered here.
       - name: Smoke (prod)
         run: |
           set -euo pipefail
