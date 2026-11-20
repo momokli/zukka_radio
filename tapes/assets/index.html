@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--META-->
+    <link rel="stylesheet" href="/assets/app.css?v=<!--APP_VERSION-->" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">
+        <span class="brand-square" aria-hidden="true"></span>
+        <span class="brand-name">radio zukka</span>
+        <span class="brand-path">/ tapes</span>
+      </a>
+      <nav class="site-nav" aria-label="Externe Ziele">
+        <a class="live" href="//stream.zukkafabrik.de" rel="noopener">&#9664; LIVE</a>
+        <a class="portal" href="//portal.zukkafabrik.de" rel="noopener">PORTAL</a>
+      </nav>
+    </header>
+
+    <main>
+      <div class="filterbar" id="filterbar" role="group" aria-label="Caster-Filter">
+        <button type="button" class="key key-active" data-caster="ALL" aria-pressed="true">ALL</button>
+        <span class="filter-count" id="filter-count" aria-live="polite"></span>
+      </div>
+
+      <noscript>
+        <div class="noscript">
+          <p class="noscript-hint">JavaScript ist aus. Die letzten Aufnahmen als Liste:</p>
+          <ul class="noscript-list"><!--NOSCRIPT--></ul>
+        </div>
+      </noscript>
+
+      <section class="feed" id="feed" aria-label="Tape-Feed"></section>
+      <p class="feed-empty" id="feed-empty" hidden>Keine Tapes f&uuml;r diesen Filter.</p>
+      <div class="feed-more">
+        <button type="button" class="key" id="load-more" hidden>mehr laden</button>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="player" id="player" hidden>
+        <div class="player-transport">
+          <button type="button" class="key transport" data-action="prev" aria-label="Vorheriges Tape">|&lt;</button>
+          <button type="button" class="key transport key-play" data-action="toggle" aria-label="Abspielen">&#9654;</button>
+          <button type="button" class="key transport" data-action="stop" aria-label="Stoppen">&#9632;</button>
+          <button type="button" class="key transport" data-action="next" aria-label="N&auml;chstes Tape">&gt;|</button>
+        </div>
+        <div class="player-lcd">
+          <span class="lcd-title" id="player-title" aria-live="polite"></span>
+          <span class="lcd-time" id="player-time">00:00 / 00:00</span>
+          <label class="visually-hidden" for="player-progress">Fortschritt</label>
+          <input type="range" class="player-progress" id="player-progress" min="0" max="1000" value="0" step="1" />
+        </div>
+        <div class="player-volume">
+          <label class="vol-label" for="player-volume">VOL</label>
+          <input type="range" class="vol-range" id="player-volume" min="0" max="100" value="100" step="1" />
+        </div>
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <script type="application/json" id="tape-state"><!--TAPE_STATE--></script>
+    <script type="module" src="/assets/app.mjs?v=<!--APP_VERSION-->"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+/* Retro shell styles — full token set lands with the client-assets commit. */
+:root {
+  --sage: #9eb092;
+  --cream: #f2efe4;
+  --teal: #2a8fa8;
+  --orange: #e85a2a;
+  --ink: #1a1a18;
+}
+body {
+  margin: 0;
+  background: var(--sage);
+  color: var(--ink);
+}

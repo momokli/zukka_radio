@@ -17,6 +17,7 @@
 //! byte-identical `404 not_found` envelope.
 
 pub mod api;
+pub mod assets;
 pub mod config;
 pub mod cursor;
 pub mod db;
@@ -24,6 +25,7 @@ pub mod error;
 pub mod etag;
 pub mod fixtures;
 pub mod model;
+pub mod shell;
 pub mod store;
 pub mod time;
 pub mod waveform;
