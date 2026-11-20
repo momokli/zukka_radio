@@ -1,0 +1,12 @@
+[Unit]
+Description=radio zukka — restic forget/prune (Retention)
+Documentation=file:/opt/apps/radio-zukka/repo/docs/backup.md
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/zukka/backup.env
+ExecStart=/usr/local/bin/zukka-backup prune
+
+[Install]
+WantedBy=timers.target

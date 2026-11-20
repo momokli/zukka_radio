@@ -1,0 +1,10 @@
+[Unit]
+Description=radio zukka — wöchentlicher Restore-Drill (Sonntag 05:30 Berlin)
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -16,7 +16,11 @@
 # queries the scheduler (`GET /api/v1/internal/ops/audience`) and decides deploy-now /
 # wait-for-window / abort. Fail-closed: an unreachable scheduler, a non-200 or
 # a parse error yield exit 3 (gate closed). `--force` short-circuits the gate.
-# Pre-deploy backup is #43 and still out of scope (see the TODO below).
+#
+# Pre-deploy backup (#43): before the image pull, `zukka-backup predeploy <sha>`
+# writes a DB-consistent snapshot into the restic repo. Its failure aborts the
+# deploy (fail-closed) unless ZUKKA_SKIP_PREDEPLOY_BACKUP=1 is set as a
+# break-glass. On a first deploy (no DB yet) the backup is a documented no-op.
 set -euo pipefail
 
 readonly SHA_RE='^[0-9a-f]{7,40}$'
@@ -205,8 +209,24 @@ deploy_prod() {
 
     sync_repo "$tag"
 
-    # TODO(#43): pre-deploy DB snapshot (`zukka-backup predeploy <sha>`) is out
-    # of scope here; it belongs in front of the pull below once #43 lands.
+    # Pre-deploy DB snapshot (#43) in front of the pull. Uses the checkout's
+    # copy so it tracks the release commit; falls back to the installed binary.
+    local backup_bin="${ZUKKA_BACKUP_BIN:-${REPO_DIR}/deploy/systemd/zukka-backup}"
+    if [[ ! -x "$backup_bin" ]]; then
+        backup_bin="/usr/local/bin/zukka-backup"
+    fi
+    if [[ "${ZUKKA_SKIP_PREDEPLOY_BACKUP:-0}" == "1" ]]; then
+        echo "==> WARNING: ZUKKA_SKIP_PREDEPLOY_BACKUP=1; skipping pre-deploy backup" >&2
+    elif [[ -x "$backup_bin" ]]; then
+        echo "==> pre-deploy backup (predeploy ${tag})"
+        if ! "$backup_bin" predeploy "$tag"; then
+            echo "zukka-deploy: pre-deploy backup failed; aborting deploy" >&2
+            exit 1
+        fi
+    else
+        echo "zukka-deploy: pre-deploy backup binary ${backup_bin} not found; aborting (set ZUKKA_SKIP_PREDEPLOY_BACKUP=1 to override)" >&2
+        exit 1
+    fi
 
     # ZUKKA_TAG pins the GHCR image tag; ZUKKA_ENV_FILE points the compose
     # `env_file` at the host secret file (CI keeps `../env/prod.env`).
