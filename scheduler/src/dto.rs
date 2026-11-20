@@ -1160,6 +1160,149 @@ pub struct TapeJobDto {
     pub updated_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #34: announcement templates (M5 — Announcements)
+// ---------------------------------------------------------------------------
+
+/// `announcement_templates.event` — the seven announcement triggers
+/// (`docs/data-model.md` §2.7; schema wins: `fallback_entered`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum AnnouncementEvent {
+    LiveOn,
+    LiveOff,
+    ShowReminder,
+    RecordingPublished,
+    FallbackEntered,
+    Error,
+    Manual,
+}
+
+impl AnnouncementEvent {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "live_on" => Ok(AnnouncementEvent::LiveOn),
+            "live_off" => Ok(AnnouncementEvent::LiveOff),
+            "show_reminder" => Ok(AnnouncementEvent::ShowReminder),
+            "recording_published" => Ok(AnnouncementEvent::RecordingPublished),
+            "fallback_entered" => Ok(AnnouncementEvent::FallbackEntered),
+            "error" => Ok(AnnouncementEvent::Error),
+            "manual" => Ok(AnnouncementEvent::Manual),
+            other => Err(ApiError::validation(
+                field,
+                format!(
+                    "unknown event '{other}', expected one of 'live_on', 'live_off', \
+                     'show_reminder', 'recording_published', 'fallback_entered', 'error' \
+                     or 'manual'"
+                ),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnnouncementEvent::LiveOn => "live_on",
+            AnnouncementEvent::LiveOff => "live_off",
+            AnnouncementEvent::ShowReminder => "show_reminder",
+            AnnouncementEvent::RecordingPublished => "recording_published",
+            AnnouncementEvent::FallbackEntered => "fallback_entered",
+            AnnouncementEvent::Error => "error",
+            AnnouncementEvent::Manual => "manual",
+        }
+    }
+}
+
+/// `announcement_templates.channel` — only `telegram` today (§7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum AnnouncementChannel {
+    Telegram,
+}
+
+impl AnnouncementChannel {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "telegram" => Ok(AnnouncementChannel::Telegram),
+            other => Err(ApiError::validation(
+                field,
+                format!("unknown channel '{other}', expected 'telegram'"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnnouncementChannel::Telegram => "telegram",
+        }
+    }
+}
+
+/// Full announcement-template representation (`announcement_templates` row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnouncementTemplateDto {
+    pub id: String,
+    pub name: String,
+    pub event: AnnouncementEvent,
+    /// `None` = global default; `Some` = per-show override.
+    pub show_id: Option<String>,
+    pub channel: AnnouncementChannel,
+    pub body: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Body of `POST /announcement-templates`. `channel` defaults to `telegram`,
+/// `enabled` to `true`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateAnnouncementTemplateRequest {
+    pub name: String,
+    pub event: String,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub body: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// Body of `PATCH /announcement-templates/{id}` — COALESCE patch. `show_id`
+/// uses `double_option`: absent = keep, JSON `null` = make global.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateAnnouncementTemplateRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub event: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub show_id: Option<Option<String>>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// Body of `POST /announcement-templates/{id}/render` (preview).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RenderTemplateRequest {
+    #[serde(default)]
+    pub payload: BTreeMap<String, String>,
+}
+
+/// Response of `POST /announcement-templates/{id}/render`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderTemplateResponse {
+    pub rendered: String,
+    pub unknown_placeholders: Vec<String>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where

@@ -1,6 +1,7 @@
 //! Persistence layer: runtime `sqlx` queries (no compile-time macros, so CI
 //! works without a database).
 
+pub mod announcement_templates;
 pub mod auth;
 pub mod broadcasts;
 pub mod control;

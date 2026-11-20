@@ -2,6 +2,7 @@
 
 pub mod queues;
 
+pub mod announcement_templates;
 pub mod auth;
 pub mod broadcasts;
 pub mod control;
@@ -108,6 +109,24 @@ pub fn router(pool: SqlitePool) -> Router {
         .route("/broadcasts/{id}/end", post(broadcasts::end))
         .route("/schedule", get(schedule::window))
         .route("/schedule/expand", post(schedule::expand));
+
+    // Issue #34: announcement templates. `{id}/render` is a longer static
+    // suffix than `{id}`, so Axum matches it first.
+    let api = api
+        .route(
+            "/announcement-templates",
+            get(announcement_templates::list).post(announcement_templates::create),
+        )
+        .route(
+            "/announcement-templates/{id}",
+            get(announcement_templates::get_one)
+                .patch(announcement_templates::update)
+                .delete(announcement_templates::delete),
+        )
+        .route(
+            "/announcement-templates/{id}/render",
+            post(announcement_templates::render_preview),
+        );
 
     // C77: the six layers are fixed — read + PATCH only, no POST/DELETE/PUT.
     let api = api.route("/sources", get(sources::list)).route(
