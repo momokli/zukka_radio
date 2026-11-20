@@ -1,7 +1,7 @@
 //! Manual announcement handlers (Issue #38).
 //!
 //! Thin over the [`AnnouncementApi`]: RBAC is `announcement.write` for the
-//! post, `login` for the read (portal.md §3.2). `caster_id` and the audit
+//! read and the post (portal.md §3.2). `caster_id` and the audit
 //! actor always come from the session, never client input (§1). The scheduler
 //! owns the authoritative RBAC + audit-log write.
 
@@ -47,6 +47,7 @@ pub async fn announcements_get(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Response, PortalError> {
+    rbac::check(&ctx, "announcement.write")?;
     let templates = state
         .announcements
         .list_templates(Some(&ctx.caster_id), Some("manual"))

@@ -5,7 +5,7 @@
 //! same `event="manual"` scope as the real client); login uses the real session
 //! cookie + CSRF flow (mirrors `schedule_ui_e2e.rs`). Explicit proofs:
 //!   (a) `GET /announcements` renders the post form when the session grants
-//!       `announcement.write`, and hides it otherwise,
+//!       `announcement.write`, and is a `403` without it,
 //!   (b) `POST /announcements/post` without `announcement.write` is a `403`
 //!       and never reaches the client (no create),
 //!   (c) a permitted post performs exactly one create, and the `caster_id`
@@ -350,7 +350,7 @@ async fn post(
 }
 
 // ---------------------------------------------------------------------------
-// (a) GET renders the form only with `announcement.write`
+// (a) GET requires `announcement.write`
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -376,15 +376,11 @@ async fn announcements_page_renders_form_with_permission() {
 }
 
 #[tokio::test]
-async fn announcements_page_hides_form_without_permission() {
+async fn announcements_page_without_permission_is_403() {
     let (app, _announcements) = router(no_perms());
     let (session, _csrf) = login(&app).await;
     let (status, body) = get(&app, &session, "/announcements").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        !body.contains("action=\"/announcements/post\""),
-        "form hidden without permission: {body}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 // ---------------------------------------------------------------------------
