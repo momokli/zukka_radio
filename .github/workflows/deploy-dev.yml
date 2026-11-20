@@ -37,9 +37,13 @@ jobs:
             zukka-deploy@cast.zukkafabrik.de \
             "sudo /usr/local/bin/zukka-deploy dev --tag ${{ github.event.workflow_run.head_sha }}"
 
-      # Smoke runs on the deploy host: the DEV listeners are loopback-only.
+      # Smoke runs on the deploy host from the git checkout (see
+      # docs/infrastructure.md §3.2: repo/ holds compose/, scripts/, ...); the
+      # DEV listeners are loopback-only. The wrapper already runs the smoke gate
+      # as part of `zukka-deploy dev`; this step re-runs it from the checkout the
+      # workflow can address (D4).
       - name: Smoke (dev)
         run: |
           ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
             zukka-deploy@cast.zukkafabrik.de \
-            "/opt/apps/radio-zukka/dev/scripts/smoke.sh dev"
+            "/opt/apps/radio-zukka/repo/scripts/smoke.sh dev"
