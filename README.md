@@ -30,6 +30,7 @@ Die alte Welt liegt auf `main` und wird hier nicht referenziert.
 | [`docs/liquidsoap.md`](docs/liquidsoap.md) | Liquidsoap-Script, Sources, Prioritäten |
 | [`docs/portal.md`](docs/portal.md) | Auth, Upload, Library, Queue, Control Panel |
 | [`docs/infrastructure.md`](docs/infrastructure.md) | Env, Caddy, systemd, CI/CD |
+| [`docs/cutover.md`](docs/cutover.md) | PROD-Cutover-Runbook (DNS, Edge, Fenster, Rollback) |
 | [`docs/tapes.md`](docs/tapes.md) | öffentlicher Feed, Waveforms |
 
 ## Grundsätze

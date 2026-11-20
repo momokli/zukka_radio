@@ -7,6 +7,9 @@ Runbook für den PROD-Pfad: Release-Tag → GitHub Environment `prod` mit
 Grundlage: `docs/consolidated-architecture.md` §5.7–5.9,
 `docs/infrastructure.md` §2.8–2.9/§3.2/§3.5.
 
+Der einmalige Cutover des Stacks auf den Shared Edge (443) ist in
+`docs/cutover.md` beschrieben (Issue #45).
+
 ## Abgrenzung
 
 | Thema                            | Issue | Status                                       |

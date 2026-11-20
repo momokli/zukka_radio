@@ -1,0 +1,11 @@
+# BEGIN RADIO ZUKKA (verwaltet von radio/zukka_radio, nicht manuell editieren)
+radio.zukkafabrik.de, ingest.zukkafabrik.de, portal.zukkafabrik.de, tapes.zukkafabrik.de {
+	encode zstd gzip
+	request_body {
+		max_size 2GB
+	}
+	reverse_proxy 127.0.0.1:12080 {
+		flush_interval -1
+	}
+}
+# END RADIO ZUKKA

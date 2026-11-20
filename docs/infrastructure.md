@@ -755,7 +755,9 @@ Dateien:
 			X-Frame-Options "DENY"
 			-Server
 		}
-		request_body { max_size 2GB }
+		request_body {
+			max_size 2GB
+		}
 		encode zstd gzip
 		reverse_proxy portal:8080 {
 			lb_try_duration 5s
@@ -825,7 +827,9 @@ https://:12443 {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	}
 	encode zstd gzip
-	request_body { max_size 2GB }
+	request_body {
+		max_size 2GB
+	}
 	import radio_zukka_routes
 }
 ```
@@ -865,7 +869,9 @@ https://:12180 {
 # BEGIN RADIO ZUKKA (verwaltet von radio/zukka_radio, nicht manuell editieren)
 radio.zukkafabrik.de, ingest.zukkafabrik.de, portal.zukkafabrik.de, tapes.zukkafabrik.de {
 	encode zstd gzip
-	request_body { max_size 2GB }
+	request_body {
+		max_size 2GB
+	}
 	reverse_proxy 127.0.0.1:12080 {
 		flush_interval -1
 	}
