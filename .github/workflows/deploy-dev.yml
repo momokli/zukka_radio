@@ -27,16 +27,19 @@ jobs:
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
           chmod 600 "$HOME/.ssh/deploy"
+          # Pin the deploy host key so the fresh runner can verify it.
+          ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
 
       - name: Deploy (dev)
         run: |
-          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
             zukka-deploy@cast.zukkafabrik.de \
             "sudo /usr/local/bin/zukka-deploy dev --tag ${{ github.event.workflow_run.head_sha }}"
 
       # Smoke runs on the deploy host: the DEV listeners are loopback-only.
       - name: Smoke (dev)
         run: |
-          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
             zukka-deploy@cast.zukkafabrik.de \
             "/opt/apps/radio-zukka/dev/scripts/smoke.sh dev"
