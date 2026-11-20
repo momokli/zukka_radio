@@ -3,6 +3,7 @@
 #
 # Validates deploy/monitoring/* without any live Prometheus/blackbox/Grafana:
 #   - rules.yml       -> promtool check rules
+#   - rules_test.yml  -> promtool test rules (synthetic series unit tests)
 #   - prometheus.yml  -> promtool check config
 #   - blackbox.yml    -> blackbox-exporter --config.check
 #   - dashboard.json  -> python3 -m json.tool
@@ -31,6 +32,10 @@ docker run --rm --entrypoint promtool -v "${MON_DIR}:/cfg:ro" "${PROM_IMAGE}" \
 echo "== promtool check rules (rules.yml) =="
 docker run --rm --entrypoint promtool -v "${MON_DIR}:/cfg:ro" "${PROM_IMAGE}" \
 	check rules /cfg/rules.yml
+
+echo "== promtool test rules (rules_test.yml — unit tests) =="
+docker run --rm --entrypoint promtool -v "${MON_DIR}:/cfg:ro" "${PROM_IMAGE}" \
+	test rules /cfg/rules_test.yml
 
 echo "== blackbox-exporter --config.check (blackbox.yml) =="
 docker run --rm -v "${MON_DIR}:/cfg:ro" "${BLACKBOX_IMAGE}" \
