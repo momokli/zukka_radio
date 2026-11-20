@@ -368,6 +368,10 @@ async fn http_200_renders_text_and_marks_sent() {
     assert!(body.contains("\"chat_id\""), "body: {body}");
     assert!(body.contains(CHAT), "body: {body}");
     assert!(body.contains("Hallo Momo!"), "body: {body}");
+    assert!(
+        !body.contains("{caster_name}"),
+        "placeholder left unrendered: {body}"
+    );
 
     let state = state(&pool, "a-1").await;
     assert_eq!(state.status, "sent");
@@ -432,7 +436,13 @@ async fn http_200_with_ok_false_is_an_error() {
     assert_eq!(report.failed, 1);
     mock.handle.await.expect("mock join");
 
-    let error = state(&pool, "a-1").await.error.expect("error");
+    let state = state(&pool, "a-1").await;
+    assert_eq!(state.status, "pending");
+    assert_eq!(state.attempts, 1);
+    assert!(state.next_attempt_at.is_some());
+    assert_eq!(event_count(&pool, "announcement_failed").await, 1);
+
+    let error = state.error.expect("error");
     assert!(error.contains("Forbidden"), "error: {error}");
     assert!(!error.contains(TOKEN));
 }
