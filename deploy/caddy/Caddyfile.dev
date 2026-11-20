@@ -1,8 +1,12 @@
 # DEV: internal TLS, plain listener behind the host firewall.
 {
+	admin 127.0.0.1:2019
 	local_certs
 }
 
+import routes.caddy
+
 https://:12180 {
-	import routes.caddy
+	tls internal
+	import radio_zukka_routes
 }

@@ -1,8 +1,16 @@
 # PROD parallel operation before cutover: own TLS via ACME DNS-01.
 {
-	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	admin off
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
 }
 
+import routes.caddy
+
 https://:12443 {
-	import routes.caddy
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	import radio_zukka_routes
 }
