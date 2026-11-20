@@ -20,9 +20,9 @@ use sqlx::SqlitePool;
 
 use crate::api::ApiJson;
 use crate::dto::{
-    CasterDto, ChangePasswordRequest, CreateSessionRequest, CreatedSessionDto,
-    SessionValidationDto, StreamPasswordRequest, StreamPasswordResponse, VerifyRequest,
-    VerifyResponse,
+    CasterDto, ChangePasswordRequest, CreateSessionRequest, CreatedSessionDto, HarborAuthRequest,
+    HarborAuthResponse, SessionValidationDto, StreamPasswordRequest, StreamPasswordResponse,
+    VerifyRequest, VerifyResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::rate_limit::WindowLimiter;
@@ -146,6 +146,24 @@ pub async fn verify(
         }
         Err(err) => Err(err),
     }
+}
+
+/// `POST /internal/harbor/auth` — fail-closed Harbor ingest check (§4.2, #33).
+///
+/// Called by Liquidsoap's `input.harbor(auth=…)` callback on connection setup.
+/// Must answer fast (< 200 ms): the store does one indexed lookup and exactly
+/// one Argon2 verification, no extra DB roundtrip.
+pub async fn harbor_auth(
+    State(pool): State<SqlitePool>,
+    ApiJson(req): ApiJson<HarborAuthRequest>,
+) -> ApiResult<Json<HarborAuthResponse>> {
+    let auth =
+        store::auth::authenticate_harbor(&pool, &req.mount, &req.username, &req.password).await?;
+    Ok(Json(HarborAuthResponse {
+        caster_id: auth.caster_id,
+        display_name: auth.display_name,
+        mount: auth.mount,
+    }))
 }
 
 /// `POST /internal/sessions` — create a session (portal login).
