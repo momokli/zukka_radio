@@ -1,9 +1,10 @@
 # Caster harbor pool: N slots on one port, one mount per caster.
 # See docs/consolidated-architecture.md §2.5 and docs/liquidsoap.md §3.3 (D3/D4).
 #
-# Every slot binds its own input.harbor mount on the shared harbor port.
-# master.liq clocks all slots via fallback(...), so multiple casters can be
-# connected in parallel while only the selected one is audible.
+# Every slot binds its own input.harbor mount on the shared harbor port. The
+# connection order is tracked in a FCFS registry (issue #30): the first
+# connected caster stays live; later casters wait and never preempt. live.liq
+# consumes `casters` to build the switch.
 
 harbor_port = int_of_string(
   environment.get(default="8001", "ZUKKA_LIQUIDSOAP_HARBOR_PORT")
@@ -14,7 +15,9 @@ harbor_slots_count = int_of_string(
 
 def harbor_mount(i) =
   # list.init/list.map pass a zero-based index; slots are 1-based.
-  "live/slot-#{string.of_int(digits=2, i + 1)}"
+  # Canonical mount string carries the leading slash (issue #30 D-A): the same
+  # value is used by the registry, the switch predicate and later live.set.
+  "/live/slot-#{string.of_int(digits=2, i + 1)}"
 end
 
 harbor_mounts = list.init(harbor_slots_count, harbor_mount)
@@ -33,8 +36,39 @@ def harbor_auth(mount) =
   end
 end
 
-def make_harbor_slot(mount) =
-  input.harbor(
+# FCFS registry: mount names, oldest connection at the head.
+live_order = ref([])
+
+# Pure registry functions (no I/O) — unit-testable without a stream (US4).
+
+# Append a mount that is not already present. Because the head is the oldest
+# connection, a later join must go to the tail: FCFS never preempts.
+def live_join(m, order) =
+  if list.mem(m, order) then order else list.append(order, [m]) end
+end
+
+# Remove the first occurrence of a mount; no-op when absent.
+def live_leave(m, order) =
+  list.remove(m, order)
+end
+
+# Oldest connected mount, "" when nobody is connected.
+def live_fcfs(order) =
+  list.hd(default="", order)
+end
+
+# D-C: an override only wins while its mount is actually connected; otherwise
+# fall back to FCFS (a stale override must not take the whole live layer down).
+def live_select(order, override) =
+  null.case(
+    override,
+    fun () -> live_fcfs(order),
+    fun (o) -> if list.mem(o, order) then o else live_fcfs(order) end
+  )
+end
+
+def make_harbor_caster(mount) =
+  s = input.harbor(
     mount,
     port=harbor_port,
     auth=harbor_auth(mount),
@@ -42,6 +76,18 @@ def make_harbor_slot(mount) =
     max=20.0,
     replay_metadata=true
   )
+  # on_connect/on_disconnect are source methods in 2.4.5, not input.harbor
+  # parameters (those are deprecated). Both update the FCFS registry.
+  s.on_connect(synchronous=false, fun (_) -> begin
+    live_order := live_join(mount, live_order())
+    log("caster connected mount=#{mount}")
+  end)
+  s.on_disconnect(synchronous=false, fun () -> begin
+    live_order := live_leave(mount, live_order())
+    log("caster disconnected mount=#{mount}")
+  end)
+  (mount, s)
 end
 
-harbor_slots = list.map(make_harbor_slot, harbor_mounts)
+# [(mount, source)] in slot order; consumed by live.liq.
+casters = list.map(make_harbor_caster, harbor_mounts)
