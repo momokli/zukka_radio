@@ -253,8 +253,8 @@ async fn seed(pool: &SqlitePool) {
         sqlx::query(
             "INSERT INTO tapes (id, slug, caster_id, show_id, title, started_at, ended_at, \
              duration_ms, source, format, mime, size_bytes, status, visible, published_at, \
-             created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?, 1024, ?, ?, ?, ?, ?)",
+             storage_key, etag, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?, 1024, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(seed.slug)
         .bind(seed.slug)
@@ -269,6 +269,8 @@ async fn seed(pool: &SqlitePool) {
         .bind(seed.status)
         .bind(seed.visible)
         .bind(seed.published)
+        .bind(format!("recordings/{}.mp3", seed.slug))
+        .bind(format!("\"{}\"", seed.slug))
         .bind(TS)
         .bind(TS)
         .execute(pool)
@@ -316,7 +318,12 @@ async fn setup() -> (TempDir, Router, SqlitePool) {
     let pool = zukka_tapes::db::connect_read_only(&path)
         .await
         .expect("read-only pool");
-    let app = zukka_tapes::api::router(pool.clone(), BASE_URL.to_string());
+    let app = zukka_tapes::api::router(
+        pool.clone(),
+        BASE_URL.to_string(),
+        String::new(),
+        String::new(),
+    );
     (dir, app, pool)
 }
 

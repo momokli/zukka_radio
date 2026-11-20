@@ -60,7 +60,12 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         config.database_path.display()
     );
 
-    let app = zukka_tapes::api::router(pool, config.base_url.clone());
+    let app = zukka_tapes::api::router(
+        pool,
+        config.base_url.clone(),
+        config.music_api_url.clone(),
+        config.music_api_token.clone(),
+    );
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!("zukka-tapes listening on {}", config.bind);

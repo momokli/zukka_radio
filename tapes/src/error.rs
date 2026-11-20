@@ -5,7 +5,7 @@
 //! but never serialized.
 
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
@@ -34,6 +34,17 @@ pub enum ApiError {
     /// A malformed request (`cursor`, `from > to`, `limit`, …) → `400`.
     #[error("{message}")]
     BadRequest { message: String },
+
+    /// The requested byte range lies outside the file → `416`.
+    ///
+    /// Carries the file size so the response can emit
+    /// `Content-Range: bytes */{size}` (§3.5).
+    #[error("range not satisfiable")]
+    RangeNotSatisfiable { size: u64 },
+
+    /// The Music API object store is unreachable/failed → `502`.
+    #[error("storage unavailable")]
+    UpstreamUnavailable,
 
     /// The database is unreachable → `503` (healthz only).
     #[error("database unavailable")]
@@ -69,6 +80,7 @@ impl From<sqlx::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let mut extra: Vec<(header::HeaderName, HeaderValue)> = Vec::new();
         let (status, code, message) = match self {
             ApiError::NotFound { resource, id } => (
                 StatusCode::NOT_FOUND,
@@ -86,6 +98,24 @@ impl IntoResponse for ApiError {
                 "route not found".to_string(),
             ),
             ApiError::BadRequest { message } => (StatusCode::BAD_REQUEST, "bad_request", message),
+            ApiError::RangeNotSatisfiable { size } => {
+                if let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}")) {
+                    extra.push((header::CONTENT_RANGE, value));
+                }
+                (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    "range_not_satisfiable",
+                    "range not satisfiable".to_string(),
+                )
+            }
+            ApiError::UpstreamUnavailable => {
+                extra.push((header::RETRY_AFTER, HeaderValue::from_static("5")));
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "storage",
+                    "storage unavailable".to_string(),
+                )
+            }
             ApiError::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "internal_error",
@@ -101,11 +131,15 @@ impl IntoResponse for ApiError {
             }
         };
 
-        (
+        let mut res = (
             status,
             Json(json!({ "error": { "code": code, "message": message } })),
         )
-            .into_response()
+            .into_response();
+        for (name, value) in extra {
+            res.headers_mut().insert(name, value);
+        }
+        res
     }
 }
 
