@@ -31,7 +31,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: deploy-prod
@@ -42,6 +42,8 @@ jobs:
     # Only a tag push creates a GitHub Release; manual dispatch never does.
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,16 +108,32 @@ jobs:
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
+      # A manual dispatch can name any tag/SHA; require it to be part of v2.
+      - name: Verify deploy SHA is an ancestor of origin/v2
+        if: ${{ !inputs.rollback }}
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin v2 --no-tags
+          git merge-base --is-ancestor "$SHA" origin/v2
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
           chmod 600 "$HOME/.ssh/deploy"
-          # Pin the deploy host key so the fresh runner can verify it.
-          ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
+          if [[ -n "${DEPLOY_KNOWN_HOSTS:-}" ]]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          else
+            # TOFU fallback: pin the host key on first use. Prefer setting the
+            # `DEPLOY_KNOWN_HOSTS` secret (see docs/deploy-prod.md).
+            ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
+          fi
           chmod 600 "$HOME/.ssh/known_hosts"
 
       # #42 will insert the audience/window gate (`--check-window`) here.
@@ -124,12 +142,14 @@ jobs:
         env:
           SHA: ${{ steps.resolve.outputs.sha }}
           FORCE: ${{ inputs.force }}
+          GIT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           args=(prod --tag "$SHA")
           if [[ "$FORCE" == "true" ]]; then
             args+=(--force)
           fi
+          args+=(--ref "$GIT_REF")
           ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
             zukka-deploy@cast.zukkafabrik.de \
             "sudo /usr/local/bin/zukka-deploy ${args[*]}"

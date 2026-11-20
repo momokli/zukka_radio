@@ -8,7 +8,7 @@ name: zukka-prod
 x-common: &common
   restart: unless-stopped
   env_file:
-    - ../env/prod.env
+    - ${ZUKKA_ENV_FILE:-../env/prod.env}
   logging:
     options:
       max-size: "10m"
@@ -119,7 +119,6 @@ services:
       ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
     ports:
       - "127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080"
-      - "0.0.0.0:${ZUKKA_PORT_CADDY_TLS:-12443}:12443"
     volumes:
       - ../deploy/caddy:/etc/caddy:ro
       - caddy_data:/data
