@@ -2,6 +2,7 @@
 //! works without a database).
 
 pub mod announcement_templates;
+pub mod announcement_timings;
 pub mod announcements;
 pub mod auth;
 pub mod broadcasts;

@@ -3,7 +3,7 @@
 //! This module owns the shared overlap rules; the broadcast store calls
 //! [`detect_conflicts`] for hard self-overlaps and soft warnings.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
@@ -11,6 +11,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use crate::dto::{BroadcastKind, BroadcastStatus, ExpandResultDto, ScheduleEntryDto, WarningDto};
 use crate::error::{ApiError, ApiResult};
 use crate::rrule::RecurrenceRule;
+use crate::store::announcement_timings;
 use crate::store::now_ts;
 use crate::time::{fmt_api_time, fmt_storage_time, parse_api_time, parse_storage_time};
 use crate::uuid::new_id;
@@ -321,6 +322,16 @@ pub async fn expand(
     let mut skipped = 0i64;
     let mut warnings = Vec::new();
 
+    // #36: resolve the effective reminder lead once per show (side effect).
+    let mut leads: HashMap<String, i64> = HashMap::new();
+    {
+        let mut conn = pool.acquire().await?;
+        for show in &shows {
+            let timings = announcement_timings::resolve(&mut conn, Some(&show.id)).await?;
+            leads.insert(show.id.clone(), timings.lead);
+        }
+    }
+
     for (show, occurrence, caster_id) in &planned {
         let starts_storage = fmt_storage_time(occurrence.start_utc);
         let existing: Option<String> = sqlx::query_scalar(
@@ -401,6 +412,21 @@ pub async fn expand(
             )
             .await?;
         }
+
+        // #36: plan the reminder for the freshly created occurrence.
+        let lead = leads
+            .get(&show.id)
+            .copied()
+            .unwrap_or(announcement_timings::DEFAULT.lead);
+        crate::store::broadcasts::plan_show_reminder_with_lead_tx(
+            &mut tx,
+            &id,
+            Some(&show.id),
+            caster_id,
+            occurrence.start_utc,
+            lead,
+        )
+        .await;
 
         created += 1;
     }

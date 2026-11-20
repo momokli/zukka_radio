@@ -11,6 +11,8 @@ use crate::dto::{
     UpdateBroadcastRequest,
 };
 use crate::error::{ApiError, ApiResult};
+use crate::store::announcement_timings;
+use crate::store::announcements::{self, ShowReminderInput};
 use crate::store::now_ts;
 use crate::store::schedule::{Slot, detect_conflicts};
 use crate::time::{fmt_api_time, fmt_storage_time, parse_api_time, parse_storage_time};
@@ -234,6 +236,18 @@ pub async fn create(pool: &SqlitePool, req: &CreateBroadcastRequest) -> ApiResul
     )
     .await?;
 
+    // Side effect (#36): plan the `show_reminder` inside the same transaction.
+    if matches!(kind, BroadcastKind::Live) {
+        plan_show_reminder_tx(
+            &mut tx,
+            &id,
+            req.show_id.as_deref(),
+            &req.caster_id,
+            starts_at,
+        )
+        .await;
+    }
+
     tx.commit().await?;
 
     get_with_warnings(pool, &id).await
@@ -360,6 +374,16 @@ pub async fn update(
     )
     .await?;
 
+    // Side effect (#36): keep the reminder in sync with the new schedule.
+    if matches!(current.status, BroadcastStatus::Scheduled) {
+        if matches!(kind, BroadcastKind::Live) {
+            reschedule_show_reminder_tx(&mut tx, id, show_id.as_deref(), &caster_id, starts_at)
+                .await;
+        } else {
+            cancel_show_reminder_tx(&mut tx, id).await;
+        }
+    }
+
     tx.commit().await?;
 
     get_with_warnings(pool, id).await
@@ -367,13 +391,17 @@ pub async fn update(
 
 /// Deletes a broadcast (`tapes.broadcast_id` becomes `NULL` via FK).
 pub async fn delete(pool: &SqlitePool, id: &str) -> ApiResult<()> {
+    let mut tx = pool.begin().await?;
+    // Cancel the pending reminder before the DELETE (FK then nulls the link).
+    cancel_show_reminder_tx(&mut tx, id).await;
     let res = sqlx::query("DELETE FROM broadcasts WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::not_found("broadcast", id));
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -475,6 +503,11 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
     )
     .await?;
 
+    // Cancel drops any pending reminder (side effect, #36).
+    if matches!(action, Action::Cancel) {
+        cancel_show_reminder_tx(&mut tx, id).await;
+    }
+
     // Announcements are a side effect, never the core: an emit failure must
     // not roll back the broadcast transition (only warn).
     emit_live_announcement(&mut tx, action, &current, new_end.as_deref()).await;
@@ -533,6 +566,20 @@ async fn emit_live_announcement(
         Action::End => AnnouncementEvent::LiveOff,
         Action::Cancel => return,
     };
+    // #36: honour the configured `live_on`/`live_off` delay (0 ⇒ due now).
+    let delay = match announcement_timings::resolve(&mut *tx, current.show_id.as_deref()).await {
+        Ok(timings) => match event {
+            AnnouncementEvent::LiveOn => timings.live_on,
+            AnnouncementEvent::LiveOff => timings.live_off,
+            _ => 0,
+        },
+        Err(err) => {
+            tracing::warn!(broadcast_id = %current.id, "timing resolve failed: {err:#}");
+            return;
+        }
+    };
+    let scheduled_at =
+        announcement_timings::delay_scheduled_at(Utc::now(), delay).map(fmt_api_time);
     let start_time = parse_storage_time(&current.starts_at)
         .ok()
         .map(fmt_api_time);
@@ -547,10 +594,149 @@ async fn emit_live_announcement(
         &current.caster_id,
         start_time,
         end_time,
+        scheduled_at,
     )
     .await
     {
         tracing::warn!(broadcast_id = %current.id, "announcement emit failed: {err:#}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// show_reminder planning (#36) — side effects, never fatal
+// ---------------------------------------------------------------------------
+
+/// Plans a fresh `show_reminder` for a scheduled live broadcast, resolving the
+/// effective lead time from the global/per-show timings.
+pub(crate) async fn plan_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+    show_id: Option<&str>,
+    caster_id: &str,
+    starts_at: DateTime<Utc>,
+) {
+    let lead = match announcement_timings::resolve(&mut *tx, show_id).await {
+        Ok(timings) => timings.lead,
+        Err(err) => {
+            tracing::warn!(broadcast_id, "timing resolve failed: {err:#}");
+            return;
+        }
+    };
+    plan_show_reminder_with_lead_tx(tx, broadcast_id, show_id, caster_id, starts_at, lead).await;
+}
+
+/// Like [`plan_show_reminder_tx`] but with a pre-resolved lead (used by
+/// `schedule::expand`, which resolves once per show).
+pub(crate) async fn plan_show_reminder_with_lead_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+    show_id: Option<&str>,
+    caster_id: &str,
+    starts_at: DateTime<Utc>,
+    lead: i64,
+) {
+    match try_plan_show_reminder(tx, broadcast_id, show_id, caster_id, starts_at, lead).await {
+        Ok(()) => {}
+        Err(err) => tracing::warn!(broadcast_id, "show_reminder emit failed: {err:#}"),
+    }
+}
+
+async fn try_plan_show_reminder(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+    show_id: Option<&str>,
+    caster_id: &str,
+    starts_at: DateTime<Utc>,
+    lead: i64,
+) -> ApiResult<()> {
+    let scheduled = announcement_timings::reminder_scheduled_at(starts_at, lead, Utc::now());
+    let show_name = show_name_tx(tx, show_id).await?;
+    announcements::emit_show_reminder_tx(
+        tx,
+        ShowReminderInput {
+            broadcast_id,
+            show_id,
+            show_name: show_name.as_deref(),
+            caster_id: Some(caster_id),
+            starts_at,
+            scheduled_at: Some(scheduled),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Reschedules the pending `show_reminder` (UPDATE, not a second INSERT).
+pub(crate) async fn reschedule_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+    show_id: Option<&str>,
+    caster_id: &str,
+    starts_at: DateTime<Utc>,
+) {
+    let lead = match announcement_timings::resolve(&mut *tx, show_id).await {
+        Ok(timings) => timings.lead,
+        Err(err) => {
+            tracing::warn!(broadcast_id, "timing resolve failed: {err:#}");
+            return;
+        }
+    };
+    if let Err(err) =
+        try_reschedule_show_reminder(tx, broadcast_id, show_id, caster_id, starts_at, lead).await
+    {
+        tracing::warn!(broadcast_id, "show_reminder reschedule failed: {err:#}");
+    }
+}
+
+async fn try_reschedule_show_reminder(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+    show_id: Option<&str>,
+    caster_id: &str,
+    starts_at: DateTime<Utc>,
+    lead: i64,
+) -> ApiResult<()> {
+    let scheduled = announcement_timings::reminder_scheduled_at(starts_at, lead, Utc::now());
+    let show_name = show_name_tx(tx, show_id).await?;
+    announcements::reschedule_show_reminder_tx(
+        tx,
+        ShowReminderInput {
+            broadcast_id,
+            show_id,
+            show_name: show_name.as_deref(),
+            caster_id: Some(caster_id),
+            starts_at,
+            scheduled_at: Some(scheduled),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Cancels a pending reminder (side effect, warns on failure).
+pub(crate) async fn cancel_show_reminder_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    broadcast_id: &str,
+) {
+    if let Err(err) = announcements::cancel_show_reminder_tx(tx, broadcast_id).await {
+        tracing::warn!(broadcast_id, "show_reminder cancel failed: {err:#}");
+    }
+}
+
+/// Looks up a show name; `None` for an absent/unknown show.
+async fn show_name_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    show_id: Option<&str>,
+) -> ApiResult<Option<String>> {
+    match show_id {
+        Some(id) => {
+            let name = sqlx::query_scalar("SELECT name FROM shows WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await?;
+            Ok(name)
+        }
+        None => Ok(None),
     }
 }
 

@@ -20,7 +20,7 @@ async fn setup() -> (TempDir, SqlitePool) {
 }
 
 #[tokio::test]
-async fn migration_creates_17_user_tables() {
+async fn migration_creates_18_user_tables() {
     let (_dir, pool) = setup().await;
 
     let count: i64 = sqlx::query_scalar(
@@ -32,7 +32,7 @@ async fn migration_creates_17_user_tables() {
     .fetch_one(&pool)
     .await
     .expect("count tables");
-    assert_eq!(count, 17, "expected exactly 17 user tables");
+    assert_eq!(count, 18, "expected exactly 18 user tables");
 
     let expected = [
         "roles",
@@ -50,6 +50,7 @@ async fn migration_creates_17_user_tables() {
         "upload_jobs",
         "announcement_templates",
         "announcements",
+        "show_announcement_timings",
         "event_log",
         "settings",
     ];

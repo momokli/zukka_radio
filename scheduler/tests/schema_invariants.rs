@@ -170,7 +170,7 @@ async fn queue_item(
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn migration_creates_17_tables_and_is_clean() {
+async fn migration_creates_18_tables_and_is_clean() {
     let (_dir, pool) = setup().await;
 
     let count: i64 = sqlx::query_scalar(
@@ -180,7 +180,7 @@ async fn migration_creates_17_tables_and_is_clean() {
     .fetch_one(&pool)
     .await
     .expect("count tables");
-    assert_eq!(count, 17, "expected exactly 17 user tables");
+    assert_eq!(count, 18, "expected exactly 18 user tables");
 
     let fk_rows = sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&pool)
@@ -220,7 +220,10 @@ async fn reapplying_migration_is_a_noop() {
         .fetch_one(&pool)
         .await
         .expect("count migrations");
-    assert_eq!(applied, 1, "migration must be tracked exactly once");
+    assert_eq!(
+        applied, 2,
+        "migrations `0001` + `0002` are tracked exactly once"
+    );
 
     let marker: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'marker'")
         .fetch_one(&pool)
@@ -1069,4 +1072,102 @@ async fn delete_caster_cascades_queues() {
         .await
         .expect("count queues");
     assert_eq!(queues, 0, "queues must cascade with their caster");
+}
+
+// ---------------------------------------------------------------------------
+// 13. show_announcement_timings: STRICT, CHECK bounds, FK cascade (Issue #36)
+// ---------------------------------------------------------------------------
+
+async fn timing_override(
+    pool: &SqlitePool,
+    show_id: &str,
+    lead: Option<i64>,
+    live_on: Option<i64>,
+    live_off: Option<i64>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO show_announcement_timings \
+         (show_id, show_reminder_lead_seconds, live_on_delay_seconds, live_off_delay_seconds, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(show_id)
+    .bind(lead)
+    .bind(live_on)
+    .bind(live_off)
+    .bind(TS)
+    .bind(TS)
+    .execute(pool)
+    .await
+}
+
+#[tokio::test]
+async fn show_announcement_timings_is_strict_and_bounded() {
+    let (_dir, pool) = setup().await;
+    let c = caster(&pool, "c0000000-0000-7000-8000-000000000001").await;
+    show(&pool, "50000000-0000-7000-8000-000000000001", "one", &c).await;
+    let sid = "50000000-0000-7000-8000-000000000001";
+
+    // The table is STRICT.
+    let strict: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'show_announcement_timings'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read table sql");
+    assert!(
+        strict.contains("STRICT"),
+        "show_announcement_timings must be STRICT"
+    );
+
+    // One override is enough.
+    timing_override(&pool, sid, Some(300), None, None)
+        .await
+        .expect("single override is valid");
+    sqlx::query("DELETE FROM show_announcement_timings WHERE show_id = ?")
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+
+    // All-NULL row is rejected by the table CHECK.
+    timing_override(&pool, sid, None, None, None)
+        .await
+        .expect_err("an all-NULL override row must be rejected");
+
+    // Negative and out-of-range values are rejected.
+    timing_override(&pool, sid, Some(-1), None, None)
+        .await
+        .expect_err("negative lead must be rejected");
+    timing_override(&pool, sid, Some(604_801), None, None)
+        .await
+        .expect_err("lead > 604800 must be rejected");
+
+    // Boundaries are accepted.
+    timing_override(&pool, sid, Some(0), Some(604_800), None)
+        .await
+        .expect("0 and 604800 are valid");
+}
+
+#[tokio::test]
+async fn show_announcement_timings_cascade_with_show() {
+    let (_dir, pool) = setup().await;
+    let c = caster(&pool, "c0000000-0000-7000-8000-000000000001").await;
+    show(&pool, "50000000-0000-7000-8000-000000000002", "two", &c).await;
+    let sid = "50000000-0000-7000-8000-000000000002";
+    timing_override(&pool, sid, Some(300), None, None)
+        .await
+        .expect("override");
+
+    sqlx::query("DELETE FROM shows WHERE id = ?")
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .expect("delete show");
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM show_announcement_timings")
+        .fetch_one(&pool)
+        .await
+        .expect("count overrides");
+    assert_eq!(rows, 0, "overrides must cascade with their show");
 }
