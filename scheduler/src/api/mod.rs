@@ -3,9 +3,11 @@
 pub mod queues;
 
 pub mod announcement_templates;
+pub mod announcements;
 pub mod auth;
 pub mod broadcasts;
 pub mod control;
+pub mod event_log;
 pub mod playback;
 pub mod schedule;
 pub mod shows;
@@ -127,6 +129,23 @@ pub fn router(pool: SqlitePool) -> Router {
             "/announcement-templates/{id}/render",
             post(announcement_templates::render_preview),
         );
+
+    // Issue #35: announcements (M5 — Events) + the read-only event log.
+    // `{id}/send` is a longer static suffix than `{id}`, so Axum matches it
+    // first.
+    let api = api
+        .route(
+            "/announcements",
+            get(announcements::list).post(announcements::create),
+        )
+        .route(
+            "/announcements/{id}",
+            get(announcements::get_one)
+                .patch(announcements::update)
+                .delete(announcements::delete),
+        )
+        .route("/announcements/{id}/send", post(announcements::send))
+        .route("/event-log", get(event_log::list));
 
     // C77: the six layers are fixed — read + PATCH only, no POST/DELETE/PUT.
     let api = api.route("/sources", get(sources::list)).route(

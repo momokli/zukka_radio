@@ -1303,6 +1303,232 @@ pub struct RenderTemplateResponse {
     pub unknown_placeholders: Vec<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #35: announcements (M5 — Events)
+// ---------------------------------------------------------------------------
+
+/// `announcements.status` — `pending` | `sent` | `failed` | `cancelled` (§3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum AnnouncementStatus {
+    Pending,
+    Sent,
+    Failed,
+    Cancelled,
+}
+
+impl AnnouncementStatus {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "pending" => Ok(AnnouncementStatus::Pending),
+            "sent" => Ok(AnnouncementStatus::Sent),
+            "failed" => Ok(AnnouncementStatus::Failed),
+            "cancelled" => Ok(AnnouncementStatus::Cancelled),
+            other => Err(ApiError::validation(
+                field,
+                format!(
+                    "unknown status '{other}', expected 'pending', 'sent', 'failed' or \
+                     'cancelled'"
+                ),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnnouncementStatus::Pending => "pending",
+            AnnouncementStatus::Sent => "sent",
+            AnnouncementStatus::Failed => "failed",
+            AnnouncementStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// `event_log.event` — the 21 values of the frozen CHECK (Issue #35).
+///
+/// Mirrors the schema exactly (`fallback`, not `fallback_entered`); only the
+/// `/event-log` filter needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum EventLogEvent {
+    BroadcastCreated,
+    BroadcastUpdated,
+    BroadcastCancelled,
+    BroadcastStarted,
+    BroadcastEnded,
+    SourceSwitched,
+    LiveConnected,
+    LiveDisconnected,
+    LiveOverrideSet,
+    LiveOverrideCleared,
+    Fallback,
+    Error,
+    DstAdjusted,
+    AnnouncementSent,
+    AnnouncementFailed,
+    CasterCreated,
+    CasterUpdated,
+    RoleChanged,
+    TapePublished,
+    TapeUnpublished,
+    ControlAction,
+}
+
+impl EventLogEvent {
+    /// Parses the wire form; unknown values become `422 validation_error`.
+    pub fn parse(field: &'static str, raw: &str) -> Result<Self, ApiError> {
+        match raw {
+            "broadcast_created" => Ok(EventLogEvent::BroadcastCreated),
+            "broadcast_updated" => Ok(EventLogEvent::BroadcastUpdated),
+            "broadcast_cancelled" => Ok(EventLogEvent::BroadcastCancelled),
+            "broadcast_started" => Ok(EventLogEvent::BroadcastStarted),
+            "broadcast_ended" => Ok(EventLogEvent::BroadcastEnded),
+            "source_switched" => Ok(EventLogEvent::SourceSwitched),
+            "live_connected" => Ok(EventLogEvent::LiveConnected),
+            "live_disconnected" => Ok(EventLogEvent::LiveDisconnected),
+            "live_override_set" => Ok(EventLogEvent::LiveOverrideSet),
+            "live_override_cleared" => Ok(EventLogEvent::LiveOverrideCleared),
+            "fallback" => Ok(EventLogEvent::Fallback),
+            "error" => Ok(EventLogEvent::Error),
+            "dst_adjusted" => Ok(EventLogEvent::DstAdjusted),
+            "announcement_sent" => Ok(EventLogEvent::AnnouncementSent),
+            "announcement_failed" => Ok(EventLogEvent::AnnouncementFailed),
+            "caster_created" => Ok(EventLogEvent::CasterCreated),
+            "caster_updated" => Ok(EventLogEvent::CasterUpdated),
+            "role_changed" => Ok(EventLogEvent::RoleChanged),
+            "tape_published" => Ok(EventLogEvent::TapePublished),
+            "tape_unpublished" => Ok(EventLogEvent::TapeUnpublished),
+            "control_action" => Ok(EventLogEvent::ControlAction),
+            other => Err(ApiError::validation(
+                field,
+                format!("unknown event '{other}'"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventLogEvent::BroadcastCreated => "broadcast_created",
+            EventLogEvent::BroadcastUpdated => "broadcast_updated",
+            EventLogEvent::BroadcastCancelled => "broadcast_cancelled",
+            EventLogEvent::BroadcastStarted => "broadcast_started",
+            EventLogEvent::BroadcastEnded => "broadcast_ended",
+            EventLogEvent::SourceSwitched => "source_switched",
+            EventLogEvent::LiveConnected => "live_connected",
+            EventLogEvent::LiveDisconnected => "live_disconnected",
+            EventLogEvent::LiveOverrideSet => "live_override_set",
+            EventLogEvent::LiveOverrideCleared => "live_override_cleared",
+            EventLogEvent::Fallback => "fallback",
+            EventLogEvent::Error => "error",
+            EventLogEvent::DstAdjusted => "dst_adjusted",
+            EventLogEvent::AnnouncementSent => "announcement_sent",
+            EventLogEvent::AnnouncementFailed => "announcement_failed",
+            EventLogEvent::CasterCreated => "caster_created",
+            EventLogEvent::CasterUpdated => "caster_updated",
+            EventLogEvent::RoleChanged => "role_changed",
+            EventLogEvent::TapePublished => "tape_published",
+            EventLogEvent::TapeUnpublished => "tape_unpublished",
+            EventLogEvent::ControlAction => "control_action",
+        }
+    }
+}
+
+/// Full announcement representation (`announcements` row). Timestamps are
+/// emitted as Berlin wall time (`fmt_api_time`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnouncementDto {
+    pub id: String,
+    pub event: AnnouncementEvent,
+    pub show_id: Option<String>,
+    pub broadcast_id: Option<String>,
+    pub caster_id: Option<String>,
+    pub template_id: Option<String>,
+    pub channel: AnnouncementChannel,
+    pub payload: serde_json::Value,
+    pub dedupe_key: Option<String>,
+    pub scheduled_at: Option<String>,
+    pub sent_at: Option<String>,
+    pub status: AnnouncementStatus,
+    pub attempts: i64,
+    pub next_attempt_at: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Body of `POST /announcements` (explicit creation; `channel` defaults to
+/// `telegram`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateAnnouncementRequest {
+    pub event: String,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    #[serde(default)]
+    pub broadcast_id: Option<String>,
+    #[serde(default)]
+    pub caster_id: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub dedupe_key: Option<String>,
+    #[serde(default)]
+    pub scheduled_at: Option<String>,
+}
+
+/// Body of `PATCH /announcements/{id}` — COALESCE patch. `status` may only be
+/// `cancelled`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateAnnouncementRequest {
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub scheduled_at: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// Query parameters of `GET /announcements` (all optional).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AnnouncementListParams {
+    pub status: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub event: Option<String>,
+}
+
+/// One `event_log` row (`GET /event-log`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventLogEntryDto {
+    pub id: String,
+    pub occurred_at: String,
+    pub event: EventLogEvent,
+    pub actor_caster_id: Option<String>,
+    pub broadcast_id: Option<String>,
+    pub caster_id: Option<String>,
+    pub source_layer: Option<String>,
+    pub details: serde_json::Value,
+    pub created_at: String,
+}
+
+/// Query parameters of `GET /event-log` (all optional).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EventLogParams {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub event: Option<String>,
+    pub broadcast_id: Option<String>,
+    pub caster_id: Option<String>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
