@@ -111,7 +111,21 @@ jobs:
           shellcheck -S warning \
             deploy/announce/*.sh \
             scripts/*.sh \
-            deploy/systemd/zukka-deploy
+            deploy/systemd/zukka-deploy \
+            deploy/systemd/zukka-backup
+
+  backup:
+    # End-to-end backup/restore-drill against a LOCAL restic repo (#43).
+    # Proves backup -> drill -> prune plus the negative cases; no PROD access.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install restic and sqlite3
+        run: sudo apt-get update && sudo apt-get install -y restic sqlite3
+
+      - name: backup drill test
+        run: ./scripts/zukka-backup-test.sh
 
   compose:
     runs-on: ubuntu-latest
@@ -127,7 +141,7 @@ jobs:
 
   build:
     # Push-only: PRs never build or push images. Runs after every CI gate.
-    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose]
+    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose, backup]
     if: github.event_name == 'push' && github.ref == 'refs/heads/v2'
     runs-on: ubuntu-latest
     permissions:
