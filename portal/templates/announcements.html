@@ -1,0 +1,66 @@
+{% extends "layout.html" %}
+{% block title %}Announcements{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Announcements</h1>
+  <p class="muted">Manuelle Ansagen an den Telegram-Kanal.</p>
+</section>
+
+{% if can_post %}
+<section class="card">
+  <h2>Neue Ansage</h2>
+  <form
+    method="post"
+    action="/announcements/post"
+    hx-post="/announcements/post"
+    hx-target="#toast"
+    hx-swap="none"
+    class="stack"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <label>
+      Caster-Name
+      <input type="text" name="caster_name" value="{{ caster_name }}" required />
+    </label>
+    <label>
+      Sendung (optional)
+      <input type="text" name="show_name" />
+    </label>
+    <button type="submit">Einreihen</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Manuelle Templates</h2>
+  <ul>
+    {% if templates.is_empty() %}
+    <li class="muted">Kein manuelles Template hinterlegt.</li>
+    {% endif %}
+    {% for template in templates %}
+    <li>
+      <span>{{ template.name }}</span>
+      <span class="muted">{{ template.channel }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="card">
+  <h2>Letzte manuelle Posts</h2>
+  <ul>
+    {% if recent.is_empty() %}
+    <li class="muted">Noch keine manuellen Ansagen.</li>
+    {% endif %}
+    {% for row in recent %}
+    <li>
+      <span class="badge">{{ row.status_label }}</span>
+      <span class="muted">{{ row.announcement.channel }}</span>
+      {% if let Some(sent) = row.announcement.sent_at %}
+      <span class="muted">{{ sent }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

@@ -10,6 +10,7 @@ pub mod broadcasts;
 pub mod control;
 pub mod event_log;
 pub mod playback;
+pub mod rbac;
 pub mod schedule;
 pub mod shows;
 pub mod sources;

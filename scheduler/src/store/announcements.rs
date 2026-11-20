@@ -194,9 +194,13 @@ async fn fetch_by_dedupe(conn: &mut SqliteConnection, key: &str) -> ApiResult<An
 
 /// Creates an announcement explicitly (`POST /announcements`). A caller-given
 /// `dedupe_key` that already exists is `409 duplicate_announcement`.
+///
+/// A `manual` post (Issue #38) writes an audit `control_action` row in the
+/// **same** transaction; `actor` is the viewer `caster_id` of the RBAC guard.
 pub async fn create(
     pool: &SqlitePool,
     req: &CreateAnnouncementRequest,
+    actor: Option<&str>,
 ) -> ApiResult<AnnouncementDto> {
     let event = AnnouncementEvent::parse("event", &req.event)?;
     let channel = match req.channel.as_deref() {
@@ -258,6 +262,25 @@ pub async fn create(
         }
         return Err(err.into());
     }
+
+    // Issue #38: a manual post is an explicit caster action → audit it.
+    if matches!(event, AnnouncementEvent::Manual) {
+        crate::store::broadcasts::insert_event_log(
+            &mut *tx,
+            "control_action",
+            actor,
+            req.broadcast_id.as_deref(),
+            req.caster_id.as_deref(),
+            json!({
+                "action": "announcement_post",
+                "announcement_id": id,
+                "event": "manual",
+                "channel": channel.as_str(),
+            }),
+        )
+        .await?;
+    }
+
     tx.commit().await?;
     fetch(pool, &id).await
 }
@@ -766,8 +789,12 @@ pub(crate) async fn cancel_show_reminder_tx(
 ///
 /// `pending`/`failed` → `pending` with `next_attempt_at = now`; `pending`
 /// stays idempotent. `sent`/`cancelled` → `409 illegal_state`.
-pub async fn send(pool: &SqlitePool, id: &str) -> ApiResult<AnnouncementDto> {
-    let current = fetch(pool, id).await?;
+///
+/// Issue #38: the re-arm and its audit `control_action` row share one
+/// transaction; `actor` is the viewer `caster_id`. A `409` never logs.
+pub async fn send(pool: &SqlitePool, id: &str, actor: &str) -> ApiResult<AnnouncementDto> {
+    let mut tx = pool.begin().await?;
+    let current = fetch_conn(&mut tx, id).await?;
     match current.status {
         AnnouncementStatus::Pending | AnnouncementStatus::Failed => {
             let ts = now_ts();
@@ -778,8 +805,21 @@ pub async fn send(pool: &SqlitePool, id: &str) -> ApiResult<AnnouncementDto> {
             .bind(&ts)
             .bind(&ts)
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+            crate::store::broadcasts::insert_event_log(
+                &mut *tx,
+                "control_action",
+                Some(actor),
+                None,
+                current.caster_id.as_deref(),
+                json!({
+                    "action": "announcement_resend",
+                    "announcement_id": id,
+                }),
+            )
+            .await?;
+            tx.commit().await?;
             fetch(pool, id).await
         }
         AnnouncementStatus::Sent | AnnouncementStatus::Cancelled => {

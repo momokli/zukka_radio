@@ -5,6 +5,7 @@
 //! The `IdentityApi` trait keeps the handlers testable with a fake backend.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -3607,5 +3608,298 @@ impl FakeBroadcastApi {
     fn decorate(&self, mut broadcast: Broadcast) -> Broadcast {
         broadcast.warnings = self.store.warnings_for(&broadcast);
         broadcast
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #38: announcements (manual posts + templates)
+// ---------------------------------------------------------------------------
+
+/// An announcement template (`announcement_templates` row).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnnouncementTemplate {
+    pub id: String,
+    pub name: String,
+    pub event: String,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    pub channel: String,
+    pub body: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// A queued/sent announcement (`announcements` row).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Announcement {
+    pub id: String,
+    pub event: String,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    #[serde(default)]
+    pub caster_id: Option<String>,
+    pub channel: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    pub status: String,
+    #[serde(default)]
+    pub scheduled_at: Option<String>,
+    #[serde(default)]
+    pub sent_at: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Body of `POST /announcements` for a manual caster post.
+///
+/// `event` is always `manual`; `caster_id` comes from the session (never the
+/// form, §1).
+#[derive(Debug, Clone, Default)]
+pub struct NewAnnouncement {
+    pub event: String,
+    pub caster_id: Option<String>,
+    pub show_id: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+/// Announcement failure (mirrors the scheduler status mapping).
+#[derive(Debug, thiserror::Error)]
+pub enum AnnouncementError {
+    /// Unknown announcement/template (scheduler `404`).
+    #[error("not found")]
+    NotFound,
+    /// Hard conflict (scheduler `409`), e.g. `duplicate_announcement`.
+    #[error("conflict {code}: {message}")]
+    Conflict { code: String, message: String },
+    /// Field-level rejection (scheduler `422`).
+    #[error("{message}")]
+    Validation { field: String, message: String },
+    /// Transport/parse failure or unexpected status.
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+/// Announcement reads/writes. Implemented by [`HttpAnnouncementApi`] in
+/// production and [`FakeAnnouncementApi`] in tests. `viewer` is the session
+/// `caster_id`; it is sent as `X-Caster-Id` and must never come from client
+/// input (§1).
+#[async_trait]
+pub trait AnnouncementApi: Send + Sync {
+    /// Lists announcement templates, optionally filtered by `event`.
+    async fn list_templates(
+        &self,
+        viewer: Option<&str>,
+        event: Option<&str>,
+    ) -> Result<Vec<AnnouncementTemplate>, AnnouncementError>;
+
+    /// Lists announcements (the manual page shows `event=manual`).
+    async fn list(&self, viewer: Option<&str>) -> Result<Vec<Announcement>, AnnouncementError>;
+
+    /// Creates a manual announcement.
+    async fn create(
+        &self,
+        viewer: Option<&str>,
+        req: &NewAnnouncement,
+    ) -> Result<Announcement, AnnouncementError>;
+}
+
+/// HTTP client for `/api/v1/announcements*` (service-token bearer +
+/// `X-Caster-Id`).
+pub struct HttpAnnouncementApi {
+    client: reqwest::Client,
+    base_url: String,
+    service_token: String,
+}
+
+impl HttpAnnouncementApi {
+    pub fn new(
+        base_url: impl Into<String>,
+        service_token: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            service_token: service_token.into(),
+        })
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        viewer: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .request(method, format!("{}/api/v1{path}", self.base_url))
+            .bearer_auth(&self.service_token);
+        if let Some(viewer) = viewer {
+            builder = builder.header("x-caster-id", viewer);
+        }
+        builder
+    }
+
+    async fn error_from(response: reqwest::Response) -> AnnouncementError {
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+        let code = body["error"]["code"].as_str().unwrap_or("").to_string();
+        let field = body["error"]["details"]["field"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let message = body["error"]["message"]
+            .as_str()
+            .unwrap_or("upstream error")
+            .to_string();
+        match status.as_u16() {
+            404 => AnnouncementError::NotFound,
+            409 => AnnouncementError::Conflict { code, message },
+            422 => AnnouncementError::Validation { field, message },
+            other => AnnouncementError::Upstream(format!("scheduler returned {other}: {message}")),
+        }
+    }
+}
+
+#[async_trait]
+impl AnnouncementApi for HttpAnnouncementApi {
+    async fn list_templates(
+        &self,
+        viewer: Option<&str>,
+        event: Option<&str>,
+    ) -> Result<Vec<AnnouncementTemplate>, AnnouncementError> {
+        let mut req = self.request(reqwest::Method::GET, "/announcement-templates", viewer);
+        if let Some(event) = event {
+            req = req.query(&[("event", event)]);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))
+    }
+
+    async fn list(&self, viewer: Option<&str>) -> Result<Vec<Announcement>, AnnouncementError> {
+        let response = self
+            .request(reqwest::Method::GET, "/announcements?event=manual", viewer)
+            .send()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))
+    }
+
+    async fn create(
+        &self,
+        viewer: Option<&str>,
+        req: &NewAnnouncement,
+    ) -> Result<Announcement, AnnouncementError> {
+        let response = self
+            .request(reqwest::Method::POST, "/announcements", viewer)
+            .json(&serde_json::json!({
+                "event": req.event,
+                "caster_id": req.caster_id,
+                "show_id": req.show_id,
+                "payload": req.payload,
+            }))
+            .send()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AnnouncementError::Upstream(e.to_string()))
+    }
+}
+
+/// In-memory [`AnnouncementApi`] for tests: seeded templates + recorded
+/// manual posts.
+#[derive(Default)]
+pub struct FakeAnnouncementApi {
+    templates: std::sync::Mutex<Vec<AnnouncementTemplate>>,
+    announcements: std::sync::Mutex<Vec<Announcement>>,
+    counter: std::sync::Mutex<u64>,
+}
+
+impl FakeAnnouncementApi {
+    /// Seeds the fake with templates (global, `event="manual"` by convention).
+    pub fn with_templates(templates: Vec<AnnouncementTemplate>) -> Arc<Self> {
+        Arc::new(Self {
+            templates: std::sync::Mutex::new(templates),
+            announcements: std::sync::Mutex::new(Vec::new()),
+            counter: std::sync::Mutex::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl AnnouncementApi for FakeAnnouncementApi {
+    async fn list_templates(
+        &self,
+        _viewer: Option<&str>,
+        event: Option<&str>,
+    ) -> Result<Vec<AnnouncementTemplate>, AnnouncementError> {
+        let templates = self.templates.lock().unwrap();
+        Ok(templates
+            .iter()
+            .filter(|t| t.enabled && event.map(|e| t.event == e).unwrap_or(true))
+            .cloned()
+            .collect())
+    }
+
+    async fn list(&self, _viewer: Option<&str>) -> Result<Vec<Announcement>, AnnouncementError> {
+        let announcements = self.announcements.lock().unwrap();
+        Ok(announcements
+            .iter()
+            .filter(|a| a.event == "manual")
+            .cloned()
+            .collect())
+    }
+
+    async fn create(
+        &self,
+        viewer: Option<&str>,
+        req: &NewAnnouncement,
+    ) -> Result<Announcement, AnnouncementError> {
+        let mut counter = self.counter.lock().unwrap();
+        *counter += 1;
+        let id = format!("ann-{:04}", *counter);
+        drop(counter);
+        let announcement = Announcement {
+            id,
+            event: req.event.clone(),
+            show_id: req.show_id.clone(),
+            caster_id: req.caster_id.clone().or_else(|| viewer.map(str::to_owned)),
+            channel: "telegram".to_string(),
+            payload: req.payload.clone(),
+            status: "pending".to_string(),
+            scheduled_at: None,
+            sent_at: None,
+            error: None,
+            created_at: FAKE_TS.to_string(),
+        };
+        self.announcements
+            .lock()
+            .unwrap()
+            .push(announcement.clone());
+        Ok(announcement)
     }
 }
