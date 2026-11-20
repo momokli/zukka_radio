@@ -469,10 +469,10 @@ beide, wird `live` unavailable und der Master-Fallback greift.
 
 #### Abgrenzung
 
-`live.status` (und `live.set`/`live.clear`) gibt es erst mit **#32** — #30 ist
-über Icecast-Audio und Log zu prüfen, nicht über die Control-API. Der
-Handoff-Fade ist mit **#31** implementiert (0,5 s out/in). Die Harbor-Auth
-bleibt der Platzhalter aus **#33**.
+`live.status`, `live.set` und `live.clear` sind mit **#32** implementiert und
+über die Control-API prüfbar (`POST /control`, siehe §3.7). Der Handoff-Fade
+ist mit **#31** implementiert (0,5 s out/in). Die Harbor-Auth bleibt der
+Platzhalter aus **#33**.
 
 #### Waiting Room
 
@@ -617,10 +617,17 @@ server.register("tape.stop", description = "Tape stoppen",
   fun (_) -> tape_out.stop(); "ok" end)
 ```
 
-> Ob `server.harbor` GET-Requests mit Query-Argumenten direkt auf Commands
-> mappt, oder ob der Command-String als Body gesendet werden muss, ist im
-> ersten Schritt zu verifizieren. Fallback: `harbor.http.register` auf einem
-> eigenen Port mit expliziten Handlern.
+Verifiziert gegen `savonet/liquidsoap:v2.4.5` (Issue #32): `server.harbor`
+mappt **keine** Query-Pfade auf Commands. Stattdessen wird die Command-Zeile
+als **Body** eines `POST` an `uri` geschickt:
+
+```text
+POST http://liquidsoap:8010/control
+live.set /live/slot-03
+```
+
+Die Antwort ist der Rückgabewert des Commands (`live.status` liefert JSON).
+Der Scheduler spricht genau diese Form (`scheduler/src/liquidsoap.rs`).
 
 #### 3.7.1 Health
 
@@ -696,14 +703,19 @@ Caster live umsortiert, falsch: der vorgehaltene Track wäre schon veraltet.
 > einen lokalen Pfad in `/tracks`, oder Liquidsoap bekommt eine Egress-Regel zur
 > Music API. Siehe §4, O4.
 
-**Push (Control):** Der Scheduler setzt Zustand.
+**Push (Control):** Der Scheduler setzt Zustand per `POST /control`; die
+Command-Zeile steht im Body (§3.7).
 
 ```
-GET http://liquidsoap:8010/control/live.set?/live/slot-03
-GET http://liquidsoap:8010/control/live.clear
-GET http://liquidsoap:8010/control/layer.available?2%20false
-GET http://liquidsoap:8010/control/tape.start?bc-2026-11-18-2000
+POST http://liquidsoap:8010/control   body: live.set /live/slot-03
+POST http://liquidsoap:8010/control   body: live.clear
+POST http://liquidsoap:8010/control   body: layer.available 2 false
+POST http://liquidsoap:8010/control   body: tape.start bc-2026-11-18-2000
 ```
+
+Ist `ZUKKA_LIQUIDSOAP_CONTROL_URL` nicht gesetzt, überspringt der Scheduler
+den Push (Tests bleiben hermetisch); im Deploy-Stack zeigt die Variable auf
+`http://liquidsoap:8010/control`.
 
 Der Scheduler erreicht Liquidsoap über das `back`-Netz. Der Port ist nicht
 publiziert (§2 D14).

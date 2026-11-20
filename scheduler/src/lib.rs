@@ -7,6 +7,7 @@ pub mod api;
 pub mod db;
 pub mod dto;
 pub mod error;
+pub mod liquidsoap;
 pub mod priority;
 pub mod rate_limit;
 pub mod recovery;
