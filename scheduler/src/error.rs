@@ -98,6 +98,10 @@ impl ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
+        // Count SQLite contention (§3.8, `zukka_scheduler_db_locked_total`).
+        if crate::metrics::is_db_locked(&err) {
+            crate::metrics::record_scheduler_db_locked();
+        }
         ApiError::Internal(anyhow::Error::new(err))
     }
 }

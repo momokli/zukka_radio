@@ -198,6 +198,40 @@ pub async fn update(pool: &SqlitePool, id: &str, req: &UpdateQueueRequest) -> Ap
     fetch(pool, id).await
 }
 
+/// Pending playable duration per queue, in seconds (§3.8
+/// `zukka_queue_fill_seconds{queue}`).
+///
+/// Approximate lower bound: sums `tracks.duration_ms` of every `pending` item
+/// whose `kind = 'track'`, joined through `queue_items.track_id`. Items without
+/// a track (`link`, `tape` or announcements) or without a playable duration
+/// count `0`. Queues with no playable pending items appear with `0`. The label
+/// value is the queue id (stable, unique); ordered by id.
+pub async fn fill_seconds(pool: &SqlitePool) -> ApiResult<Vec<(String, f64)>> {
+    #[derive(Debug, sqlx::FromRow)]
+    struct Row {
+        queue_id: String,
+        total_ms: i64,
+    }
+
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT q.id AS queue_id, \
+                COALESCE(SUM(t.duration_ms), 0) AS total_ms \
+         FROM queues q \
+         LEFT JOIN queue_items qi \
+           ON qi.queue_id = q.id AND qi.state = 'pending' \
+              AND qi.kind = 'track' AND qi.track_id IS NOT NULL \
+         LEFT JOIN tracks t ON t.id = qi.track_id \
+         GROUP BY q.id ORDER BY q.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.queue_id, row.total_ms.max(0) as f64 / 1000.0))
+        .collect())
+}
+
 /// Distinguishes a stale version (`409`) from a missing row (`404`).
 async fn stale_or_missing(pool: &SqlitePool, id: &str) -> ApiError {
     let exists: Option<i64> = sqlx::query_scalar("SELECT version FROM queues WHERE id = ?")

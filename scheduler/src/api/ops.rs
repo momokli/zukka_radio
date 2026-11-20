@@ -56,11 +56,16 @@ pub async fn audience(State(pool): State<SqlitePool>) -> ApiResult<Json<Audience
 }
 
 /// Best-effort listener count; any failure logs and reports `0` (never 5xx).
-async fn fetch_listeners() -> u64 {
+///
+/// Reused by the metrics endpoint (§3.8, `zukka_icecast_listeners`) so gate and
+/// metric share the same Icecast source. A failure also bumps the external-
+/// authority error counter (§3.8, `zukka_music_api_errors_total`).
+pub(crate) async fn fetch_listeners() -> u64 {
     let url = status_url();
     match fetch_and_sum(&url).await {
         Ok(listeners) => listeners,
         Err(err) => {
+            crate::metrics::record_music_api_error();
             tracing::warn!(
                 url,
                 "icecast status poll failed; reporting 0 listeners: {err}"
