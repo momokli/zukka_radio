@@ -3,6 +3,7 @@
 //! Exposes modules so integration tests can reuse the database bootstrap
 //! (including the `sqlx` migrations) and exercise the API router directly.
 
+pub mod announcement;
 pub mod api;
 pub mod db;
 pub mod dto;
