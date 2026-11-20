@@ -1,6 +1,7 @@
 //! Public API: router, shared state, CORS/405 handling and `healthz`.
 
 pub mod casters;
+pub mod shell;
 pub mod tapes;
 pub mod waveform;
 
@@ -28,6 +29,8 @@ pub struct AppState {
 pub fn router(pool: SqlitePool, base_url: String) -> Router {
     let state = AppState { pool, base_url };
 
+    // Inner router: the API keeps its own JSON fallback, so an unknown
+    // `/api/v1/*` path never renders HTML (plan E4/R8).
     let api = Router::new()
         .route("/healthz", get(healthz))
         .route("/tapes", get(tapes::get_tapes).options(preflight))
@@ -36,12 +39,16 @@ pub fn router(pool: SqlitePool, base_url: String) -> Router {
             "/tapes/{slug}/waveform",
             get(waveform::get_waveform).options(preflight),
         )
-        .route("/casters", get(casters::get_casters).options(preflight));
+        .route("/casters", get(casters::get_casters).options(preflight))
+        .fallback(not_found);
 
     Router::new()
         .route("/healthz", get(root_health))
         .nest("/api/v1", api)
-        .fallback(not_found)
+        .route("/", get(shell::get_index))
+        .route("/t/{slug}", get(shell::get_tape))
+        .route("/assets/{*path}", get(crate::assets::get_asset))
+        .fallback(shell::html_not_found)
         .layer(middleware::from_fn(cors))
         .with_state(state)
 }
