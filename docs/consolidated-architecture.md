@@ -711,7 +711,7 @@ auf `rotation` — hörbar, aber nicht stumm. Gegenmaßnahmen: Migrationen laufe
 **vor** dem Start (nicht beim Start), `request.dynamic(retry_delay=2.0)`,
 Restart-Budget 3 s. Restrisiko bleibt und ist dokumentiert.
 
-**Deploy-Gate (PROD):** `GET /internal/ops/audience` →
+**Deploy-Gate (PROD):** `GET /api/v1/internal/ops/audience` →
 `listeners == 0 && live_sources == 0 && next_broadcast_start > now + 15 min`
 → sofort. Sonst Fenster 03:00–04:00 Berlin. Override nur über
 `workflow_dispatch` + Required Reviewer. Umgesetzt als

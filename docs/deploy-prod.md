@@ -16,7 +16,7 @@ Grundlage: `docs/consolidated-architecture.md` §5.7–5.9,
 | Audience-/Fenster-Gate           | #42   | enthalten (dieser Stand)                     |
 | Pre-Deploy-Backup                | #43   | **nicht** enthalten                          |
 
-`zukka-deploy prod --check-window` (Scheduler `GET /internal/ops/audience`,
+`zukka-deploy prod --check-window` (Scheduler `GET /api/v1/internal/ops/audience`,
 Fenster 03:00–04:00 Berlin) ist mit #42 umgesetzt; der Workflow ruft es als
 Gateschritt **vor** dem Deploy auf (siehe „Audience-/Fenster-Gate“). Ein
 Pre-Deploy-Snapshot (`zukka-backup predeploy <sha>`) kommt mit #43 in den
@@ -213,7 +213,7 @@ Smoke-Prüfungen (`scripts/smoke.sh prod`, Defaults, Overrides über
 ## Audience-/Fenster-Gate (#42)
 
 Vor jedem PROD-Deploy ruft der Workflow `zukka-deploy prod --check-window`
-(GET `<scheduler>/internal/ops/audience`, service-token-geschützt). Der Wrapper
+(GET `<scheduler>/api/v1/internal/ops/audience`, service-token-geschützt). Der Wrapper
 entscheidet:
 
 1. `listeners == 0 && live_sources == 0` und (`next_broadcast_start == null`

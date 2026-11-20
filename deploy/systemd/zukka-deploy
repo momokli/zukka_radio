@@ -13,7 +13,7 @@
 #   ZUKKA_ENV_FILE so the compose `env_file` resolves there).
 #
 # PROD deploy window / audience gate (#42): `zukka-deploy prod --check-window`
-# queries the scheduler (`GET /internal/ops/audience`) and decides deploy-now /
+# queries the scheduler (`GET /api/v1/internal/ops/audience`) and decides deploy-now /
 # wait-for-window / abort. Fail-closed: an unreachable scheduler, a non-200 or
 # a parse error yield exit 3 (gate closed). `--force` short-circuits the gate.
 # Pre-deploy backup is #43 and still out of scope (see the TODO below).
@@ -361,7 +361,7 @@ check_window() {
     fi
 
     local base="${ZUKKA_SCHEDULER_URL:-http://127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}}"
-    local url="${base%/}/internal/ops/audience"
+    local url="${base%/}/api/v1/internal/ops/audience"
 
     if [[ ! -f "$PROD_ENV_FILE" ]]; then
         echo "zukka-deploy: --check-window: missing ${PROD_ENV_FILE}; gate closed (exit 3)" >&2
