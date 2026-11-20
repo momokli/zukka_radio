@@ -1,12 +1,14 @@
 # radio zukka v2 — PROD stack
 # Usage: docker compose -f compose/prod.yml --env-file env/prod.env up -d
+# Images are built/pushed by CI (scripts/build-images.sh) and pinned via
+# ZUKKA_TAG (Git SHA); there is no local build path.
 
 name: zukka-prod
 
 x-common: &common
   restart: unless-stopped
   env_file:
-    - ../env/prod.env
+    - ${ZUKKA_ENV_FILE:-../env/prod.env}
   logging:
     options:
       max-size: "10m"
@@ -15,12 +17,17 @@ x-common: &common
 services:
   icecast:
     <<: *common
-    image: moul/icecast:latest
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-icecast:${ZUKKA_TAG}
     ports:
       - "127.0.0.1:${ZUKKA_PORT_ICECAST:-12000}:8000"
     volumes:
       - icecast_logs:/var/log/icecast
     networks: [front, back]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/status-json.xsl"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   liquidsoap:
     <<: *common
@@ -37,34 +44,81 @@ services:
 
   scheduler:
     <<: *common
-    build: ../scheduler
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-scheduler:${ZUKKA_TAG}
+    # The binaries read unprefixed names; the env file only supplies ZUKKA_*.
+    # Map them explicitly (D1).
+    environment:
+      ZUKKA_DB: /data/zukka.db
+      ZUKKA_BIND: 0.0.0.0:8080
+      ROTATION_M3U_PATH: /rotation/rotation.m3u
+      MUSIC_API_BASE_URL: ${ZUKKA_MUSIC_API_URL}
+      LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
+      SCHEDULER_SERVICE_TOKEN: ${ZUKKA_SCHEDULER_SERVICE_TOKEN}
+    ports:
+      - "127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}:8080"
     volumes:
       - zukka_data:/data
       - recordings_staging:/recordings
       - rotation:/rotation
       - hls:/hls:ro
     networks: [back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/scheduler", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   portal:
     <<: *common
-    build: ../portal
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-portal:${ZUKKA_TAG}
+    environment:
+      # PORTAL_BASE_URL is required and must be https (__Host- cookies).
+      PORTAL_BASE_URL: https://${ZUKKA_DOMAIN_PORTAL}
+      PORTAL_ADDR: 0.0.0.0:8080
+      SCHEDULER_BASE_URL: http://scheduler:8080
+      SCHEDULER_SERVICE_TOKEN: ${ZUKKA_SCHEDULER_SERVICE_TOKEN}
+      MUSIC_API_URL: ${ZUKKA_MUSIC_API_URL}
+      MUSIC_API_TOKEN: ${ZUKKA_MUSIC_API_TOKEN}
     volumes:
       - zukka_data:/data:ro
     networks: [front, back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/portal", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   tapes:
     <<: *common
-    build: ../tapes
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-tapes:${ZUKKA_TAG}
+    environment:
+      DATABASE_PATH: /data/zukka.db
+      ZUKKA_BIND: 0.0.0.0:8080
+      PUBLIC_BASE_URL: https://${ZUKKA_DOMAIN_TAPES}
+      ZUKKA_SCHEDULER_URL: http://scheduler:8080
+      SCHEDULER_SERVICE_TOKEN: ${ZUKKA_SCHEDULER_SERVICE_TOKEN}
+      MUSIC_API_URL: ${ZUKKA_MUSIC_API_URL}
+      MUSIC_API_TOKEN: ${ZUKKA_MUSIC_API_TOKEN}
     volumes:
       - zukka_data:/data:ro
     networks: [front, back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tapes", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   caddy:
     <<: *common
     image: caddy:2.9
+    # PROD: shared edge Caddy in front; no TLS and no admin API here.
+    command:
+      ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
     ports:
       - "127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080"
-      - "0.0.0.0:${ZUKKA_PORT_CADDY_TLS:-12443}:12443"
     volumes:
       - ../deploy/caddy:/etc/caddy:ro
       - caddy_data:/data
