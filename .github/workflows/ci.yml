@@ -114,6 +114,16 @@ jobs:
             deploy/systemd/zukka-deploy \
             deploy/systemd/zukka-backup
 
+  monitoring:
+    # #44: offline validation of deploy/monitoring/* (promtool + blackbox from
+    # pinned images, json/yaml locally). No live Prometheus/Grafana access.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: validate monitoring artifacts
+        run: ./scripts/zukka-monitoring-check.sh
+
   backup:
     # End-to-end backup/restore-drill against a LOCAL restic repo (#43).
     # Proves backup -> drill -> prune plus the negative cases; no PROD access.
@@ -141,7 +151,7 @@ jobs:
 
   build:
     # Push-only: PRs never build or push images. Runs after every CI gate.
-    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose, backup]
+    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose, backup, monitoring]
     if: github.event_name == 'push' && github.ref == 'refs/heads/v2'
     runs-on: ubuntu-latest
     permissions:

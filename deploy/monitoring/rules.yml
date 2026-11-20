@@ -1,0 +1,87 @@
+# radio zukka v2 — Alert rules (Issue #44, §3.8).
+#
+# Merged into the shared Prometheus rules directory by the host owner (§2.11).
+# All eight alarms from §3.8 live in the single group `radio_zukka`.
+#
+# Requires exporters already present in the shared stack (§3.8 / #44 open
+# points): `node-exporter` (node_filesystem, node_systemd_unit_state) and
+# `cadvisor` (container_start_time_seconds). Presence/job names are a host fact.
+
+groups:
+  - name: radio_zukka
+    rules:
+      - alert: ZukkaAudioDown
+        # HLS segments stop being produced (#84 still pending: inactive until
+        # segments exist — then this is the primary stream-down alarm).
+        expr: zukka_hls_segment_age_seconds > 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zukka audio chain is down (HLS segment age > 20s)"
+          description: "No fresh HLS segment for over a minute; the audio chain is likely stalled."
+
+      - alert: ZukkaIcecastDown
+        expr: up{job=~"zukka-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zukka scrape target down ({{ $labels.job }})"
+          description: "Prometheus cannot scrape {{ $labels.instance }} ({{ $labels.job }}) for 2 minutes."
+
+      - alert: ZukkaNoListenersInBroadcast
+        # Live layer active but zero listeners for 5 minutes.
+        expr: zukka_icecast_listeners == 0 and on() (zukka_live_sources > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No listeners during a live broadcast"
+          description: "The live layer is active but Icecast reports 0 listeners for 5 minutes."
+
+      - alert: ZukkaQueueUnderrunRisk
+        # The queue layer is playing but has less than 30s of pending content.
+        expr: zukka_queue_fill_seconds < 30 and on() (zukka_source_state{layer="queue"} == 1)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue underrun risk (queue {{ $labels.queue }})"
+          description: "Pending playable content for queue {{ $labels.queue }} is below 30 seconds while the queue layer is active."
+
+      - alert: ZukkaDiskPressure
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk pressure on {{ $labels.instance }}:/"
+          description: "Root filesystem usage is above 85% for 5 minutes."
+
+      - alert: ZukkaBackupFailed
+        expr: node_systemd_unit_state{name="zukka-backup.service",state="failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zukka backup unit failed"
+          description: "node_systemd_unit_state reports zukka-backup.service in state failed."
+
+      - alert: ZukkaCertExpiry
+        expr: probe_ssl_earliest_cert_expiry - time() < 14 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires soon"
+          description: "The earliest certificate expiry for {{ $labels.instance }} is less than 14 days away."
+
+      - alert: ZukkaRestartLoop
+        expr: changes(container_start_time_seconds[15m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restart loop ({{ $labels.name }})"
+          description: "Container {{ $labels.name }} restarted more than twice in 15 minutes."

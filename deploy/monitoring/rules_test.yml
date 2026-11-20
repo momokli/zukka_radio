@@ -1,0 +1,68 @@
+# Issue #44 — promtool unit tests for deploy/monitoring/rules.yml (§3.8).
+#
+# Proves with synthetic series that the stream-down alarms fire and stay quiet
+# when healthy:
+#   - ZukkaAudioDown   : zukka_hls_segment_age_seconds > 20 (for 1m)
+#   - ZukkaIcecastDown : up{job=~"zukka-.*"} == 0 (for 2m)
+#
+# Run from the repo root, promtool from the pinned image (never `latest`):
+#   docker run --rm -v "$PWD/deploy/monitoring:/m" \
+#     prom/prometheus:v2.55.1 promtool test rules /m/rules_test.yml
+#
+# Fully offline: no Prometheus, no network, no live targets.
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # (1) HLS segment age stuck above 20s → ZukkaAudioDown fires (critical).
+  - name: ZukkaAudioDown fires when the newest HLS segment is stale
+    interval: 1m
+    input_series:
+      - series: 'zukka_hls_segment_age_seconds'
+        values: '25+0x4'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ZukkaAudioDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Zukka audio chain is down (HLS segment age > 20s)"
+              description: "No fresh HLS segment for over a minute; the audio chain is likely stalled."
+
+  # (2) Scrape target down (up == 0) → ZukkaIcecastDown fires (critical).
+  - name: ZukkaIcecastDown fires when a zukka scrape target is down
+    interval: 1m
+    input_series:
+      - series: 'up{job="zukka-prod",instance="zukka-prod-caddy:12091"}'
+        values: '0+0x4'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ZukkaIcecastDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: zukka-prod
+              instance: zukka-prod-caddy:12091
+            exp_annotations:
+              summary: "Zukka scrape target down (zukka-prod)"
+              description: "Prometheus cannot scrape zukka-prod-caddy:12091 (zukka-prod) for 2 minutes."
+
+  # (3) Healthy HLS + up → neither alarm fires.
+  - name: healthy HLS and up produce no alerts
+    interval: 1m
+    input_series:
+      - series: 'zukka_hls_segment_age_seconds'
+        values: '5+0x5'
+      - series: 'up{job="zukka-prod",instance="zukka-prod-caddy:12091"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ZukkaAudioDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ZukkaIcecastDown
+        exp_alerts: []

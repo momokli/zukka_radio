@@ -1,0 +1,29 @@
+# radio zukka v2 — blackbox probe targets (Issue #44, §3.8).
+#
+# File-SD list for the `zukka-blackbox` job in prometheus.yml. Public PROD
+# hostnames from env/prod.env.example (no secrets, no host-specific IPs).
+# `module` selects the blackbox module per target.
+
+- targets:
+    - https://radio.zukkafabrik.de/hls/index.m3u8
+  labels:
+    module: http_2xx
+    component: hls
+
+- targets:
+    - https://portal.zukkafabrik.de/healthz
+  labels:
+    module: http_2xx
+    component: portal
+
+- targets:
+    - https://tapes.zukkafabrik.de/healthz
+  labels:
+    module: http_2xx
+    component: tapes
+
+- targets:
+    - https://radio.zukkafabrik.de
+  labels:
+    module: https_cert
+    component: cert

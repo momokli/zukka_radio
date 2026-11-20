@@ -66,10 +66,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
+
+    // #44: dedicated metrics listener (§3.8). A bind failure is logged only —
+    // it must never take down the control/API server.
+    spawn_metrics_listener(pool.clone());
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("zukka-scheduler listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Spawns the dedicated metrics server on `ZUKKA_METRICS_BIND` (default
+/// `0.0.0.0:9091`, §3.8), serving `/metrics` + `/healthz`.
+fn spawn_metrics_listener(pool: sqlx::SqlitePool) {
+    let addr = std::env::var("ZUKKA_METRICS_BIND").unwrap_or_else(|_| "0.0.0.0:9091".to_string());
+    let app = zukka_scheduler::metrics::router(pool);
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => {
+                tracing::info!("zukka-scheduler metrics listening on {addr}");
+                if let Err(err) = axum::serve(listener, app).await {
+                    tracing::warn!("metrics server stopped: {err}");
+                }
+            }
+            Err(err) => tracing::warn!("failed to bind metrics listener on {addr}: {err}"),
+        }
+    });
 }
 
 /// `--healthcheck` implementation: DB reachable, writable and intact.

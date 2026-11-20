@@ -230,6 +230,7 @@ pub fn router(pool: SqlitePool) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(crate::metrics::metrics))
         .nest("/api/v1", api)
         .fallback(not_found)
         .with_state(pool)
