@@ -10,8 +10,8 @@
 import routes.caddy
 
 http://:12080 {
-	import radio_zukka_routes
 	handle /__zu/health {
 		respond "ok" 200
 	}
+	import radio_zukka_routes
 }
