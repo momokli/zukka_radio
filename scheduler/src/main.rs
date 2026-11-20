@@ -45,7 +45,13 @@ async fn main() -> anyhow::Result<()> {
         Err(err) => tracing::warn!("upload recovery failed: {err}"),
     }
 
-    let app = zukka_scheduler::api::router(pool);
+    let app = zukka_scheduler::api::router(pool.clone());
+
+    // #37: announcement dispatch loop. The task is disabled (`None`) when
+    // Telegram credentials are absent and ends with the process.
+    if zukka_scheduler::announcement::dispatch::spawn(pool.clone()).is_none() {
+        tracing::info!("announcement delivery disabled (telegram not configured)");
+    }
 
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
