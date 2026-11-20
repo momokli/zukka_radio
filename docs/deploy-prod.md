@@ -14,13 +14,13 @@ Grundlage: `docs/consolidated-architecture.md` §5.7–5.9,
 | DEV-Deploy (`deploy-dev.yml`)    | #40   | gemergt                                      |
 | PROD-Deploy (dieses Runbook)     | #41   | Tag/Release, Reviewer-Gate, Smoke, Rollback  |
 | Audience-/Fenster-Gate           | #42   | enthalten (dieser Stand)                     |
-| Pre-Deploy-Backup                | #43   | **nicht** enthalten                          |
+| Pre-Deploy-Backup                | #43   | enthalten (Wrapper ruft `zukka-backup predeploy`) |
 
 `zukka-deploy prod --check-window` (Scheduler `GET /api/v1/internal/ops/audience`,
 Fenster 03:00–04:00 Berlin) ist mit #42 umgesetzt; der Workflow ruft es als
-Gateschritt **vor** dem Deploy auf (siehe „Audience-/Fenster-Gate“). Ein
-Pre-Deploy-Snapshot (`zukka-backup predeploy <sha>`) kommt mit #43 in den
-Wrapper vor den `pull`.
+Gateschritt **vor** dem Deploy auf (siehe „Audience-/Fenster-Gate“). Der
+Pre-Deploy-Snapshot (`zukka-backup predeploy <sha>`) läuft seit #43 im Wrapper
+vor dem `pull` (Details: `docs/backup.md`).
 
 ## Host-Voraussetzungen
 
@@ -164,24 +164,26 @@ Wrapper-Ablauf:
 
 1. `validate_tag` (`^[0-9a-f]{7,40}$`), Pfade prüfen, `sync_repo` (Checkout auf
    den Target-SHA).
-2. `compose -f repo/compose/prod.yml --env-file /etc/zukka/prod.env pull`
+2. `zukka-backup predeploy <sha>` (DB-only-Snapshot, fail-closed; Break-Glass
+   `ZUKKA_SKIP_PREDEPLOY_BACKUP=1`). No-op beim ersten Deploy ohne DB.
+3. `compose -f repo/compose/prod.yml --env-file /etc/zukka/prod.env pull`
    für `scheduler portal tapes` (mit `--force` zusätzlich `icecast`;
    `liquidsoap` bleibt digest-/tag-gepinnt).
-3. `up -d --no-deps --wait` für `scheduler` → `portal` → `tapes`.
-4. `caddy validate` mit `/etc/caddy/Caddyfile.prod`, dann Recreate:
+4. `up -d --no-deps --wait` für `scheduler` → `portal` → `tapes`.
+5. `caddy validate` mit `/etc/caddy/Caddyfile.prod`, dann Recreate:
    `up -d --no-deps --force-recreate --wait caddy`
    (kein Admin-API-Reload, `admin off`).
-5. `liquidsoap`/`icecast` **nur** mit `--force`. **Erster Deploy auf leerem
+6. `liquidsoap`/`icecast` **nur** mit `--force`. **Erster Deploy auf leerem
    Host:** fehlt der `icecast`-Container (`docker compose ps -q icecast` leer),
    setzt der Wrapper selbstständig `force=1` und loggt „no audio containers yet;
    enabling --force for first deploy" — so starten `icecast` + `liquidsoap`
    auch beim ersten Deploy automatisch, ohne dass `--force` manuell gesetzt
    werden muss.
-6. `compose up -d --wait scheduler portal tapes caddy` (Konvergenz **ohne**
+7. `compose up -d --wait scheduler portal tapes caddy` (Konvergenz **ohne**
    Audio — ein frischer `ZUKKA_TAG` darf `icecast`/`liquidsoap` nicht implizit
    recreaten).
-7. `repo/scripts/smoke.sh prod` als Gate.
-8. Bei grünem Smoke: `.deployed.next` schreiben, `.deployed` →
+8. `repo/scripts/smoke.sh prod` als Gate.
+9. Bei grünem Smoke: `.deployed.next` schreiben, `.deployed` →
    `.deployed.prev` rotieren, `.next` → `.deployed` (crash-atomar). Bei rotem
    Smoke und vorhandenem `.deployed`: automatischer Rollback auf `.deployed`
    (siehe unten), dann Exit ≠ 0.
