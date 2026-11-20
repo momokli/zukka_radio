@@ -9,6 +9,7 @@ pub mod playback;
 pub mod schedule;
 pub mod shows;
 pub mod sources;
+pub mod tape_jobs;
 pub mod tracks;
 pub mod upload_jobs;
 pub mod waveforms;
@@ -157,6 +158,8 @@ pub fn router(pool: SqlitePool) -> Router {
             "/upload-jobs/{id}",
             get(upload_jobs::get_one).patch(upload_jobs::patch),
         )
+        .route("/tape-jobs/claim", post(tape_jobs::claim))
+        .route("/tape-jobs/{id}", patch(tape_jobs::patch))
         .route("/waveforms", post(waveforms::upsert))
         .route(
             "/waveforms/{subject_kind}/{subject_id}",

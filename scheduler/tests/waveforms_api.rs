@@ -161,8 +161,24 @@ async fn tape_subject_kind_is_accepted() {
     let id = new_id();
     let mut req = waveform(&id);
     req.subject_kind = "tape".into();
+    // Tapes carry one RMS byte per bar (Issue #25), not min/max pairs.
+    req.data = vec![0x00, 0xFF];
     let dto = waveforms::upsert(&pool, &req).await.expect("upsert tape");
     assert_eq!(dto.subject_kind, "tape");
+}
+
+#[tokio::test]
+async fn tape_waveform_rejects_track_pair_length() {
+    let (_dir, pool) = setup().await;
+    let id = new_id();
+    let mut req = waveform(&id);
+    req.subject_kind = "tape".into();
+    // `waveform()` carries 2*bars bytes; a tape needs exactly `bars`.
+    let err = waveforms::upsert(&pool, &req).await.unwrap_err();
+    assert!(matches!(
+        err,
+        zukka_scheduler::error::ApiError::Validation { .. }
+    ));
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,11 @@ pub fn for_feed(sort: &str, next_cursor: Option<&str>, parts: &[String]) -> Stri
     hash(&all)
 }
 
+/// ETag for a waveform frame: `"w1-<slug>-<bars>"` (`docs/tapes.md` §3.6).
+pub fn for_waveform(slug: &str, bars: i64) -> String {
+    format!("\"w1-{slug}-{bars}\"")
+}
+
 /// True when the request's `If-None-Match` matches `etag` (or is `*`).
 pub fn matches(headers: &HeaderMap, etag: &str) -> bool {
     let Some(value) = headers.get(IF_NONE_MATCH) else {

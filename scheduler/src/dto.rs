@@ -1073,6 +1073,72 @@ pub struct WaveformDto {
     pub created_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #25: tape job queue (waveform pipeline, write-through)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /internal/tape-jobs/claim`. All fields optional: `kinds`
+/// defaults to `["probe", "peaks"]`, `limit` to `1`, `lease_secs` to `600`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClaimTapeJobsRequest {
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub lease_secs: Option<i64>,
+}
+
+/// One claimed job, joined with the tape fields the worker needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TapeJobClaimDto {
+    pub id: String,
+    pub tape_id: String,
+    pub kind: String,
+    pub attempts: i64,
+    pub slug: String,
+    pub storage_key: Option<String>,
+    pub source: String,
+}
+
+/// Response of `POST /internal/tape-jobs/claim` (empty array when nothing is
+/// due).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaimTapeJobsResponse {
+    pub jobs: Vec<TapeJobClaimDto>,
+}
+
+/// Body of `PATCH /internal/tape-jobs/{id}`.
+///
+/// `state = "done"` on a `probe` job requires `duration_ms`; `state =
+/// "pending"` is a retry (backoff is derived from `attempts` + `updated_at`),
+/// `state = "failed"` is terminal for the worker.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PatchTapeJobRequest {
+    pub state: String,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub mime: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Full tape-job representation (`tape_jobs` row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TapeJobDto {
+    pub id: String,
+    pub tape_id: String,
+    pub kind: String,
+    pub state: String,
+    pub error: Option<String>,
+    pub attempts: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
