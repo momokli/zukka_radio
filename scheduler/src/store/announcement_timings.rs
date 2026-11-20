@@ -240,10 +240,13 @@ async fn load_overrides_conn(conn: &mut SqliteConnection, show_id: &str) -> ApiR
     })
 }
 
+/// Raw `show_announcement_timings` row: `(show_id, lead, live_on, live_off)`.
+type OverrideRow = (String, Option<i64>, Option<i64>, Option<i64>);
+
 /// Lists every show that overrides at least one timing.
 pub async fn list(pool: &SqlitePool) -> ApiResult<Vec<ShowAnnouncementTimingsDto>> {
     let global = global(pool).await?;
-    let rows: Vec<(String, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+    let rows: Vec<OverrideRow> = sqlx::query_as(
         "SELECT show_id, show_reminder_lead_seconds, live_on_delay_seconds, live_off_delay_seconds \
          FROM show_announcement_timings ORDER BY show_id",
     )
