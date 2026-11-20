@@ -46,7 +46,11 @@ async fn body_string(app: Router, uri: &str) -> (StatusCode, String, Option<Stri
         .await
         .expect("body")
         .to_bytes();
-    (status, String::from_utf8_lossy(&body).into_owned(), content_type)
+    (
+        status,
+        String::from_utf8_lossy(&body).into_owned(),
+        content_type,
+    )
 }
 
 #[tokio::test]
@@ -71,8 +75,14 @@ async fn metrics_returns_prometheus_text() {
         "zukka_scheduler_db_locked_total",
         "zukka_build_info",
     ] {
-        assert!(body.contains(&format!("# HELP {name} ")), "HELP missing: {name}");
-        assert!(body.contains(&format!("# TYPE {name} ")), "TYPE missing: {name}");
+        assert!(
+            body.contains(&format!("# HELP {name} ")),
+            "HELP missing: {name}"
+        );
+        assert!(
+            body.contains(&format!("# TYPE {name} ")),
+            "TYPE missing: {name}"
+        );
     }
 
     // All six layers are reported (0/1).
@@ -82,7 +92,10 @@ async fn metrics_returns_prometheus_text() {
             "layer missing: {layer}"
         );
     }
-    assert!(body.contains("zukka_build_info{version="), "build_info labels missing");
+    assert!(
+        body.contains("zukka_build_info{version="),
+        "build_info labels missing"
+    );
 }
 
 #[tokio::test]
