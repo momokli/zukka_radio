@@ -79,6 +79,23 @@ struct CurrentRow {
 const SELECT: &str = "SELECT id, show_id, caster_id, kind, title, description, starts_at, ends_at, \
      status, tape_id, queue_id, version, created_by, created_at, updated_at FROM broadcasts";
 
+/// Earliest future scheduled broadcast start (#42 Deploy-Gate, §2.9).
+///
+/// Returns the `starts_at` **storage-form** timestamp (`YYYY-…Z`) of the
+/// soonest `status='scheduled'` broadcast with `starts_at > now`, or `None`.
+/// The canonical UTC storage form makes the lexicographic `ORDER BY … LIMIT 1`
+/// correct; `now` is passed as the same canonical form by the caller.
+pub async fn next_scheduled_start(pool: &SqlitePool) -> ApiResult<Option<String>> {
+    let row: Option<String> = sqlx::query_scalar(
+        "SELECT starts_at FROM broadcasts WHERE status = 'scheduled' AND starts_at > ? \
+         ORDER BY starts_at, id LIMIT 1",
+    )
+    .bind(now_ts())
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Lists broadcasts, optionally filtered by window, caster and status.
 ///
 /// The window filter uses interval overlap: open ends count as `+∞`.
