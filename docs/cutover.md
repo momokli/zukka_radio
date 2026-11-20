@@ -134,27 +134,12 @@ garantiert** (handgepflegte Datei, kein Admin-API im Runbook belegt; vgl.
 caddy validate --config deploy/caddy/edge/zukka-prod.caddy --adapter caddyfile
 ```
 
-Das Repo-Artefakt ist byte-genau der Block aus `infrastructure.md` §3.3. Die
-dort einzeilig notierte Zeile `request_body { max_size 2GB }` wird von Caddy
-**2.9** abgelehnt:
-
-```text
-Error: adapting config using caddyfile: Unexpected next token after '{' on same line, at .../zukka-prod.caddy:4
-```
-
-Gleiches Ergebnis im Kombi-Kontext (Wegwerf-Import in ein gültiges Caddyfile).
-Gültig ist die Blockform:
-
-```caddyfile
-	request_body {
-		max_size 2GB
-	}
-```
-
-→ **Offener Punkt / Blocker:** §3.3 in `docs/infrastructure.md` auf die
-Blockform korrigieren (eigenes Issue), **bevor** das Snippet auf den Edge
-kopiert wird. Sonst greift das Abbruchkriterium oben und der Cutover stoppt
-korrekt — aber ungewollt.
+Das Repo-Artefakt nutzt die gültige **Blockform** von `request_body` und ist
+mit `caddy validate` (Caddy 2.9) **grün** (Exit 0). Es weicht damit bewusst von
+der ursprünglich einzeilig notierten Zeile ab, die Caddy 2.9 ablehnte
+(`Unexpected next token after '{' on same line`). `docs/infrastructure.md` §3.3
+wurde im selben PR auf dieselbe Blockform korrigiert, sodass Doku und
+Repo-Snippet jetzt übereinstimmen.
 
 **Verifikation nach dem Recreate:** die vier ZUKKA-Hosts antworten **und**
 mindestens **zwei fremde Host-Domains** sind unverändert erreichbar
