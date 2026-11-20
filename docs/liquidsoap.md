@@ -336,7 +336,7 @@ rotation_src = crossfade(
 
 ```liquidsoap
 # lib/harbor.liq
-caster_mounts = ["/live/slot-01", "/live/slot-02", ...]   # N Slots, aus Env
+harbor_mounts = ["/live/slot-01", "/live/slot-02", ...]   # N Slots, aus Env
 
 def harbor_auth(m) =
   # Der Callback kennt den Mount nicht — er kommt per Closure aus dem Slot.
@@ -373,25 +373,43 @@ Anmerkungen:
 
 ```liquidsoap
 # lib/harbor.liq
-live_order    = ref([])      # Mounts, älteste Verbindung zuerst
-live_override = ref(null())  # string? — Scheduler-/Operator-Entscheidung
+live_order = ref([])   # Mounts, älteste Verbindung am Kopf
 
-def harbor_src(m) =
-  s = input.harbor(m, port=8001, auth=harbor_auth(m),
-                   buffer=2.0, max=20.0, replay_metadata=true)
-  s.on_connect(synchronous=false, fun (_) ->
-    live_order := list.add(m, live_order())
-    emit_harbor("/internal/harbor/connected", m)
-  end)
-  s.on_disconnect(synchronous=false, fun () ->
-    live_order := list.remove(m, live_order())
-    emit_harbor("/internal/harbor/disconnected", m)
-  end)
-  s
+# Reine, I/O-freie Registry-Funktionen -> ohne Stream testbar.
+def live_join(m, order) =
+  if list.mem(m, order) then order else list.append(order, [m]) end
+end
+def live_leave(m, order) = list.remove(m, order) end
+def live_fcfs(order)     = list.hd(default="", order) end
+def live_select(order, override) =
+  null.case(
+    override,
+    fun () -> live_fcfs(order),
+    fun (o) -> if list.mem(o, order) then o else live_fcfs(order) end
+  )
 end
 
-casters = list.map(fun (m) -> (m, harbor_src(m)), caster_mounts)
+def make_harbor_caster(m) =
+  s = input.harbor(m, port=8001, auth=harbor_auth(m),
+                   buffer=2.0, max=20.0, replay_metadata=true)
+  # on_connect/on_disconnect sind in 2.4.5 Source-Methoden (nicht die
+  # deprecated input.harbor-Parameter gleichen Namens).
+  s.on_connect(synchronous=false, fun (_) ->
+    live_order := live_join(m, live_order())
+  end)
+  s.on_disconnect(synchronous=false, fun () ->
+    live_order := live_leave(m, live_order())
+  end)
+  (m, s)
+end
+
+casters = list.map(make_harbor_caster, harbor_mounts)
 ```
+
+`live_join` hängt **hinten** an, damit der Kopf die *älteste* Verbindung
+bleibt: Ein später verbundener Caster landet im Waiting Room und verdrängt
+niemanden (FCFS). `list.add` wäre hier falsch — es hängt vorne an und würde
+LIFO erzeugen.
 
 `buffer=2.0` ist die Latenz-Entscheidung aus D11. Der Wert ist der
 Hauptstellhebel für „Kein Delay" und muss gemessen werden (§7).
@@ -400,24 +418,55 @@ Hauptstellhebel für „Kein Delay" und muss gemessen werden (§7).
 
 ```liquidsoap
 # lib/live.liq
+# TODO(#32): control.liq darf diese Ref später setzen/clearen; #30 schreibt sie nie.
+live_override = ref(null)
+
 def is_live(m) =
-  match live_override() with
-    | null -> list.hd(default="", live_order()) == m
-    | o    -> o == m
-  end
+  live_select(live_order(), live_override()) == m
 end
 
+# TODO(#31): transitions=[live_transition], transition_length=0.5 (Handoff-Fade).
 live_src = switch(
   track_sensitive = false,
-  transition_length = 1.0,
-  transitions = [live_transition],
   list.map(fun ((m, s)) -> ((fun () -> is_live(m)), s), casters)
 )
 ```
 
-`switch` nimmt die erste Quelle, deren Prädikat wahr ist. Ohne Override ist das
-die älteste Verbindung — FCFS. Mit Override (`live.set`) gewinnt der gesetzte
-Mount.
+Hinweise zur verifizierten API:
+
+- `match` ist in 2.4.5 nicht verwendbar (Parse-Fehler) — stattdessen
+  `null.case(opt, on_null, on_value)`.
+- `switch` nimmt die erste Quelle, deren Prädikat wahr ist. Ohne Override ist
+  das die älteste Verbindung — FCFS. Ein Override (`live.set`) gewinnt **nur,
+  wenn sein Mount verbunden ist**; sonst fällt die Auswahl auf FCFS zurück,
+  damit ein getrennter Override nicht die ganze Live-Ebene unavailable macht.
+- Ohne `transitions` ist der Wechsel ein harter Cut. Der 0,5-s-Fade kommt mit
+  #31; #30 bleibt bewusst ohne Audio-Politur, damit die Auswahl reviewbar ist.
+
+#### FCFS prüfen
+
+Ohne Testframework lässt sich FCFS mit zwei Pushes und einem Blick ins Log
+belegen (Compose-Stack mit Liquidsoap + Icecast vorausgesetzt):
+
+```bash
+# Caster A (slot-01) zuerst, 10 s später Caster B (slot-02).
+ffmpeg -re -f lavfi -i "sine=frequency=440:duration=60" -c:a libmp3lame \
+  -b:a 128k -f mp3 "icecast://source:<pw>@localhost:8001/live/slot-01"
+ffmpeg -re -f lavfi -i "sine=frequency=880:duration=60" -c:a libmp3lame \
+  -b:a 128k -f mp3 "icecast://source:<pw>@localhost:8001/live/slot-02"
+```
+
+Erwartet: `slot-01` ist hörbar, `slot-02` nicht. Im Log steht `caster
+connected mount=/live/slot-01` und danach `.../live/slot-02`, aber **kein**
+Wechsel auf 02. Beendet man `slot-01`, wechselt der Switch auf 02 (`caster
+disconnected mount=/live/slot-01`), ohne dass 02 neu verbinden muss. Enden
+beide, wird `live` unavailable und der Master-Fallback greift.
+
+#### Abgrenzung
+
+`live.status` (und `live.set`/`live.clear`) gibt es erst mit **#32** — #30 ist
+über Icecast-Audio und Log zu prüfen, nicht über die Control-API. Der
+Handoff-Fade ist **#31**. Die Harbor-Auth bleibt der Platzhalter aus **#33**.
 
 #### Waiting Room
 

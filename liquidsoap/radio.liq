@@ -7,7 +7,10 @@
 
 settings.log.level := 3
 
+# Include order matters: harbor.liq creates the slots and the FCFS registry,
+# live.liq consumes `casters` to build `live`, master.liq wires `live` in.
 %include "lib/harbor.liq"
+%include "lib/live.liq"
 %include "lib/layers.liq"
 %include "lib/master.liq"
 %include "lib/outputs.liq"

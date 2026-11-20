@@ -1,6 +1,5 @@
 # Priority chain: live > show > queue > rotation > relay > fun.
-
-live = fallback(track_sensitive=false, harbor_slots)
+# `live` is defined in lib/live.liq (issue #30): the FCFS-selected caster.
 
 radio = fallback(
   track_sensitive=false,
