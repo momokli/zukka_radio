@@ -347,6 +347,10 @@ async fn range_past_eof_is_416_without_upstream_call() {
     .await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(hv(&headers, "content-range"), format!("bytes */{SIZE}"));
+    assert_eq!(
+        hv(&headers, "access-control-expose-headers"),
+        "Content-Length, Content-Range, Accept-Ranges, ETag"
+    );
     assert_eq!(mock.requests(), 0);
 }
 
@@ -533,6 +537,10 @@ async fn upstream_416_is_normalized() {
     .await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(hv(&headers, "content-range"), format!("bytes */{SIZE}"));
+    assert_eq!(
+        hv(&headers, "access-control-expose-headers"),
+        "Content-Length, Content-Range, Accept-Ranges, ETag"
+    );
 }
 
 #[tokio::test]

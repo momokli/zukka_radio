@@ -102,6 +102,10 @@ impl IntoResponse for ApiError {
                 if let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}")) {
                     extra.push((header::CONTENT_RANGE, value));
                 }
+                extra.push((
+                    header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                    HeaderValue::from_static("Content-Length, Content-Range, Accept-Ranges, ETag"),
+                ));
                 (
                     StatusCode::RANGE_NOT_SATISFIABLE,
                     "range_not_satisfiable",
