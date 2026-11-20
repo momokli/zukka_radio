@@ -43,7 +43,20 @@
 }
 
 {$ZUKKA_DOMAIN_TAPES} {
-	reverse_proxy tapes:8080 {
-		flush_interval -1
+	# Audio passthrough: `/media/*` streams (206) without buffering and must not
+	# be compressed; the catch-all keeps compression for text/HTML/assets.
+	@media path /media/*
+	@not_media not path /media/*
+	encode @not_media zstd gzip
+
+	handle @media {
+		reverse_proxy tapes:8080 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy tapes:8080 {
+			flush_interval -1
+		}
 	}
 }

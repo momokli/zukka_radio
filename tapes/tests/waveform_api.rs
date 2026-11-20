@@ -104,7 +104,12 @@ async fn setup() -> (TempDir, Router, SqlitePool) {
     let pool = zukka_tapes::db::connect_read_only(&path)
         .await
         .expect("read-only pool");
-    let app = zukka_tapes::api::router(pool.clone(), BASE_URL.to_string());
+    let app = zukka_tapes::api::router(
+        pool.clone(),
+        BASE_URL.to_string(),
+        String::new(),
+        String::new(),
+    );
     (dir, app, pool)
 }
 

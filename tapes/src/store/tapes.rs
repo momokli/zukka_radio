@@ -55,6 +55,10 @@ pub struct TapeRow {
     pub size_bytes: Option<i64>,
     pub published_at: Option<String>,
     pub updated_at: String,
+    /// Music API object key (proxy target); never serialized publicly.
+    pub storage_key: Option<String>,
+    /// Object ETag from the Music API metadata; never serialized publicly.
+    pub etag: Option<String>,
 }
 
 /// One feed item: the public DTO plus the exact keyset position.
@@ -67,7 +71,8 @@ pub struct FeedItem {
 
 const TAPE_SELECT: &str = "SELECT t.id, t.slug, t.caster_id, c.display_name AS caster_name, \
      t.show_id, s.name AS show_name, t.title, t.description, t.started_at, t.ended_at, \
-     t.duration_ms, t.source, t.format, t.mime, t.size_bytes, t.published_at, t.updated_at \
+     t.duration_ms, t.source, t.format, t.mime, t.size_bytes, t.published_at, t.updated_at, \
+     t.storage_key, t.etag \
      FROM tapes t \
      JOIN casters c ON c.id = t.caster_id \
      LEFT JOIN shows s ON s.id = t.show_id \

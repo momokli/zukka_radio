@@ -1,6 +1,7 @@
 //! Public API: router, shared state, CORS/405 handling and `healthz`.
 
 pub mod casters;
+pub mod media;
 pub mod shell;
 pub mod tapes;
 pub mod waveform;
@@ -15,6 +16,7 @@ use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::error::{ApiError, unavailable_body};
+use media::MediaProxy;
 
 /// Shared handler state.
 #[derive(Clone)]
@@ -23,11 +25,22 @@ pub struct AppState {
     pub pool: SqlitePool,
     /// Absolute base URL for `*_url` fields (no trailing slash).
     pub base_url: String,
+    /// Music API proxy (client + credentials) for `/media/{file}`.
+    pub media: MediaProxy,
 }
 
-/// Builds the full application router: `/healthz` + `/api/v1`.
-pub fn router(pool: SqlitePool, base_url: String) -> Router {
-    let state = AppState { pool, base_url };
+/// Builds the full application router: `/healthz` + `/api/v1` + `/media`.
+pub fn router(
+    pool: SqlitePool,
+    base_url: String,
+    music_api_url: String,
+    music_api_token: String,
+) -> Router {
+    let state = AppState {
+        pool,
+        base_url,
+        media: MediaProxy::new(music_api_url, music_api_token),
+    };
 
     // Inner router: the API keeps its own JSON fallback, so an unknown
     // `/api/v1/*` path never renders HTML (plan E4/R8).
@@ -47,6 +60,12 @@ pub fn router(pool: SqlitePool, base_url: String) -> Router {
         .nest("/api/v1", api)
         .route("/", get(shell::get_index))
         .route("/t/{slug}", get(shell::get_tape))
+        .route(
+            "/media/{file}",
+            get(media::get_media)
+                .head(media::head_media)
+                .options(preflight),
+        )
         .route("/assets/{*path}", get(crate::assets::get_asset))
         .fallback(shell::html_not_found)
         .layer(middleware::from_fn(cors))

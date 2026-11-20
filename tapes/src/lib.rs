@@ -24,6 +24,7 @@ pub mod db;
 pub mod error;
 pub mod etag;
 pub mod fixtures;
+pub mod media;
 pub mod model;
 pub mod shell;
 pub mod store;

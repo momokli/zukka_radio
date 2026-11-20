@@ -90,3 +90,35 @@ pub fn parse_date(field: &str, raw: &str) -> Result<NaiveDate, ApiError> {
         ))
     })
 }
+
+/// Builds the `Content-Disposition` filename for `?download=1` (§3.7):
+/// `{caster}-{YYYY-MM-DD}-{HHMM}.{ext}` in Berlin wall time (DST-correct).
+pub fn download_filename(caster: &str, started_at: DateTime<Utc>, ext: &str) -> String {
+    let local = started_at.with_timezone(&BERLIN);
+    format!("{caster}-{}.{ext}", local.format("%Y-%m-%d-%H%M"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_filename_uses_berlin_wall_time() {
+        // 2026-11-23T10:00:00Z is CET (+01:00) → 11:00 Berlin.
+        let start = parse_storage_time("2026-11-23T10:00:00.000Z").unwrap();
+        assert_eq!(
+            download_filename("momo", start, "mp3"),
+            "momo-2026-11-23-1100.mp3"
+        );
+    }
+
+    #[test]
+    fn download_filename_respects_dst() {
+        // 2026-07-01T10:00:00Z is CEST (+02:00) → 12:00 Berlin.
+        let start = parse_storage_time("2026-07-01T10:00:00.000Z").unwrap();
+        assert_eq!(
+            download_filename("Alpha", start, "flac"),
+            "Alpha-2026-07-01-1200.flac"
+        );
+    }
+}
