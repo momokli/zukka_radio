@@ -1,8 +1,17 @@
 # PROD behind the shared edge Caddy: no TLS here, just internal routing.
 {
+	admin off
 	auto_https off
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
 }
 
+import routes.caddy
+
 http://:12080 {
-	import routes.caddy
+	import radio_zukka_routes
+	handle /__zu/health {
+		respond "ok" 200
+	}
 }

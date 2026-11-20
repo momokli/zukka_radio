@@ -1,62 +1,74 @@
-# Shared route definitions. Imported by Caddyfile.dev / .prod / .prod-own.
+# Shared route definitions (snippet). Imported by Caddyfile.dev / .prod / .prod-own.
 # Domains come from the environment (see env/*.env.example).
+# This file is a snippet only: it declares no site address and no listener;
+# the wrappers own the site address and the TLS/listener mode.
 
-{$ZUKKA_DOMAIN_RADIO} {
-	handle /stream.mp3* {
-		reverse_proxy icecast:8000 {
-			flush_interval -1
+(radio_zukka_routes) {
+	# ── radio.<base>: HLS files, MP3 stream, player frontend ──────────────
+	@radio host {$ZUKKA_DOMAIN_RADIO}
+	handle @radio {
+		handle /stream.mp3* {
+			reverse_proxy icecast:8000 {
+				flush_interval -1
+			}
+		}
+		handle /hls/* {
+			root * /srv/hls
+			file_server
+		}
+		handle {
+			root * /srv/player
+			file_server
 		}
 	}
-	handle /hls/* {
-		root * /srv/hls
-		file_server
-	}
-	handle {
-		root * /srv/player
-		file_server
-	}
-}
 
-{$ZUKKA_DOMAIN_CAST} {
-	handle /live/* {
-		reverse_proxy liquidsoap:8001 {
-			flush_interval -1
+	# ── cast.<base>: liquidsoap live harbor ───────────────────────────────
+	@cast host {$ZUKKA_DOMAIN_CAST}
+	handle @cast {
+		handle /live/* {
+			reverse_proxy liquidsoap:8001 {
+				flush_interval -1
+			}
 		}
 	}
-}
 
-{$ZUKKA_DOMAIN_PORTAL} {
-	# Control Panel SSE (Issue #22, D15): the event stream must be un-buffered
-	# (`flush_interval -1`) or the panel shows a stale state. The catch-all
-	# below is already un-buffered, but the explicit route documents the
-	# requirement and survives a future split of the portal Caddy config.
-	handle /control/events {
-		reverse_proxy portal:8080 {
-			flush_interval -1
+	# ── portal.<base>: control panel incl. SSE ────────────────────────────
+	@portal host {$ZUKKA_DOMAIN_PORTAL}
+	handle @portal {
+		# Control Panel SSE (Issue #22, D15): the event stream must be un-buffered
+		# (`flush_interval -1`) or the panel shows a stale state. The catch-all
+		# below is already un-buffered, but the explicit route documents the
+		# requirement and survives a future split of the portal Caddy config.
+		handle /control/events {
+			reverse_proxy portal:8080 {
+				flush_interval -1
+			}
+		}
+		handle {
+			reverse_proxy portal:8080 {
+				flush_interval -1
+			}
 		}
 	}
-	handle {
-		reverse_proxy portal:8080 {
-			flush_interval -1
-		}
-	}
-}
 
-{$ZUKKA_DOMAIN_TAPES} {
-	# Audio passthrough: `/media/*` streams (206) without buffering and must not
-	# be compressed; the catch-all keeps compression for text/HTML/assets.
-	@media path /media/*
-	@not_media not path /media/*
-	encode @not_media zstd gzip
+	# ── tapes.<base>: audio passthrough ───────────────────────────────────
+	@tapes host {$ZUKKA_DOMAIN_TAPES}
+	handle @tapes {
+		# Audio passthrough: `/media/*` streams (206) without buffering and must
+		# not be compressed; the catch-all keeps compression for text/HTML/assets.
+		@media path /media/*
+		@not_media not path /media/*
+		encode @not_media zstd gzip
 
-	handle @media {
-		reverse_proxy tapes:8080 {
-			flush_interval -1
+		handle @media {
+			reverse_proxy tapes:8080 {
+				flush_interval -1
+			}
 		}
-	}
-	handle {
-		reverse_proxy tapes:8080 {
-			flush_interval -1
+		handle {
+			reverse_proxy tapes:8080 {
+				flush_interval -1
+			}
 		}
 	}
 }
