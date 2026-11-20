@@ -159,3 +159,126 @@ korrekt — aber ungewollt.
 **Verifikation nach dem Recreate:** die vier ZUKKA-Hosts antworten **und**
 mindestens **zwei fremde Host-Domains** sind unverändert erreichbar
 (`infrastructure.md` §6 Verifikation, §7 Nr. 12).
+
+## 5. Compose/Env-Umschaltung
+
+**Real implementierter Weg (Repo-Stand).** `compose/prod.yml` fährt Caddy mit
+festem `command`:
+
+```text
+["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
+```
+
+mit Port-Mapping `127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080`. `Caddyfile.prod`
+setzt `auto_https off` und `admin off` (`docs/deploy-prod.md`). Die Umschaltung
+`own` → `shared` ist damit **kein Env-Flag**, sondern ein **Caddy-Recreate auf
+denselben Befehl**: der Edge übernimmt den öffentlichen Pfad, der Stack hört
+weiter nur lokal auf `12080`.
+
+**In der Doku genannter Zielzustand.** `infrastructure.md` §2.5/§3.1/§6 Phase 6
+(Schritt 27) nennt `ZUKKA_EDGE_MODE=own|shared`; Ziel ist `shared`
+(`Caddyfile.prod`).
+
+**Abweichung Repo ↔ Doku (Vorbedingung).** `env/prod.env.example` enthält
+**kein** `ZUKKA_EDGE_MODE` (nur `ZUKKA_PORT_CADDY_TLS=12443`), `compose/prod.yml`
+hat **keinen** `command:`-Switch (es wählt nie `Caddyfile.prod-own`), und
+`ZUKKA_DOMAIN_CAST` zeigt auf `cast.zukkafabrik.de` statt
+`ingest.zukkafabrik.de`. Der dokumentierte `own`-Parallelbetrieb ist im Repo
+**nicht verdrahtet** → **Blocker vor dem Fenster** (eigenes Issue,
+Compose-Switch). In #45 gilt: **keine** Compose-/Env-Änderung.
+
+**vorher / nachher:**
+
+| Aspekt                 | vorher (`own`)                            | nachher (`shared`)              |
+| ---------------------- | ----------------------------------------- | ------------------------------- |
+| Öffentl. Listener      | `0.0.0.0:12443`                           | keiner (nur `127.0.0.1:12080`)  |
+| TLS                    | Caddy, ACME DNS-01 (`Caddyfile.prod-own`) | Edge (ACME DNS-01)              |
+| Caddy-Config           | `Caddyfile.prod-own`                      | `Caddyfile.prod`                |
+| `CLOUDFLARE_API_TOKEN` | im Stack nötig                            | nur noch im Edge                |
+| Öffentl. Pfad          | direkt `:12443`                           | Edge → `127.0.0.1:12080`        |
+
+## 6. Cutover-Sequenz im Fenster (03:00–04:00 Europe/Berlin)
+
+| Zeit  | Schritt                              | Referenz                         | Go / No-Go                                          |
+| ----- | ------------------------------------ | -------------------------------- | --------------------------------------------------- |
+| T-30  | Vorbedingungen + Backup              | Abschnitt 2; `restic snapshots`  | Go: alle Punkte grün, Smoke grün — sonst No-Go      |
+| 03:00 | Edge-Bootstrap (Mount + `import`)    | Abschnitt 4, Schritte 1–3        | Go: `caddy validate` grün (leerer Glob ist ok)      |
+| 03:05 | Snippet-Drop + `caddy validate`      | Abschnitt 4, Schritt 4–5         | Go: validate grün — sonst Abbruch (Abschnitt 4)     |
+| 03:10 | Edge-Recreate + Fremd-Domain-Check   | Abschnitt 4, Schritt 6           | Go: 4 ZUKKA-Hosts ok **und** ≥ 2 Fremd-Domains ok   |
+| 03:15 | Stack-Caddy-Recreate                 | `zukka-deploy prod --tag <sha>` bzw. `systemctl restart zukka-prod` | Go: Container healthy, `http://127.0.0.1:12080/__zu/health` = ok |
+| 03:20 | DNS `radio`/`portal`/`tapes`         | Abschnitt 3 (Cloudflare DNS-only)| Go: `dig` liefert Host-IP                           |
+| 03:25 | Verifikation                         | Abschnitt 7                      | Go: `curl -I https://radio.zukkafabrik.de/stream.mp3` = 200 |
+| 03:35 | Bestandssystem aus + `cast`-DNS      | fremder Prozess, Host-Owner      | Go: erst Bestandssystem aus, **dann** `cast`-Record |
+| 03:45 | Nachlauf/Beobachtung                 | `docs/monitoring.md`             | Go: keine Alarme, Hörerzahl plausibel               |
+| 04:00 | Fensterende                          | —                                | danach 24 h begründungspflichtig (Abschnitt 8)      |
+
+Jeder Schritt hat ein Go/No-Go; bei **No-Go** → Abschnitt 8.
+
+**Keine Audio-Recreates** (`liquidsoap`/`icecast`) im Cutover: Caddy/DNS ändern
+nichts am laufenden Audio-Pfad (§2.9, §5.7). Falls doch nötig → `--force` nur
+mit Operator-Override und Ankündigung.
+
+**Zeitzone:** immer `Europe/Berlin`, **nie** UTC-Offsets hartcodieren
+(DST-sicher, `infrastructure.md` §2.9).
+
+## 7. Verifikation (Abnahme im Fenster)
+
+Jede Prüfung nennt das erwartete Ergebnis; eine Abweichung ist ein
+Rollback-Trigger (Abschnitt 8).
+
+- `curl -I https://radio.zukkafabrik.de/stream.mp3` → **200**.
+- HLS-Playlist jünger als 3× Segmentdauer:
+  `https://radio.zukkafabrik.de/hls/index.m3u8`.
+- `portal`/`tapes` `/healthz` → 200; `cast` liefert Seite bzw. `/healthz`.
+- `docker compose ps` → alle `running (healthy)`.
+- `scripts/smoke.sh prod` → „all checks passed".
+- Listener-Zahl in `zukka_icecast_listeners` sichtbar (§7 Nr. 11/12).
+- Fremd-Domains des Hosts unverändert (Stichprobe ≥ 2, §6 Verifikation).
+- Deploy-Gate-Gegenprobe — **nur beobachten, kein Deploy**:
+  `sudo /usr/local/bin/zukka-deploy prod --check-window` bei `listeners > 0`
+  endet mit **Exit 3** (§7 Nr. 14).
+- Nachlauf-Beobachtung: `docs/monitoring.md` — `ZukkaAudioDown`/
+  `ZukkaIcecastDown` (keine neue Alert-Definition in #45).
+
+## 8. Rollback-Fenster und Rollback-Trigger
+
+**Fenster:** Cutover-Fenster **plus 24 h**. Konkret: Ausführung 03:00–04:00 am
+Cutover-Tag; Rückweg bis **04:00 desselben Fensters ohne Diskussion**; danach
+**24 h** „begründungspflichtig" (bis 04:00 des Folgetags). Datum in der
+Ausführungs-Checkliste eintragen.
+
+**Trigger — automatisch/sofort:**
+
+- `/stream.mp3` nicht 200 innerhalb 2 min.
+- `caddy validate` rot.
+- Eine fremde Host-Domain nicht erreichbar.
+- Portal/Tapes `/healthz` rot nach dem Caddy-Recreate.
+- `ZukkaAudioDown` ausgelöst.
+
+**Trigger — manuell (Operator-Entscheid):**
+
+- Hörerzahl bricht gegenüber dem Parallelbetrieb ein.
+- Caster-Ingest über `cast` scheitert.
+- Edge-Latenz auffällig.
+
+**Rückweg Edge/DNS** (Reihenfolge so, dass die Fremd-Domains zuerst sicher
+sind):
+
+1. `import`-Zeile aus `/home/momo/Caddyfile` entfernen bzw. Snippet aus
+   `/opt/apps/caddy/sites/` entfernen.
+2. `caddy validate`.
+3. Edge-Container (`mellon-caddy`) neu erzeugen.
+4. DNS zurück auf den alten Zielwert (Abschnitt 3).
+5. Verifikation wie Abschnitt 7.
+
+**Rückweg Stack:** `sudo /usr/local/bin/zukka-deploy prod --rollback`
+(Mechanik: `.deployed.prev`, Smoke-Gate) — **nur referenziert**, nicht neu
+implementiert. Details: `docs/deploy-prod.md` „Rollback", Restore:
+`docs/backup.md`.
+
+**Kein automatischer DNS-Rollback:** DNS ist manuell (Cloudflare) und wird mit
+Rück-Wert in der Ausführungs-Checkliste dokumentiert; kein Skript rollt DNS
+zurück.
+
+**Abgrenzung #47:** #47 beschreibt den vollständigen Rollback-Plan inkl.
+Daten-/Migrations-Rückweg; hier nur Fenster, Trigger und operative Reihenfolge.
