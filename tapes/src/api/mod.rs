@@ -2,6 +2,7 @@
 
 pub mod casters;
 pub mod tapes;
+pub mod waveform;
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -31,6 +32,10 @@ pub fn router(pool: SqlitePool, base_url: String) -> Router {
         .route("/healthz", get(healthz))
         .route("/tapes", get(tapes::get_tapes).options(preflight))
         .route("/tapes/{slug}", get(tapes::get_tape).options(preflight))
+        .route(
+            "/tapes/{slug}/waveform",
+            get(waveform::get_waveform).options(preflight),
+        )
         .route("/casters", get(casters::get_casters).options(preflight));
 
     Router::new()

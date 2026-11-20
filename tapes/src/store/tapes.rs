@@ -176,6 +176,31 @@ pub async fn peaks_for(pool: &SqlitePool, tape_id: &str) -> ApiResult<Option<Pea
     }))
 }
 
+/// The full waveform row (metadata + RMS bytes) for a tape.
+#[derive(Debug, sqlx::FromRow)]
+pub struct WaveformRow {
+    pub scheme: i64,
+    pub algorithm: String,
+    pub ms_per_bar: i64,
+    pub bars: i64,
+    pub data: Vec<u8>,
+}
+
+/// Loads the waveform bytes for a tape, or `None` when absent.
+///
+/// Callers must have passed the [`public_tape`] guard first; this query is
+/// intentionally not public-filtered itself.
+pub async fn waveform_for(pool: &SqlitePool, tape_id: &str) -> ApiResult<Option<WaveformRow>> {
+    let row = sqlx::query_as::<_, WaveformRow>(
+        "SELECT scheme, algorithm, ms_per_bar, bars, data FROM waveforms \
+         WHERE subject_kind = 'tape' AND subject_id = ?",
+    )
+    .bind(tape_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Builds the public [`TapeDto`] from a joined row (§3.3).
 pub fn row_to_dto(row: &TapeRow, peaks: Option<PeaksDto>, base_url: &str) -> ApiResult<TapeDto> {
     let start = parse_storage_time(&row.started_at)?;

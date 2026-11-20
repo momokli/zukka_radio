@@ -80,13 +80,20 @@ pub fn validate(req: &UpsertWaveformRequest) -> Result<(), ApiError> {
     if req.bars < 0 {
         return Err(ApiError::validation("bars", "bars must be >= 0"));
     }
-    let expected = req.bars.checked_mul(2).unwrap_or(i64::MAX);
+    let expected = match req.subject_kind.as_str() {
+        // Tracks keep the interleaved 8-bit (min, max) pairs of Issue #18.
+        "track" => req.bars.checked_mul(2).unwrap_or(i64::MAX),
+        // Tapes use the 1-byte-per-bar RMS model (§3.2/§3.6, Issue #25).
+        "tape" => req.bars,
+        _ => unreachable!("subject_kind is validated above"),
+    };
     if req.data.len() as i64 != expected {
         return Err(ApiError::validation(
             "data",
             format!(
-                "data length {} does not match 2 * bars ({expected})",
-                req.data.len()
+                "data length {} does not match {expected} for subject_kind '{}'",
+                req.data.len(),
+                req.subject_kind
             ),
         ));
     }

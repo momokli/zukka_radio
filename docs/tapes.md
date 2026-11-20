@@ -671,7 +671,7 @@ ohne Audio, damit UI parallel starten kann (Peaks als Zufalls-BLOB im
 Test-Schema erlaubt).
 
 **M3 — Waveform-Pipeline (2 d)** 11. `waveform.rs`: `ffprobe` → `duration_ms`/`format`; `ffmpeg -i … -ac 1 -ar 8000
-    -f s16le -` → 400 ms-Fenster mit 100 ms-Hop, RMS in dBFS, Byte-Mapping;
+    -f s16le -` → 500-ms-Fenster (kein Hop), RMS in dBFS, Byte-Mapping;
 Streaming, kein Vollpuffer (R1). 12. `worker.rs`: Job-Loop (`probe` → `peaks`), Retry mit exponentiellem Backoff
 (`run_after`), `attempts`-Cap, `status`-Übergänge, Logging pro Tape. 13. `GET /api/v1/tapes/{slug}/waveform` + Cache-/ETag-Header. 14. `POST /internal/tapes` (idempotent über `object_key`) + `PATCH` + `reprocess` + `DELETE`; Bearer-Auth-Test.
 

@@ -26,3 +26,5 @@ pub mod fixtures;
 pub mod model;
 pub mod store;
 pub mod time;
+pub mod waveform;
+pub mod worker;
