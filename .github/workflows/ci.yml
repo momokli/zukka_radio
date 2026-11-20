@@ -34,7 +34,7 @@ jobs:
         run: cargo test --workspace
 
       - name: node assets tests
-        run: node --test tapes/assets/peaks.test.mjs
+        run: node --test tapes/assets/peaks.test.mjs tapes/assets/player.test.mjs
 
   liquidsoap:
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@ import {
   paletteFrom,
   placeholderPeaks,
   barTime,
+  DEFAULT_MS_PER_BAR,
 } from "./peaks.mjs";
 
 const state = {
@@ -133,6 +134,9 @@ function makeCard(tape, { pinned = false } = {}) {
   card.id = cardId(tape.slug);
   card.dataset.slug = tape.slug;
   card.tabIndex = 0;
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", `${tape.display_title} — Space/Enter startet oder stoppt`);
+  card.setAttribute("aria-keyshortcuts", "Space Enter");
 
   const head = document.createElement("div");
   head.className = "card-head";
@@ -209,6 +213,20 @@ function makeCard(tape, { pinned = false } = {}) {
 
   state.waveforms.set(tape.slug, { canvas, tape, peaks: null, bars: null, hover: null, progress: 0 });
   wireWaveform(state.waveforms.get(tape.slug));
+
+  // AK24: the card itself is the keyboard/click target. Inner controls
+  // (buttons, links, canvas) keep their own behaviour.
+  card.addEventListener("keydown", (event) => {
+    if (event.target !== card) return;
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleTape(tape);
+    }
+  });
+  card.addEventListener("click", (event) => {
+    if (event.target !== card && event.target.closest("button, a, canvas")) return;
+    playTape(tape, { autoplay: true });
+  });
 
   return card;
 }
@@ -324,7 +342,41 @@ function drawView(view) {
     hover: view.hover,
     colors: view.palette,
   });
+  drawHoverTime(ctx, view, width, height);
   canvas.setAttribute("aria-valuenow", String(Math.round(view.progress * 100)));
+}
+
+/** `m:ss.t` — sub-second precision because one bar is 500 ms. */
+function formatOffset(ms) {
+  const totalTenths = Math.max(0, Math.round(ms / 100));
+  const tenths = totalTenths % 10;
+  const totalSeconds = Math.floor(totalTenths / 10);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}.${tenths}`;
+}
+
+/**
+ * Hover read-out (T26-18): the bar under the cursor times `ms_per_bar`.
+ * Bars come from the decoded peaks; before they arrive the tape duration is
+ * used so the label is still meaningful.
+ */
+function drawHoverTime(ctx, view, width, height) {
+  if (view.hover === null) return;
+  const barCount = view.peaks
+    ? view.peaks.length
+    : Math.ceil((view.tape.duration_ms || 0) / DEFAULT_MS_PER_BAR);
+  if (barCount <= 0) return;
+  const index = Math.min(barCount - 1, Math.max(0, Math.floor(view.hover * barCount)));
+  const label = formatOffset(barTime(index, DEFAULT_MS_PER_BAR));
+  const x = Math.min(width - 56, Math.max(4, view.hover * width - 24));
+  ctx.font = '12px "Space Mono", monospace';
+  ctx.textBaseline = "top";
+  ctx.fillStyle = view.palette.bg || "#161c1a";
+  ctx.fillRect(x - 3, 2, 52, 16);
+  ctx.fillStyle = view.palette.played || "#e85a2a";
+  ctx.fillText(label, x, 3);
+  ctx.textBaseline = "alphabetic";
 }
 
 function refreshProgress(ratio) {
@@ -342,6 +394,17 @@ function playTape(tape, { autoplay = false } = {}) {
   state.player.load(tape, { autoplay });
   const card = document.getElementById(cardId(tape.slug));
   if (card) highlight(card);
+}
+
+/** Starts the tape, or stops it when it is already the playing one. */
+function toggleTape(tape) {
+  if (!state.player) return;
+  const current = state.player.tape;
+  if (current && current.slug === tape.slug && !state.player.audio.paused) {
+    state.player.pause();
+    return;
+  }
+  playTape(tape, { autoplay: true });
 }
 
 function step(delta, { autoplay = false } = {}) {
@@ -404,10 +467,32 @@ function pinShared(tape) {
   el.feed.prepend(card);
 }
 
-function handleInitialTarget(island) {
+/**
+ * Deep links (`#t-<slug>`) must work even when the current filter hides the
+ * tape: reset to ALL, reload the feed, and only then focus the card (AK §3.9,
+ * no autoplay). A slug outside the first page is loaded once by detail URL.
+ */
+async function handleInitialTarget(island) {
   const hash = window.location.hash;
   if (hash.startsWith("#t-")) {
-    focusTape(hash.slice(3), { scroll: true, autoplay: false });
+    const slug = hash.slice(3);
+    if (!bySlug(slug) && state.filter !== "ALL") {
+      state.filter = "ALL";
+      const url = new URL(window.location.href);
+      url.searchParams.delete("caster");
+      window.history.replaceState({}, "", url);
+      renderFilter();
+      await reloadFeed();
+    }
+    if (!bySlug(slug)) {
+      try {
+        const tape = await getJson(`/api/v1/tapes/${encodeURIComponent(slug)}`);
+        pinShared(tape);
+      } catch {
+        /* unknown/hidden slug: leave the feed untouched */
+      }
+    }
+    focusTape(slug, { scroll: true, autoplay: false });
     return;
   }
   if (island && island.slug) {
@@ -490,7 +575,7 @@ async function boot() {
   renderFilter();
   await loadFeed();
   updateCount();
-  handleInitialTarget(island);
+  await handleInitialTarget(island);
 }
 
 void boot();

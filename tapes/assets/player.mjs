@@ -15,6 +15,23 @@ export function formatTime(seconds) {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+/**
+ * Resolves a seek ratio against a (possibly unknown) duration.
+ *
+ * Before `loadedmetadata`, `audio.duration` is `0`/`NaN`, so a ratio cannot be
+ * turned into seconds yet. In that case the clamped ratio is returned as
+ * `pending`; the caller replays it once the duration is known (AK20).
+ *
+ * @param {number} ratio 0..1
+ * @param {number} duration seconds, `0`/`NaN` while metadata is missing
+ * @returns {{time:number|null, pending:number|null}}
+ */
+export function resolveSeek(ratio, duration) {
+  const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;
+  const known = Number.isFinite(duration) && duration > 0;
+  return known ? { time: clamped * duration, pending: null } : { time: null, pending: clamped };
+}
+
 export class Player {
   /**
    * @param {HTMLElement} root the `#player` element
@@ -25,6 +42,7 @@ export class Player {
     this.handlers = handlers;
     this.tape = null;
     this.duration = 0;
+    this.pendingRatio = null;
 
     this.audio = new Audio();
     this.audio.preload = "none";
@@ -42,6 +60,10 @@ export class Player {
 
     this.audio.addEventListener("loadedmetadata", () => {
       this.duration = Number.isFinite(this.audio.duration) ? this.audio.duration : 0;
+      if (this.pendingRatio !== null && this.duration > 0) {
+        this.audio.currentTime = this.pendingRatio * this.duration;
+        this.pendingRatio = null;
+      }
       this.updateTime();
     });
     this.audio.addEventListener("timeupdate", () => this.updateTime());
@@ -54,8 +76,7 @@ export class Player {
 
     if (this.progressEl) {
       this.progressEl.addEventListener("input", () => {
-        if (!this.duration) return;
-        this.audio.currentTime = (Number(this.progressEl.value) / 1000) * this.duration;
+        this.seekRatio(Number(this.progressEl.value) / 1000);
       });
     }
     if (this.volumeEl) {
@@ -79,6 +100,7 @@ export class Player {
     }
     this.root.hidden = false;
     this.duration = 0;
+    this.pendingRatio = null;
     this.updateDisplay();
     this.updateTime();
     if (autoplay) this.play();
@@ -126,9 +148,13 @@ export class Player {
 
   /** Seeks to a fraction (0..1) of the duration. */
   seekRatio(ratio) {
-    if (!this.duration) return;
-    const clamped = Math.min(1, Math.max(0, ratio));
-    this.audio.currentTime = clamped * this.duration;
+    const target = resolveSeek(ratio, this.duration);
+    if (target.time === null) {
+      this.pendingRatio = target.pending;
+      return;
+    }
+    this.pendingRatio = null;
+    this.audio.currentTime = target.time;
     this.updateTime();
   }
 
