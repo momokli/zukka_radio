@@ -1,0 +1,36 @@
+# radio zukka v2 — Prometheus job snippet (Issue #44, §3.8).
+#
+# This file is NOT a full Prometheus config. It is the *snippet* the host owner
+# merges into the shared `mellon-prometheus` (§2.11: no own Prometheus). Only
+# `zukka-prod-caddy` joins the `mellon-network`; the metrics are scraped from
+# its bridge `:12091` (§3.2/§3.8). No secrets, no host-specific IPs.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Rule block shipped from the repo (deployed to the host alongside this file).
+rule_files:
+  - rules.yml
+
+scrape_configs:
+  # (1) The scheduler metrics, via the caddy bridge (§3.8).
+  - job_name: zukka-prod
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["zukka-prod-caddy:12091"]
+
+  # (2) Blackbox probes for the public endpoints; targets live in targets.yml.
+  - job_name: zukka-blackbox
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    file_sd_configs:
+      - files: ["targets.yml"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
