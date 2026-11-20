@@ -31,7 +31,7 @@ Bearbeitet werden NUR PRs, deren zugehöriges **Issue im Fokus-Milestone** liegt
 7. **Merge:** Nur wenn `mergeStateStatus == CLEAN` UND alle Checks grün UND dein Verdict `[VERDICT: APPROVE]` ist:
    - `claw-gh pr review <n> --approve --body "[VERDICT: APPROVE] …"`
    - `claw-gh pr merge <n> --squash --delete-branch`
-8. **Reject:** Bei Problemen `claw-gh pr review <n> --request-changes --body "[VERDICT: REQUEST_CHANGES] …"` mit konkreten Punkten.
+8. **Reject:** Bei Problemen `claw-gh pr review <n> --request-changes --body "[VERDICT: REQUEST_CHANGES] …"` mit konkreten Punkten. **Handoff ist Pflicht:** danach `claw-gh issue edit <n> --add-label triage:implement --remove-label orchestrator:dispatched`, damit der Triage das Rework neu dispatcht. Ohne diesen Schritt bleibt der WIP=1-Slot hängen und der Milestone friert ein.
 9. **Rebase:** Braucht ein PR einen Rebase (Konflikt mit `v2`), kommentiere das im PR; der Triage dispatcht ggf. einen Rebase-Task.
 
 ## Regeln

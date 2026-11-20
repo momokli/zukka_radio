@@ -1,0 +1,10 @@
+{
+  "scheduled-einfachkaiser": {
+    "dj": "einfachKaiser",
+    "show": "einfachKaiser Show (Pilot)",
+    "messages": {
+      "5m": "📻 noch 5 Minuten: einfachKaiser 🎧\nDie einfachKaiser Show (Pilot)\n\nHier erwarten dich verschiedene poppige Formate: aktuelle News,\nSocial-Media-Trends und einfach trendige Musik! Hype Hype Hype!\n20 Minuten gute Unterhaltung zum vorglühen, chillen oder den langen Laufweg in WOW.\n\n🌐 web player\nradio.zukkafabrik.de",
+      "start": "🔴 jetzt auf radio zukka: einfachKaiser 🎧\nDie einfachKaiser Show (Pilot)\n\nSchau vorbei und lass dich durch deine Gehörgänge unterhalten!\n\n🌐 web player\nradio.zukkafabrik.de"
+    }
+  }
+}
