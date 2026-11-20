@@ -1,0 +1,12 @@
+[Unit]
+Description=radio zukka — restic backup (DB + Staging + Env + Deploy-State)
+Documentation=file:/opt/apps/radio-zukka/repo/docs/backup.md
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/zukka/backup.env
+ExecStart=/usr/local/bin/zukka-backup backup
+
+[Install]
+WantedBy=timers.target

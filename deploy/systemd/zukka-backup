@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# zukka-backup — host-side backup / restore-drill tool for radio zukka (M6, #43).
+#
+# Installed as /usr/local/bin/zukka-backup (root:root, 0755). The systemd timers
+# zukka-backup.timer / zukka-restore-drill.timer / zukka-backup-prune.timer drive
+# it, and the PROD deploy wrapper (`zukka-deploy prod`) calls `predeploy <sha>`
+# in front of the image `pull`.
+#
+#   zukka-backup backup            DB snapshot + env + deploy state (+ staging) -> restic
+#   zukka-backup predeploy <sha>   DB-only snapshot, extra tag predeploy-<sha>
+#   zukka-backup drill             restore newest snapshot, integrity_check, schema
+#                                  count, RTO (< 30 min) check
+#   zukka-backup prune             restic forget (14d/8w/6m) + prune, tag zukka
+#   zukka-backup restore <dir>     restore newest snapshot into <dir> (manual DR)
+#   zukka-backup snapshots         list snapshots (debug)
+#
+# The DB source is the scheduler volume — there is exactly one DB (`zukka.db`,
+# consolidated-architecture.md §5.9 / C84). Snapshots are DB-consistent via
+# `sqlite3 <db> ".backup"` into a staging tree and backed up from there with
+# RELATIVE paths (data/zukka.db, env/*.env, deploy.sha), so a restore target is
+# self-describing. Config: /etc/zukka/backup.env (RESTIC_REPOSITORY,
+# RESTIC_PASSWORD_FILE); see env/backup.env.example and docs/backup.md.
+set -euo pipefail
+
+readonly SHA_RE='^[0-9a-f]{7,40}$'
+
+# --- configuration (all overridable, mainly for tests) ----------------------
+# backup.env is root-owned (0600) and holds only RESTIC_*; sourcing it is the
+# documented systemd-free path (EnvironmentFile in the units does the same).
+BACKUP_ENV_FILE="${ZUKKA_BACKUP_ENV_FILE:-/etc/zukka/backup.env}"
+if [[ -f "$BACKUP_ENV_FILE" ]]; then
+    # shellcheck disable=SC1090  # path is configurable, not a fixed literal
+    source "$BACKUP_ENV_FILE"
+fi
+
+readonly APP_ROOT="${ZUKKA_BACKUP_APP_ROOT:-/opt/apps/radio-zukka}"
+# One DB: the scheduler data volume (consolidated-architecture.md §5.9).
+readonly DB_SRC="${ZUKKA_BACKUP_DB_SRC:-/var/lib/docker/volumes/zukka-prod_zukka_data/_data/zukka.db}"
+readonly ENV_DIR="${ZUKKA_BACKUP_ENV_DIR:-/etc/zukka}"
+readonly STAGING_SRC="${ZUKKA_BACKUP_STAGING_SRC:-/var/lib/docker/volumes/zukka-prod_recordings_staging/_data}"
+readonly STAGE_ROOT="${ZUKKA_BACKUP_STAGE_ROOT:-/var/tmp/zukka-backup-stage}"
+readonly DRILL_DIR="${ZUKKA_BACKUP_DRILL_DIR:-/var/tmp/zukka-drill}"
+readonly RETAIN_DAILY="${ZUKKA_BACKUP_KEEP_DAILY:-14}"
+readonly RETAIN_WEEKLY="${ZUKKA_BACKUP_KEEP_WEEKLY:-8}"
+readonly RETAIN_MONTHLY="${ZUKKA_BACKUP_KEEP_MONTHLY:-6}"
+readonly RTO_SECONDS="${ZUKKA_BACKUP_RTO_SECONDS:-1800}"   # < 30 min acceptance
+readonly TAG="${ZUKKA_BACKUP_TAG:-zukka}"
+
+log() { echo "zukka-backup: $*" >&2; }
+
+usage() {
+    cat >&2 <<'EOF'
+usage:
+  zukka-backup backup            full snapshot (DB + env + deploy state + staging)
+  zukka-backup predeploy <sha>   DB-only snapshot, tag predeploy-<sha> (deploy wrapper)
+  zukka-backup drill             restore newest snapshot, integrity_check + RTO check
+  zukka-backup prune             restic forget (14 daily/8 weekly/6 monthly) + prune
+  zukka-backup restore <dir>     restore newest snapshot into <dir> (manual DR)
+  zukka-backup snapshots         list snapshots
+EOF
+}
+
+# --- restic plumbing --------------------------------------------------------
+
+restic() {
+    if [[ -n "${RESTIC_PASSWORD_FILE:-}" ]]; then
+        command restic --repo "$RESTIC_REPOSITORY" \
+            --password-file "$RESTIC_PASSWORD_FILE" "$@"
+    else
+        command restic --repo "$RESTIC_REPOSITORY" "$@"
+    fi
+}
+
+require_config() {
+    if [[ -z "${RESTIC_REPOSITORY:-}" ]]; then
+        log "RESTIC_REPOSITORY is not set (see ${BACKUP_ENV_FILE})"
+        exit 1
+    fi
+    if [[ -n "${RESTIC_PASSWORD_FILE:-}" && ! -f "${RESTIC_PASSWORD_FILE}" ]]; then
+        log "RESTIC_PASSWORD_FILE '${RESTIC_PASSWORD_FILE}' does not exist"
+        exit 1
+    fi
+    if [[ -z "${RESTIC_PASSWORD_FILE:-}" && -z "${RESTIC_PASSWORD:-}" ]]; then
+        log "neither RESTIC_PASSWORD_FILE nor RESTIC_PASSWORD is set"
+        exit 1
+    fi
+}
+
+# Create the repository on first use so a fresh host needs no manual `restic init`.
+ensure_repo() {
+    if restic cat config >/dev/null 2>&1; then
+        return 0
+    fi
+    log "initialising restic repository ${RESTIC_REPOSITORY}"
+    restic init
+}
+
+# --- snapshot staging -------------------------------------------------------
+
+# Snapshot the DB file into <stage>/data/zukka.db. Returns 1 when the source DB
+# does not exist yet (first deploy on an empty host) so callers can no-op.
+snapshot_db() {
+    local stage="$1"
+    if [[ ! -f "$DB_SRC" ]]; then
+        return 1
+    fi
+    mkdir -p "$stage/data"
+    # DB-consistent copy (safe while the scheduler is writing).
+    sqlite3 "$DB_SRC" ".backup '$stage/data/zukka.db'"
+}
+
+# Copy /etc/zukka/*.env and the current deploy state into the staging tree.
+collect_sidecars() {
+    local stage="$1"
+    local envfile
+    mkdir -p "$stage/env"
+    shopt -s nullglob
+    for envfile in "$ENV_DIR"/*.env; do
+        cp -p "$envfile" "$stage/env/"
+    done
+    shopt -u nullglob
+    if [[ -f "${APP_ROOT}/prod/.deployed" ]]; then
+        cp -p "${APP_ROOT}/prod/.deployed" "$stage/deploy.sha"
+    fi
+}
+
+# Best-effort copy of the recordings staging volume (pending uploads only).
+collect_staging() {
+    local stage="$1"
+    if [[ -d "$STAGING_SRC" ]]; then
+        mkdir -p "$stage/staging"
+        cp -a "$STAGING_SRC"/. "$stage/staging/" 2>/dev/null || true
+    fi
+}
+
+# Add the staging tree to restic with RELATIVE paths (run from inside it).
+restic_backup_stage() {
+    local stage="$1"
+    shift
+    (
+        cd "$stage"
+        restic backup --host zukka --tag "$TAG" "$@" .
+    )
+}
+
+# --- commands ---------------------------------------------------------------
+
+cmd_backup() {
+    require_config
+    ensure_repo
+
+    local stage="${STAGE_ROOT}/prod"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+
+    if snapshot_db "$stage"; then
+        log "DB snapshot: ${DB_SRC} -> data/zukka.db"
+    else
+        log "no DB at ${DB_SRC}; continuing without a DB snapshot"
+    fi
+    collect_sidecars "$stage"
+    collect_staging "$stage"
+
+    restic_backup_stage "$stage"
+    rm -rf "$stage"
+    log "backup done"
+}
+
+cmd_predeploy() {
+    local sha="${1:-}"
+    if [[ ! "$sha" =~ $SHA_RE ]]; then
+        log "predeploy: invalid sha '${sha}' (expected ${SHA_RE})"
+        exit 2
+    fi
+    require_config
+
+    local stage="${STAGE_ROOT}/predeploy"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+
+    if ! snapshot_db "$stage"; then
+        # Nothing to protect yet (first deploy on an empty host): not an error.
+        log "predeploy ${sha}: no DB at ${DB_SRC}; nothing to snapshot"
+        rm -rf "$stage"
+        return 0
+    fi
+
+    ensure_repo
+    restic_backup_stage "$stage" --tag "predeploy-${sha}"
+    rm -rf "$stage"
+    log "predeploy snapshot ${sha} done"
+}
+
+cmd_drill() {
+    require_config
+    local started=$SECONDS
+
+    rm -rf "$DRILL_DIR"
+    mkdir -p "$DRILL_DIR"
+
+    if ! restic snapshots --tag "$TAG" --json 2>/dev/null | grep -q '"short_id"'; then
+        log "drill: no snapshots with tag '${TAG}' in ${RESTIC_REPOSITORY}"
+        exit 1
+    fi
+
+    log "drill: restoring newest snapshot to ${DRILL_DIR}"
+    restic restore latest --tag "$TAG" --target "$DRILL_DIR"
+
+    local db="${DRILL_DIR}/data/zukka.db"
+    if [[ ! -f "$db" ]]; then
+        log "drill: restored snapshot has no data/zukka.db"
+        rm -rf "$DRILL_DIR"
+        exit 1
+    fi
+
+    local integrity
+    integrity="$(sqlite3 "$db" 'PRAGMA integrity_check;')"
+    if [[ "$integrity" != "ok" ]]; then
+        log "drill: integrity_check failed: ${integrity}"
+        rm -rf "$DRILL_DIR"
+        exit 1
+    fi
+
+    local tables
+    tables="$(sqlite3 "$db" "SELECT count(*) FROM sqlite_master WHERE type='table';")"
+    if [[ -z "$tables" || "$tables" -lt 1 ]]; then
+        log "drill: schema count is ${tables:-0} (expected >= 1)"
+        rm -rf "$DRILL_DIR"
+        exit 1
+    fi
+
+    local elapsed=$((SECONDS - started))
+    rm -rf "$DRILL_DIR"
+    if (( elapsed > RTO_SECONDS )); then
+        log "drill: RTO violated — restore took ${elapsed}s (> ${RTO_SECONDS}s)"
+        exit 1
+    fi
+    log "drill ok: integrity_check=ok tables=${tables} restore_time=${elapsed}s (RTO ${RTO_SECONDS}s)"
+}
+
+cmd_prune() {
+    require_config
+    log "prune: keep-daily ${RETAIN_DAILY}, keep-weekly ${RETAIN_WEEKLY}, keep-monthly ${RETAIN_MONTHLY}"
+    restic forget \
+        --keep-daily "$RETAIN_DAILY" \
+        --keep-weekly "$RETAIN_WEEKLY" \
+        --keep-monthly "$RETAIN_MONTHLY" \
+        --tag "$TAG" --prune
+    log "prune done"
+}
+
+cmd_restore() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        log "restore: missing target directory"
+        exit 2
+    fi
+    require_config
+    mkdir -p "$target"
+    log "restore: newest snapshot -> ${target}"
+    restic restore latest --tag "$TAG" --target "$target"
+    log "restore done: DB at ${target}/data/zukka.db"
+}
+
+cmd_snapshots() {
+    require_config
+    restic snapshots --tag "$TAG"
+}
+
+main() {
+    local cmd="${1:-}"
+    case "$cmd" in
+        backup) cmd_backup ;;
+        predeploy)
+            shift
+            cmd_predeploy "${1:-}"
+            ;;
+        drill) cmd_drill ;;
+        prune) cmd_prune ;;
+        restore)
+            shift
+            cmd_restore "${1:-}"
+            ;;
+        snapshots) cmd_snapshots ;;
+        -h | --help | "") usage ;;
+        *)
+            log "unknown command '${cmd}'"
+            usage
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,12 @@
+[Unit]
+Description=radio zukka — wöchentlicher Restore-Drill (integrity_check + RTO)
+Documentation=file:/opt/apps/radio-zukka/repo/docs/backup.md
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/zukka/backup.env
+ExecStart=/usr/local/bin/zukka-backup drill
+
+[Install]
+WantedBy=timers.target
