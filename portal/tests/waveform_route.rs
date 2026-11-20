@@ -18,9 +18,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use zukka_portal::api_client::{
-    CasterDto, CreatedSessionDto, FakeControlApi, FakeQueueApi, FakeTrackApi, IdentityApi,
-    IdentityError, JobError, NewUploadJob, NewWaveform, SessionValidationDto, UploadJob,
-    UploadJobApi, UploadJobPatch, Waveform, WaveformApi, WaveformApiError,
+    CasterDto, CreatedSessionDto, FakeAnnouncementApi, FakeControlApi, FakeQueueApi, FakeTrackApi,
+    IdentityApi, IdentityError, JobError, NewUploadJob, NewWaveform, SessionValidationDto,
+    UploadJob, UploadJobApi, UploadJobPatch, Waveform, WaveformApi, WaveformApiError,
 };
 use zukka_portal::app::AppState;
 use zukka_portal::auth::AuthContext;
@@ -193,6 +193,7 @@ fn state(waveforms: Arc<dyn WaveformApi>) -> AppState {
         schedule: Arc::new(backend.schedule()),
         shows: Arc::new(backend.shows()),
         broadcasts: Arc::new(backend.broadcasts()),
+        announcements: Arc::new(FakeAnnouncementApi::default()),
         limiter: Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
     }
 }

@@ -1,11 +1,12 @@
 //! Announcement handlers (Issue #35; thin wrappers over the store layer).
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{Json, response::IntoResponse};
 use sqlx::SqlitePool;
 
 use crate::api::ApiJson;
+use crate::api::rbac::require_permission;
 use crate::dto::{
     AnnouncementDto, AnnouncementEvent, AnnouncementListParams, AnnouncementStatus,
     CreateAnnouncementRequest, UpdateAnnouncementRequest,
@@ -14,7 +15,8 @@ use crate::error::ApiResult;
 use crate::store;
 use crate::time::{fmt_storage_time, parse_api_time};
 
-// TODO(auth): RBAC `announcement.write` lands with the auth issue (#10).
+// Issue #38: the write routes guard on `announcement.write` (§6.10.1); the
+// read routes stay open (the matrix knows only `announcement.write`).
 
 /// `GET /announcements?status=&from=&to=&event=`
 pub async fn list(
@@ -38,9 +40,11 @@ pub async fn list(
 /// `POST /announcements`
 pub async fn create(
     State(pool): State<SqlitePool>,
+    headers: HeaderMap,
     ApiJson(req): ApiJson<CreateAnnouncementRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let announcement = store::announcements::create(&pool, &req).await?;
+    let viewer = require_permission(&pool, &headers, "announcement.write").await?;
+    let announcement = store::announcements::create(&pool, &req, Some(&viewer.caster_id)).await?;
     Ok((StatusCode::CREATED, Json(announcement)))
 }
 
@@ -55,17 +59,21 @@ pub async fn get_one(
 /// `PATCH /announcements/{id}`
 pub async fn update(
     State(pool): State<SqlitePool>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     ApiJson(req): ApiJson<UpdateAnnouncementRequest>,
 ) -> ApiResult<Json<AnnouncementDto>> {
+    require_permission(&pool, &headers, "announcement.write").await?;
     Ok(Json(store::announcements::update(&pool, &id, &req).await?))
 }
 
 /// `DELETE /announcements/{id}`
 pub async fn delete(
     State(pool): State<SqlitePool>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    require_permission(&pool, &headers, "announcement.write").await?;
     store::announcements::delete(&pool, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -73,9 +81,13 @@ pub async fn delete(
 /// `POST /announcements/{id}/send` — re-arm the queue only (no delivery).
 pub async fn send(
     State(pool): State<SqlitePool>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<AnnouncementDto>> {
-    Ok(Json(store::announcements::send(&pool, &id).await?))
+    let viewer = require_permission(&pool, &headers, "announcement.write").await?;
+    Ok(Json(
+        store::announcements::send(&pool, &id, &viewer.caster_id).await?,
+    ))
 }
 
 /// Parses an optional `scheduled_at` window bound into storage form.

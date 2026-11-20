@@ -5,6 +5,7 @@
 //! API for verification, session write-through and password changes
 //! (§4.1/§4.3). There is no JSON API and no migration of its own.
 
+pub mod announcements;
 pub mod api_client;
 pub mod app;
 pub mod auth;

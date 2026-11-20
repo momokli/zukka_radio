@@ -11,9 +11,10 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 
 use crate::api_client::{
-    BroadcastApi, ControlApi, HttpBroadcastApi, HttpControlApi, HttpQueueApi, HttpScheduleApi,
-    HttpShowApi, HttpTrackApi, HttpUploadJobApi, HttpWaveformApi, IdentityApi, QueueApi,
-    ScheduleApi, ShowApi, TrackApi, UploadJobApi, WaveformApi,
+    AnnouncementApi, BroadcastApi, ControlApi, HttpAnnouncementApi, HttpBroadcastApi,
+    HttpControlApi, HttpQueueApi, HttpScheduleApi, HttpShowApi, HttpTrackApi, HttpUploadJobApi,
+    HttpWaveformApi, IdentityApi, QueueApi, ScheduleApi, ShowApi, TrackApi, UploadJobApi,
+    WaveformApi,
 };
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub schedule: Arc<dyn ScheduleApi>,
     pub shows: Arc<dyn ShowApi>,
     pub broadcasts: Arc<dyn BroadcastApi>,
+    pub announcements: Arc<dyn AnnouncementApi>,
     pub limiter: Arc<WindowLimiter>,
 }
 
@@ -63,6 +65,7 @@ impl AppState {
             schedule: default_schedule(&config),
             shows: default_shows(&config),
             broadcasts: default_broadcasts(&config),
+            announcements: default_announcements(&config),
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
@@ -85,6 +88,7 @@ impl AppState {
             schedule: default_schedule(&config),
             shows: default_shows(&config),
             broadcasts: default_broadcasts(&config),
+            announcements: default_announcements(&config),
             config: Arc::new(config),
             identity,
             limiter,
@@ -107,6 +111,7 @@ impl AppState {
         let schedule = default_schedule(&config);
         let shows = default_shows(&config);
         let broadcasts = default_broadcasts(&config);
+        let announcements = default_announcements(&config);
         Self {
             config: Arc::new(config),
             identity,
@@ -119,6 +124,7 @@ impl AppState {
             schedule,
             shows,
             broadcasts,
+            announcements,
             limiter,
         }
     }
@@ -144,6 +150,7 @@ impl AppState {
             schedule,
             shows,
             broadcasts,
+            announcements: default_announcements(&config),
             config: Arc::new(config),
             identity,
             limiter,
@@ -235,6 +242,16 @@ fn default_broadcasts(config: &Config) -> Arc<dyn BroadcastApi> {
             config.service_token.clone(),
         )
         .expect("build broadcast client"),
+    )
+}
+
+fn default_announcements(config: &Config) -> Arc<dyn AnnouncementApi> {
+    Arc::new(
+        HttpAnnouncementApi::new(
+            config.scheduler_base_url.clone(),
+            config.service_token.clone(),
+        )
+        .expect("build announcement client"),
     )
 }
 
@@ -349,6 +366,15 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/schedule/{id}/delete",
             axum::routing::post(crate::schedule::broadcast_delete),
+        )
+        // Issue #38: manual announcements (RBAC + audit via the scheduler).
+        .route(
+            "/announcements",
+            get(crate::announcements::announcements_get),
+        )
+        .route(
+            "/announcements/post",
+            axum::routing::post(crate::announcements::announcement_post),
         )
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))

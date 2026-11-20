@@ -71,7 +71,13 @@ async fn tape(pool: &SqlitePool, id: &str, caster_id: &str) {
 }
 
 async fn send(app: &Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    // Issue #38: writes guard on `announcement.write`; the portal always sets
+    // the viewer header. Reads ignore it, so attaching it unconditionally keeps
+    // every existing call site faithful to the real client.
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-caster-id", CASTER_A);
     let request = match body {
         Some(value) => {
             builder = builder.header("content-type", mime::APPLICATION_JSON.as_ref());

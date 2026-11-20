@@ -2,7 +2,10 @@
 
 use askama::Template;
 
-use crate::api_client::{ConnectedCaster, ControlState, Queue, QueueItem, Show, Track, UploadJob};
+use crate::api_client::{
+    Announcement, AnnouncementTemplate, ConnectedCaster, ControlState, Queue, QueueItem, Show,
+    Track, UploadJob,
+};
 
 /// Login page (`GET /login`).
 #[derive(Template)]
@@ -541,4 +544,44 @@ pub struct ShowDetailPage {
 #[template(path = "partials/show_form_error.html")]
 pub struct ShowFormErrorFragment {
     pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #38: manual announcements
+// ---------------------------------------------------------------------------
+
+/// A manual announcement plus its precomputed display label.
+pub struct AnnouncementRow {
+    pub announcement: Announcement,
+    pub status_label: String,
+}
+
+impl From<Announcement> for AnnouncementRow {
+    fn from(announcement: Announcement) -> Self {
+        let status_label = match announcement.status.as_str() {
+            "pending" => "ausstehend",
+            "sent" => "gesendet",
+            "failed" => "fehlgeschlagen",
+            "cancelled" => "abgebrochen",
+            other => other,
+        }
+        .to_string();
+        Self {
+            announcement,
+            status_label,
+        }
+    }
+}
+
+/// Manual announcements page (`GET /announcements`): post form (when allowed)
+/// + manual templates + the latest manual posts.
+#[derive(Template)]
+#[template(path = "announcements.html")]
+pub struct AnnouncementsPage {
+    pub csrf_token: String,
+    pub can_post: bool,
+    /// The session display name, pre-filled into the form.
+    pub caster_name: String,
+    pub templates: Vec<AnnouncementTemplate>,
+    pub recent: Vec<AnnouncementRow>,
 }
