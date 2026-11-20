@@ -425,9 +425,13 @@ def is_live(m) =
   live_select(live_order(), live_override()) == m
 end
 
-# TODO(#31): transitions=[live_transition], transition_length=0.5 (Handoff-Fade).
+# Handoff-Fade (#31): kurzer 0,5-s-Fade statt Hard-Cut.
+def live_transition(old, new) =
+  add([fade.out(duration=0.5, old), fade.in(duration=0.5, new)])
+end
 live_src = switch(
   track_sensitive = false,
+  transitions = [live_transition], transition_length = 0.5,
   list.map(fun ((m, s)) -> ((fun () -> is_live(m)), s), casters)
 )
 ```
@@ -440,8 +444,9 @@ Hinweise zur verifizierten API:
   das die älteste Verbindung — FCFS. Ein Override (`live.set`) gewinnt **nur,
   wenn sein Mount verbunden ist**; sonst fällt die Auswahl auf FCFS zurück,
   damit ein getrennter Override nicht die ganze Live-Ebene unavailable macht.
-- Ohne `transitions` ist der Wechsel ein harter Cut. Der 0,5-s-Fade kommt mit
-  #31; #30 bleibt bewusst ohne Audio-Politur, damit die Auswahl reviewbar ist.
+- Der Handoff nutzt `transitions=[live_transition]` mit
+  `transition_length=0.5`. Der 0,5-s-Fade ist mit #31 implementiert; der
+  `switch` selbst bleibt aus #30 unverändert.
 
 #### FCFS prüfen
 
@@ -466,7 +471,8 @@ beide, wird `live` unavailable und der Master-Fallback greift.
 
 `live.status` (und `live.set`/`live.clear`) gibt es erst mit **#32** — #30 ist
 über Icecast-Audio und Log zu prüfen, nicht über die Control-API. Der
-Handoff-Fade ist **#31**. Die Harbor-Auth bleibt der Platzhalter aus **#33**.
+Handoff-Fade ist mit **#31** implementiert (0,5 s out/in). Die Harbor-Auth
+bleibt der Platzhalter aus **#33**.
 
 #### Waiting Room
 

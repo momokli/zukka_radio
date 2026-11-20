@@ -61,7 +61,7 @@ Quelle: [`consolidated-architecture.md`](consolidated-architecture.md).
 
 - [ ] **Harbor-Pool**: 32 Slots, `input.harbor` pro Slot.
 - [ ] **Live-Auswahl**: FCFS über `on_connect`/`on_disconnect`.
-- [ ] **Handoff**: nahtlos, 0,5-s-Fade.
+- [x] **Handoff**: nahtlos, 0,5-s-Fade.
 - [ ] **Control**: `live.set`, `live.clear`, `live.status`.
 - [ ] **Harbor-Auth**: `POST /internal/harbor/auth` (Scheduler, < 200 ms).
 
