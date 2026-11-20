@@ -404,6 +404,10 @@ MUSIC_API_TIMEOUT_SECONDS=20
 TELEGRAM_BOT_TOKEN=<secret>
 TELEGRAM_CHANNEL_ID=<secret>
 TELEGRAM_OPS_CHANNEL_ID=<secret>
+# Hinweis: Der Scheduler liest fuer Announcements den eigenen Namensraum
+# `ZUKKA_TELEGRAM_BOT_TOKEN`, `ZUKKA_TELEGRAM_CHAT_ID` (sowie in DEV
+# `ZUKKA_TELEGRAM_CHAT_ID_TEST` und `ZUKKA_ANNOUNCEMENT_POLL_SECS`). Unset →
+# Versand deaktiviert. Die generischen Namen oben bleiben fuer Bridge/Ops.
 
 # ── Storage ────────────────────────────────────────────────────────────
 ZUKKA_HLS_SEGMENT_SECONDS=4
