@@ -242,6 +242,88 @@ pub async fn verify_login(
 }
 
 // ---------------------------------------------------------------------------
+// Harbor ingest auth (Issue #33)
+// ---------------------------------------------------------------------------
+
+/// Successful Harbor credential check.
+#[derive(Debug, Clone)]
+pub struct HarborAuth {
+    pub caster_id: String,
+    pub display_name: String,
+    pub mount: String,
+}
+
+/// Verifies Harbor ingest credentials (§4.2, Issue #33).
+///
+/// Resolves `mount` → caster via `casters.harbor_mount`, then checks the
+/// presented `username` against `casters.stream_username` (NOCASE) and
+/// `password` against `casters.stream_password_hash`. Fail-closed: an unknown
+/// mount/username, inactive caster, missing stream credentials or a wrong
+/// password all produce `401 unauthorized` — deliberately indistinguishable.
+///
+/// Exactly **one** Argon2 verification runs per attempt: matched credentials
+/// verify the real hash, everything else verifies the blind-verify dummy hash,
+/// so unknown and known-but-wrong attempts cost the same (§4.1, < 200 ms).
+/// No extra DB roundtrip happens after the single lookup.
+pub async fn authenticate_harbor(
+    pool: &SqlitePool,
+    mount: &str,
+    username: &str,
+    password: &str,
+) -> ApiResult<HarborAuth> {
+    #[derive(Debug, sqlx::FromRow)]
+    struct HarborRow {
+        id: String,
+        display_name: String,
+        stream_username: Option<String>,
+        stream_password_hash: Option<String>,
+        is_active: i64,
+    }
+
+    let row = sqlx::query_as::<_, HarborRow>(
+        "SELECT id, display_name, stream_username, stream_password_hash, is_active \
+         FROM casters WHERE harbor_mount = ?",
+    )
+    .bind(mount)
+    .fetch_optional(pool)
+    .await?;
+
+    // Decide the single hash to verify *before* running Argon2.
+    let candidate = match row {
+        Some(row)
+            if row.is_active != 0
+                && row
+                    .stream_username
+                    .as_deref()
+                    .is_some_and(|u| u.eq_ignore_ascii_case(username))
+                && row.stream_password_hash.is_some() =>
+        {
+            Some(row)
+        }
+        _ => None,
+    };
+
+    let hash = candidate
+        .as_ref()
+        .and_then(|row| row.stream_password_hash.as_deref())
+        .unwrap_or_else(|| dummy_hash());
+
+    // Exactly one Argon2 verification: verify the real hash only when the
+    // candidate matched; otherwise verify the blind-verify dummy once.
+    if !verify_password(hash, password) {
+        return Err(ApiError::Unauthorized);
+    }
+    match candidate {
+        Some(row) => Ok(HarborAuth {
+            caster_id: row.id,
+            display_name: row.display_name,
+            mount: mount.to_string(),
+        }),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 

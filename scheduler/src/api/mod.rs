@@ -138,6 +138,7 @@ pub fn router(pool: SqlitePool) -> Router {
     // portal service token (§4.1); RBAC stays a portal concern (§6.10.1).
     let internal = Router::new()
         .route("/auth/verify", post(auth::verify))
+        .route("/harbor/auth", post(auth::harbor_auth))
         .route("/sessions", post(auth::create_session))
         .route("/sessions/current", get(auth::current_session))
         .route(

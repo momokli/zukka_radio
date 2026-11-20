@@ -860,6 +860,27 @@ pub struct ChangePasswordRequest {
     pub keep_session_id: Option<String>,
 }
 
+/// Body of `POST /internal/harbor/auth` (Issue #33, §4.2).
+///
+/// Liquidsoap presents the mount it is serving, the caster's stream username
+/// and the stream password from the ingest connection.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HarborAuthRequest {
+    pub mount: String,
+    pub username: String,
+    pub password: String,
+}
+
+/// Response of `POST /internal/harbor/auth`. Only returned on success; every
+/// failure is the generic `401 unauthorized` envelope (fail-closed, no
+/// enumeration).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarborAuthResponse {
+    pub caster_id: String,
+    pub display_name: String,
+    pub mount: String,
+}
+
 /// Body of `POST /internal/casters/{id}/stream-password`. An absent `password`
 /// asks the scheduler to generate one.
 #[derive(Debug, Clone, Deserialize)]
