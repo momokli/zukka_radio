@@ -148,6 +148,22 @@ pub async fn live_is_active(pool: &SqlitePool) -> ApiResult<bool> {
     Ok(live > 0)
 }
 
+/// Number of running live sources (#42 Deploy-Gate, §2.9).
+///
+/// `broadcasts` with `kind='live' AND status='live'` **plus** one when the
+/// `live.override_caster_id` override is set. Unlike [`live_is_active`] this
+/// returns a count, not a bool; only `== 0` is semantically relevant to the
+/// gate, the value itself is exposed for observability.
+pub async fn live_source_count(pool: &SqlitePool) -> ApiResult<u64> {
+    let live: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM broadcasts WHERE kind = 'live' AND status = 'live'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let override_active = get_setting(pool, LIVE_OVERRIDE_KEY).await?.is_some();
+    Ok(live.max(0) as u64 + u64::from(override_active))
+}
+
 // ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------

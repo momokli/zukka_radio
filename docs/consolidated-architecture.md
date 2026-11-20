@@ -711,10 +711,13 @@ auf `rotation` — hörbar, aber nicht stumm. Gegenmaßnahmen: Migrationen laufe
 **vor** dem Start (nicht beim Start), `request.dynamic(retry_delay=2.0)`,
 Restart-Budget 3 s. Restrisiko bleibt und ist dokumentiert.
 
-**Deploy-Gate (PROD):** `GET /internal/ops/audience` →
+**Deploy-Gate (PROD):** `GET /api/v1/internal/ops/audience` →
 `listeners == 0 && live_sources == 0 && next_broadcast_start > now + 15 min`
 → sofort. Sonst Fenster 03:00–04:00 Berlin. Override nur über
-`workflow_dispatch` + Required Reviewer.
+`workflow_dispatch` + Required Reviewer. Umgesetzt als
+`zukka-deploy prod --check-window [--force]` (#42): Exit 0 = deployen, Exit 3 =
+Gate zu (fail-closed bei Scheduler-/Parse-Fehler); `next_broadcast_start ==
+null` bedeutet „kein künftiger Broadcast“ und erfüllt die dritte Klausel.
 
 **Reihenfolge:** `predeploy-backup` → `pull` → `scheduler` → `portal` → `tapes`
 → `caddy reload` → `liquidsoap` (Gate) → `icecast` (Gate) → Smoke → `.deployed`.

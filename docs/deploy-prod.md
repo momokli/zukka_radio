@@ -13,12 +13,12 @@ Grundlage: `docs/consolidated-architecture.md` §5.7–5.9,
 | -------------------------------- | ----- | -------------------------------------------- |
 | DEV-Deploy (`deploy-dev.yml`)    | #40   | gemergt                                      |
 | PROD-Deploy (dieses Runbook)     | #41   | Tag/Release, Reviewer-Gate, Smoke, Rollback  |
-| Audience-/Fenster-Gate           | #42   | **nicht** enthalten                          |
+| Audience-/Fenster-Gate           | #42   | enthalten (dieser Stand)                     |
 | Pre-Deploy-Backup                | #43   | **nicht** enthalten                          |
 
-`zukka-deploy prod --check-window` (Scheduler `GET /internal/ops/audience`,
-Fenster 03:00–04:00 Berlin) existiert noch nicht; der Workflow hat an der
-Stelle einen Kommentar, #42 ergänzt den Aufruf vor dem Deploy. Ein
+`zukka-deploy prod --check-window` (Scheduler `GET /api/v1/internal/ops/audience`,
+Fenster 03:00–04:00 Berlin) ist mit #42 umgesetzt; der Workflow ruft es als
+Gateschritt **vor** dem Deploy auf (siehe „Audience-/Fenster-Gate“). Ein
 Pre-Deploy-Snapshot (`zukka-backup predeploy <sha>`) kommt mit #43 in den
 Wrapper vor den `pull`.
 
@@ -148,6 +148,9 @@ Der Tag-Input wird per `git rev-parse <tag>^{commit}` aufgelöst und muss
 Ancestor von `origin/v2` sein. Der Workflow ruft auf dem Host auf:
 
 ```bash
+# Gateschritt (vor dem Deploy; entfällt bei --rollback):
+sudo /usr/local/bin/zukka-deploy prod --check-window [--force]
+# eigentlicher Deploy:
 sudo /usr/local/bin/zukka-deploy prod --tag <sha> [--force] --ref "$GITHUB_REF"
 ```
 
@@ -206,6 +209,47 @@ Smoke-Prüfungen (`scripts/smoke.sh prod`, Defaults, Overrides über
 | Scheduler `/healthz`   | `http://127.0.0.1:12010/healthz`                          |
 | Scheduler `/readyz`    | `http://127.0.0.1:12010/readyz`                           |
 | HLS `index.m3u8`       | non-fatal WARN (Liquidsoap, #84)                          |
+
+## Audience-/Fenster-Gate (#42)
+
+Vor jedem PROD-Deploy ruft der Workflow `zukka-deploy prod --check-window`
+(GET `<scheduler>/api/v1/internal/ops/audience`, service-token-geschützt). Der Wrapper
+entscheidet:
+
+1. `listeners == 0 && live_sources == 0` und (`next_broadcast_start == null`
+   **oder** Start > jetzt + 15 min) → **Exit 0**, Deploy läuft.
+2. sonst nur im Fenster **03:00–04:00 Europe/Berlin** (aus `tzdata`, DST-korrekt)
+   → sonst **Exit 3**.
+
+Exit-Codes: `0` = Deploy erlaubt, `3` = Gate zu. **Fail-closed:** Scheduler
+nicht erreichbar, HTTP ≠ 200, fehlender Token oder Parse-Fehler → **Exit 3**
+(es wird nicht deployt). Der Workflow macht aus Exit 3 einen `::error::` mit
+Fensterhinweis; jeder andere Code wird unverändert propagiert. Jede
+Entscheidung wird mit Werten + Fensterstatus auf stderr begründet.
+
+`--force` (workflow_dispatch-Input) überspringt das Gate **vor** jeder
+HTTP-Abfrage und restartet zusätzlich liquidsoap/icecast. `--rollback` läuft
+**ohne** Gate.
+
+`next_broadcast_start == null` bedeutet „kein künftiger Broadcast“ und erfüllt
+die dritte Regel-1-Klausel; der Wrapper vergleicht dann niemals einen
+Leerstring (das würde unter `set -e` abbrechen).
+
+**Erst-Deploy auf leerem Host:** läuft der Scheduler noch nicht, ist das Gate
+fail-closed (Exit 3) — der erste PROD-Deploy braucht `force=true`.
+
+**Restrisiko (bewusst fail-open):** Der `listeners`-Wert ist best-effort. Ist
+Icecast nicht erreichbar oder liefert kein brauchbares JSON, meldet der
+Endpunkt `0` Hörer plus einen Warn-Log — er darf **nie** 5xx werden, sonst
+könnte ein toter Icecast das Gate „öffnen“. Ein Icecast-Ausfall während
+laufender Hörer erlaubt damit einen Deploy. Scheduler-Env dafür:
+`ICECAST_STATUS_URL` (Default `http://icecast:8000/status-json.xsl`; im
+Compose aus `ZUKKA_ICECAST_STATUS_URL` gemappt).
+
+Testbarkeit: `ZUKKA_SCHEDULER_URL` (Default
+`http://127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}`) und `ZUKKA_PROD_ENV_FILE`
+(Default `/etc/zukka/prod.env`) sind überschreibbar, sodass `--check-window`
+gegen einen Stub testbar ist, ohne PROD anzufassen.
 
 ## Rollback
 

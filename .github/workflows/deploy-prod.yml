@@ -5,10 +5,9 @@ name: deploy-prod
 # run unattended on a plain branch push.
 #
 # NOT in scope here:
-#   - audience/deploy-window gate (#42): the workflow will call
-#     `zukka-deploy prod --check-window` (GET /internal/ops/audience) before the
-#     deploy step once #42 lands. Today the wrapper deploys without that query.
 #   - pre-deploy backup (#43): happens inside the wrapper.
+# The audience/deploy-window gate (#42) runs as an explicit step before the
+# deploy: `zukka-deploy prod --check-window` (GET /internal/ops/audience).
 on:
   push:
     tags: ["v*"]
@@ -20,7 +19,7 @@ on:
         required: false
         default: ""
       force:
-        description: "Restart liquidsoap/icecast as well (audible, max 1x/day)"
+        description: "Override the audience/window gate and restart liquidsoap/icecast (audible, max 1x/day)"
         type: boolean
         required: false
         default: false
@@ -137,7 +136,37 @@ jobs:
           fi
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      # #42 will insert the audience/window gate (`--check-window`) here.
+      # Audience/deploy-window gate (#42): before any PROD change, ask the
+      # scheduler whether it is quiet. Exit 3 = gate closed (listeners live or
+      # outside 03:00–04:00 Europe/Berlin); everything else propagates as-is.
+      - name: Audience-Gate (prod)
+        if: ${{ !inputs.rollback }}
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          args=(prod --check-window)
+          if [[ "$FORCE" == "true" ]]; then
+            args+=(--force)
+          fi
+          printf -v quoted '%q ' "${args[@]}"
+          # Capture the exit code without `-e` aborting on the non-zero gate.
+          set +e
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=yes \
+            zukka-deploy@cast.zukkafabrik.de \
+            "sudo /usr/local/bin/zukka-deploy ${quoted}"
+          rc=$?
+          set -e
+          if [[ "$rc" -eq 3 ]]; then
+            echo "::error::Audience-/Fenster-Gate zu: Hörer/live_sources aktiv oder außerhalb 03:00–04:00 Europe/Berlin. Override: workflow_dispatch mit force=true."
+            exit 3
+          fi
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::Audience-Gate-Aufruf fehlgeschlagen (ssh/zukka-deploy exit ${rc})."
+            exit "$rc"
+          fi
+          echo "Audience-Gate offen — Deploy darf starten."
+
       - name: Deploy (prod)
         if: ${{ !inputs.rollback }}
         env:

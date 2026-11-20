@@ -1581,6 +1581,22 @@ pub struct EventLogParams {
     pub caster_id: Option<String>,
 }
 
+/// `GET /internal/ops/audience` — Deploy-Gate snapshot (#42, §4.2/§2.9).
+///
+/// `next_broadcast_start == null` means **no future scheduled broadcast**
+/// exists; the gate's third clause (`next > now + 15 min`) is then considered
+/// satisfied. The wrapper must treat `null` as "no upcoming broadcast" and
+/// never compare an empty string (it would abort under `set -e`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudienceDto {
+    /// Total listeners across all Icecast sources (0 on poll failure).
+    pub listeners: u64,
+    /// Running live sources: `kind='live' AND status='live'` + live override.
+    pub live_sources: u64,
+    /// Earliest future `scheduled` broadcast start, RFC3339 Berlin offset.
+    pub next_broadcast_start: Option<String>,
+}
+
 /// Serde helper: distinguishes "absent" (`None`) from JSON `null` (`Some(None)`).
 fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where

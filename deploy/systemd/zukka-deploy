@@ -4,6 +4,7 @@
 #   zukka-deploy dev --tag <sha>                        deploy the DEV stack
 #   zukka-deploy prod --tag <sha> [--force] [--ref <r>] deploy the PROD stack
 #   zukka-deploy prod --rollback                        redeploy PROD from .deployed.prev
+#   zukka-deploy prod --check-window [--force]          audience/window gate only
 #
 # Host layout (docs/infrastructure.md §3.2): the git checkout lives in
 #   ${APP_ROOT}/repo (compose/, deploy/caddy/, scripts/); only the deploy state
@@ -11,7 +12,10 @@
 #   compose env file live in /etc/zukka/prod.env (the wrapper exports
 #   ZUKKA_ENV_FILE so the compose `env_file` resolves there).
 #
-# PROD deploy window / audience gate is #42 and still out of scope.
+# PROD deploy window / audience gate (#42): `zukka-deploy prod --check-window`
+# queries the scheduler (`GET /api/v1/internal/ops/audience`) and decides deploy-now /
+# wait-for-window / abort. Fail-closed: an unreachable scheduler, a non-200 or
+# a parse error yield exit 3 (gate closed). `--force` short-circuits the gate.
 # Pre-deploy backup is #43 and still out of scope (see the TODO below).
 set -euo pipefail
 
@@ -29,13 +33,9 @@ usage:
   zukka-deploy dev --tag <sha>                        deploy the DEV stack
   zukka-deploy prod --tag <sha> [--force] [--ref <r>] deploy the PROD stack
   zukka-deploy prod --rollback                        redeploy the previous PROD tag
-  zukka-deploy prod --check-window                    not implemented (#42)
+  zukka-deploy prod --check-window [--force]          audience/window gate only
+                                                      (exit 0 = may deploy, exit 3 = gate closed)
 EOF
-}
-
-out_of_scope() {
-    echo "zukka-deploy: $1 is not implemented yet; see $2" >&2
-    exit 1
 }
 
 validate_tag() {
@@ -327,10 +327,115 @@ deploy_prod_rollback() {
     deploy_prod "$sha" 0 "${ref:-refs/heads/v2}" 1
 }
 
+# --- Audience/window gate (#42) -------------------------------------------
+
+# Reads the service token from the PROD env file with a targeted `sed`; the
+# file is never `source`d (it may hold unrelated secrets / side effects).
+read_service_token() {
+    sed -n 's/^ZUKKA_SCHEDULER_SERVICE_TOKEN=//p' "$PROD_ENV_FILE" | head -n 1
+}
+
+# Extracts a JSON number field from the compact (single-line) response body.
+json_num() {
+    local file="$1" key="$2"
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$file" | head -n 1
+}
+
+# Extracts a JSON string field value; empty when the field is `null`/absent.
+json_str() {
+    local file="$1" key="$2"
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file" | head -n 1
+}
+
+# `prod --check-window [--force]`: queries the scheduler and decides whether a
+# deploy may proceed. Exit 0 = deploy now, exit 3 = gate closed (fail-closed).
+# Every decision prints its reasoning to stderr.
+check_window() {
+    local force="$1"
+
+    # `--force` short-circuits before any HTTP call, so the operator override
+    # also works when the scheduler is down (first PROD deploy).
+    if [[ "$force" -eq 1 ]]; then
+        echo "zukka-deploy: --check-window: --force set; skipping audience/window gate" >&2
+        return 0
+    fi
+
+    local base="${ZUKKA_SCHEDULER_URL:-http://127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}}"
+    local url="${base%/}/api/v1/internal/ops/audience"
+
+    if [[ ! -f "$PROD_ENV_FILE" ]]; then
+        echo "zukka-deploy: --check-window: missing ${PROD_ENV_FILE}; gate closed (exit 3)" >&2
+        return 3
+    fi
+    local token
+    token="$(read_service_token)"
+    if [[ -z "$token" ]]; then
+        echo "zukka-deploy: --check-window: no ZUKKA_SCHEDULER_SERVICE_TOKEN in ${PROD_ENV_FILE}; gate closed (exit 3)" >&2
+        return 3
+    fi
+
+    local body http_code rc=0
+    body="$(mktemp)"
+    # shellcheck disable=SC2064  # expand body now so the trap fires on it
+    trap "rm -f '$body'" RETURN
+    http_code="$(curl -sS --max-time 5 -o "$body" -w '%{http_code}' \
+        -H "Authorization: Bearer ${token}" "$url" 2>/dev/null)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        echo "zukka-deploy: --check-window: scheduler ${url} unreachable (curl rc=${rc}); gate closed (exit 3)" >&2
+        return 3
+    fi
+    if [[ "$http_code" != "200" ]]; then
+        echo "zukka-deploy: --check-window: scheduler ${url} returned HTTP ${http_code}; gate closed (exit 3)" >&2
+        return 3
+    fi
+
+    local listeners live_sources next
+    listeners="$(json_num "$body" listeners)"
+    live_sources="$(json_num "$body" live_sources)"
+    next="$(json_str "$body" next_broadcast_start)"
+    if [[ -z "$listeners" || -z "$live_sources" ]]; then
+        echo "zukka-deploy: --check-window: malformed audience response; gate closed (exit 3)" >&2
+        return 3
+    fi
+
+    # Rule 1: quiet right now AND (no upcoming broadcast OR it starts in > 15 min).
+    if [[ "$listeners" -eq 0 && "$live_sources" -eq 0 ]]; then
+        if [[ -z "$next" ]]; then
+            echo "zukka-deploy: --check-window: no listeners, no live sources, no upcoming broadcast; deploy now (exit 0)" >&2
+            return 0
+        fi
+        local next_epoch threshold
+        if ! next_epoch="$(date -d "$next" +%s 2>/dev/null)"; then
+            echo "zukka-deploy: --check-window: unparseable next_broadcast_start '${next}'; gate closed (exit 3)" >&2
+            return 3
+        fi
+        threshold=$(( $(date +%s) + 900 ))
+        if [[ "$next_epoch" -gt "$threshold" ]]; then
+            echo "zukka-deploy: --check-window: no listeners, no live sources, next broadcast '${next}' > now+15min; deploy now (exit 0)" >&2
+            return 0
+        fi
+        echo "zukka-deploy: --check-window: next broadcast '${next}' within 15 min; waiting for window" >&2
+    else
+        echo "zukka-deploy: --check-window: listeners=${listeners} live_sources=${live_sources}; waiting for window" >&2
+    fi
+
+    # Rule 2: otherwise only inside the 03:00–04:00 Europe/Berlin window.
+    # `10#…` forces base-10 so a leading zero is not read as octal.
+    local hm
+    hm=$(( 10#"$(TZ=Europe/Berlin date +%H%M)" ))
+    if [[ "$hm" -ge 300 && "$hm" -lt 400 ]]; then
+        echo "zukka-deploy: --check-window: within 03:00–04:00 Europe/Berlin; deploy now (exit 0)" >&2
+        return 0
+    fi
+    echo "zukka-deploy: --check-window: outside 03:00–04:00 Europe/Berlin; gate closed (exit 3)" >&2
+    return 3
+}
+
 deploy_prod_cmd() {
     local tag=""
     local force=0
     local rollback=0
+    local window_check=0
     local ref="refs/heads/v2"
 
     while [[ $# -gt 0 ]]; do
@@ -359,6 +464,10 @@ deploy_prod_cmd() {
                 rollback=1
                 shift
                 ;;
+            --check-window)
+                window_check=1
+                shift
+                ;;
             *)
                 echo "zukka-deploy: unknown argument '$1'" >&2
                 usage
@@ -372,6 +481,16 @@ deploy_prod_cmd() {
         exit 2
     fi
     validate_ref "$ref"
+
+    # Gate-only mode: no --tag/--rollback, decide and exit with the gate code.
+    if [[ "$window_check" -eq 1 ]]; then
+        if [[ -n "$tag" || "$rollback" -eq 1 ]]; then
+            echo "zukka-deploy: --check-window does not take --tag/--rollback" >&2
+            exit 2
+        fi
+        check_window "$force"
+        return
+    fi
 
     # Heal a state left mid-rotation by a crash before we read/deploy it.
     recover_state "${APP_ROOT}/prod"
@@ -425,7 +544,6 @@ main() {
             shift
             deploy_prod_cmd "$@"
             ;;
-        --check-window) out_of_scope "--check-window" "#42" ;;
         -h | --help | "") usage ;;
         *)
             echo "zukka-deploy: unknown command '$cmd'" >&2

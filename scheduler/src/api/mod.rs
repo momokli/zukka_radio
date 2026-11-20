@@ -9,6 +9,7 @@ pub mod auth;
 pub mod broadcasts;
 pub mod control;
 pub mod event_log;
+pub mod ops;
 pub mod playback;
 pub mod rbac;
 pub mod schedule;
@@ -207,6 +208,7 @@ pub fn router(pool: SqlitePool) -> Router {
             "/casters/{id}/stream-password",
             post(auth::change_stream_password),
         )
+        .route("/ops/audience", get(ops::audience))
         .route(
             "/upload-jobs",
             get(upload_jobs::list).post(upload_jobs::create),
