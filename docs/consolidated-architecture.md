@@ -550,8 +550,10 @@ Fragmente sind dieselben Routen mit `HX-Request`-Header. Kein separater
 
 ### 4.4 Scheduler → Liquidsoap (Control)
 
-`http://liquidsoap:8010/control/<command>`, nur im `back`-Netz, nicht
-publiziert.
+`POST http://liquidsoap:8010/control` mit der Command-Zeile im Body
+(`live.set /live/slot-03`), nur im `back`-Netz, nicht publiziert. Die
+Query-Pfad-Form (`/control/live.set?...`) ist im gepinnten Liquidsoap 2.4.5
+nicht verfügbar; verifiziert in Issue #32.
 
 | Command                                 | Wirkung                                         |
 | --------------------------------------- | ----------------------------------------------- |

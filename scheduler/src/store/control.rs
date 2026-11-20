@@ -15,11 +15,13 @@
 //! Clear deletes the row (`settings.value` is `NOT NULL`, an empty string would
 //! be ambiguous); set/switch/pause upsert.
 //!
-//! ## Liquidsoap push is out of scope (§7)
+//! ## Liquidsoap push (issue #32)
 //!
-//! The handlers validate, persist state and log; the actual
-//! `POST http://liquidsoap:8010/control/*` push is M4/#32 and appears only as a
-//! `TODO(#32)` seam below.
+//! `live` set/clear persist state and then push `live.set <mount>` / `live.clear`
+//! to the Liquidsoap command server (`crate::liquidsoap`). The push is
+//! best-effort: the DB decision is authoritative and `reassert_live` replays it
+//! at boot. `switch`/`skip`/`pause` have no matching §4.4 command and are
+//! enforced downstream.
 
 use std::collections::BTreeMap;
 
@@ -165,6 +167,45 @@ async fn ensure_caster(pool: &SqlitePool, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Harbor mount of a caster (`casters.harbor_mount`, §2.5).
+async fn harbor_mount(pool: &SqlitePool, id: &str) -> ApiResult<Option<String>> {
+    let mount: Option<String> = sqlx::query_scalar("SELECT harbor_mount FROM casters WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(mount.filter(|value| !value.trim().is_empty()))
+}
+
+/// Pushes one command to Liquidsoap; failures are logged, never fatal.
+///
+/// State is persisted before this runs, so an unreachable Liquidsoap cannot
+/// lose the operator decision — [`reassert_live`] replays it at boot.
+async fn push_liquidsoap(command: &str) {
+    match crate::liquidsoap::push(command).await {
+        Ok(Some(body)) => tracing::debug!(command, body = body.trim(), "liquidsoap control ok"),
+        Ok(None) => tracing::debug!(command, "liquidsoap control push disabled (no URL)"),
+        Err(err) => tracing::warn!(command, "liquidsoap control push failed: {err}"),
+    }
+}
+
+/// Re-asserts a persisted live override after a scheduler restart (§2.5/C43).
+///
+/// A missing endpoint or a caster that no longer has a mount is a warning, not
+/// a boot failure: FCFS remains a valid fallback.
+pub async fn reassert_live(pool: &SqlitePool) -> ApiResult<()> {
+    let Some(caster_id) = get_setting(pool, LIVE_OVERRIDE_KEY).await? else {
+        return Ok(());
+    };
+    match harbor_mount(pool, &caster_id).await? {
+        Some(mount) => push_liquidsoap(&crate::liquidsoap::live_set(&mount)).await,
+        None => tracing::warn!(
+            caster_id,
+            "live override persisted but caster has no harbor mount"
+        ),
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
@@ -183,9 +224,9 @@ pub async fn live(pool: &SqlitePool, req: &ControlLiveRequest) -> ApiResult<()> 
                 json!({ "reason": reason }),
             )
             .await?;
-            // TODO(#32): push `live.clear` to http://liquidsoap:8010/control/live.clear (M4).
+            push_liquidsoap(crate::liquidsoap::LIVE_CLEAR).await;
         }
-        // a caster id ⇒ set the override via upsert.
+        // a caster id ⇒ set the override via upsert and force its mount now.
         Some(raw) => {
             validate_caster_id(raw)?;
             ensure_caster(pool, raw).await?;
@@ -197,7 +238,14 @@ pub async fn live(pool: &SqlitePool, req: &ControlLiveRequest) -> ApiResult<()> 
                 json!({ "reason": reason, "caster_id": raw }),
             )
             .await?;
-            // TODO(#32): push `live.set <mount>` to http://liquidsoap:8010/control/live.set (M4).
+            // The DB decision stands even when the push fails; `reassert_live`
+            // replays it at the next scheduler start (§2.5/C43).
+            match harbor_mount(pool, raw).await? {
+                Some(mount) => push_liquidsoap(&crate::liquidsoap::live_set(&mount)).await,
+                None => {
+                    tracing::warn!(caster_id = raw, "live override: caster has no harbor mount")
+                }
+            }
         }
     }
     Ok(())
@@ -218,7 +266,7 @@ pub async fn switch(pool: &SqlitePool, req: &ControlSwitchRequest) -> ApiResult<
         json!({ "reason": reason }),
     )
     .await?;
-    // TODO(#32): push the layer force to http://liquidsoap:8010/control/... (M4).
+    // Layer forcing is a separate follow-up: §4.4 has no layer.force command yet.
     Ok(())
 }
 
@@ -255,7 +303,7 @@ pub async fn skip(pool: &SqlitePool, req: &ControlSkipRequest) -> ApiResult<()> 
         }),
     )
     .await?;
-    // TODO(#32): push the skip command to http://liquidsoap:8010/control/skip (M4).
+    // Skip is applied through the playback API; §4.4 has no control.skip command.
     Ok(())
 }
 
@@ -458,6 +506,6 @@ pub async fn pause(pool: &SqlitePool, req: &ControlPauseRequest) -> ApiResult<()
         }),
     )
     .await?;
-    // TODO(#32): push `pause`/`resume` to http://liquidsoap:8010/control/... (M4).
+    // Pause/resume is enforced downstream; §4.4 has no control.pause command.
     Ok(())
 }

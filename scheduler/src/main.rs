@@ -13,6 +13,12 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to initialize database at {db_path}"))?;
     tracing::info!("database ready at {db_path}");
 
+    // C43: after a restart, replay the persisted live override so Liquidsoap
+    // and the control panel do not drift back to FCFS silently.
+    if let Err(err) = zukka_scheduler::store::control::reassert_live(&pool).await {
+        tracing::warn!("failed to re-assert live override: {err}");
+    }
+
     // Boot guarantee: the rotation file exists as soon as the process starts,
     // so Liquidsoap's `watch` reload always sees a valid playlist (§3c).
     if let Err(err) = zukka_scheduler::store::rotation::sync(&pool).await {
