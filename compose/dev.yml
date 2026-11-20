@@ -1,5 +1,7 @@
 # radio zukka v2 — DEV stack
 # Usage: docker compose -f compose/dev.yml --env-file env/dev.env up -d
+# Images are built/pushed by CI (scripts/build-images.sh) and pinned via
+# ZUKKA_TAG (Git SHA); there is no local build path.
 
 name: zukka-dev
 
@@ -15,12 +17,17 @@ x-common: &common
 services:
   icecast:
     <<: *common
-    image: moul/icecast:latest
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-icecast:${ZUKKA_TAG}
     ports:
       - "127.0.0.1:${ZUKKA_PORT_ICECAST:-12100}:8000"
     volumes:
       - icecast_logs:/var/log/icecast
     networks: [front, back]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/status-json.xsl"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   liquidsoap:
     <<: *common
@@ -37,33 +44,56 @@ services:
 
   scheduler:
     <<: *common
-    build: ../scheduler
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-scheduler:${ZUKKA_TAG}
+    ports:
+      - "127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12110}:8080"
     volumes:
       - zukka_data:/data
       - recordings_staging:/recordings
       - rotation:/rotation
       - hls:/hls:ro
     networks: [back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/scheduler", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   portal:
     <<: *common
-    build: ../portal
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-portal:${ZUKKA_TAG}
     volumes:
       - zukka_data:/data:ro
     networks: [front, back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/portal", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   tapes:
     <<: *common
-    build: ../tapes
+    image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-tapes:${ZUKKA_TAG}
     volumes:
       - zukka_data:/data:ro
     networks: [front, back, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tapes", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   caddy:
     <<: *common
     image: caddy:2.9
+    command:
+      ["caddy", "run", "--config", "/etc/caddy/Caddyfile.dev", "--adapter", "caddyfile"]
     ports:
       - "127.0.0.1:${ZUKKA_PORT_CADDY:-12180}:12080"
+      - "127.0.0.1:${ZUKKA_PORT_CADDY_TLS:-12181}:2019"
     volumes:
       - ../deploy/caddy:/etc/caddy:ro
       - caddy_data:/data

@@ -8,6 +8,18 @@ async fn main() -> anyhow::Result<()> {
 
     let db_path = std::env::var("ZUKKA_DB")
         .unwrap_or_else(|_| zukka_scheduler::db::DEFAULT_DB_PATH.to_string());
+
+    // Distroless container healthcheck (§3.6): a shell-free probe. It opens the
+    // database (running migrations, which proves the writer path works) and
+    // verifies integrity. Exit 0 = ready, != 0 = fail.
+    if std::env::args().any(|arg| arg == "--healthcheck") {
+        if let Err(err) = healthcheck(&db_path).await {
+            eprintln!("healthcheck failed: {err:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let pool = zukka_scheduler::db::connect(&db_path)
         .await
         .with_context(|| format!("failed to initialize database at {db_path}"))?;
@@ -57,5 +69,19 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("zukka-scheduler listening on {addr}");
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// `--healthcheck` implementation: DB reachable, writable and intact.
+async fn healthcheck(db_path: &str) -> anyhow::Result<()> {
+    let pool = zukka_scheduler::db::connect(db_path)
+        .await
+        .with_context(|| format!("failed to initialize database at {db_path}"))?;
+    let result: String = sqlx::query_scalar("PRAGMA quick_check")
+        .fetch_one(&pool)
+        .await
+        .context("PRAGMA quick_check failed")?;
+    anyhow::ensure!(result == "ok", "database integrity check failed: {result}");
+    pool.close().await;
     Ok(())
 }

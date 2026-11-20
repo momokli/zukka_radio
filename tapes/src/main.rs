@@ -19,6 +19,10 @@ use zukka_tapes::db;
     about = "Zukka Radio public Tapes service"
 )]
 struct Cli {
+    /// Distroless healthcheck: verify the shared database is readable, exit.
+    #[arg(long)]
+    healthcheck: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -40,10 +44,36 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::from_env();
 
+    if cli.healthcheck {
+        if let Err(err) = healthcheck(&config).await {
+            eprintln!("healthcheck failed: {err:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
         Command::Work => work(config).await,
     }
+}
+
+/// `--healthcheck` implementation: mirrors `GET /api/v1/healthz`.
+async fn healthcheck(config: &Config) -> anyhow::Result<()> {
+    let pool = db::connect_read_only(&config.database_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open database read-only at {}",
+                config.database_path.display()
+            )
+        })?;
+    sqlx::query("SELECT 1 FROM tapes LIMIT 1")
+        .fetch_optional(&pool)
+        .await
+        .context("database check failed")?;
+    pool.close().await;
+    Ok(())
 }
 
 async fn serve(config: Config) -> anyhow::Result<()> {
