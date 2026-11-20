@@ -7,7 +7,8 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::Sqlite;
 
 use crate::dto::{
-    BroadcastDto, BroadcastKind, BroadcastStatus, CreateBroadcastRequest, UpdateBroadcastRequest,
+    AnnouncementEvent, BroadcastDto, BroadcastKind, BroadcastStatus, CreateBroadcastRequest,
+    UpdateBroadcastRequest,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::store::now_ts;
@@ -59,6 +60,18 @@ impl BroadcastRow {
             warnings: Vec::new(),
         })
     }
+}
+
+/// Minimal row used by `transition` (status + fields needed for the
+/// `live_on`/`live_off` announcement hook).
+#[derive(Debug, sqlx::FromRow)]
+struct CurrentRow {
+    id: String,
+    status: BroadcastStatus,
+    starts_at: String,
+    kind: BroadcastKind,
+    show_id: Option<String>,
+    caster_id: String,
 }
 
 const SELECT: &str = "SELECT id, show_id, caster_id, kind, title, description, starts_at, ends_at, \
@@ -407,17 +420,12 @@ impl Action {
 async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<BroadcastDto> {
     let mut tx = pool.begin().await?;
 
-    #[derive(sqlx::FromRow)]
-    struct Current {
-        status: BroadcastStatus,
-        starts_at: String,
-    }
-
-    let current: Option<Current> =
-        sqlx::query_as("SELECT status, starts_at FROM broadcasts WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let current: Option<CurrentRow> = sqlx::query_as(
+        "SELECT id, status, starts_at, kind, show_id, caster_id FROM broadcasts WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some(current) = current else {
         return Err(ApiError::not_found("broadcast", id));
     };
@@ -467,6 +475,10 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
     )
     .await?;
 
+    // Announcements are a side effect, never the core: an emit failure must
+    // not roll back the broadcast transition (only warn).
+    emit_live_announcement(&mut tx, action, &current, new_end.as_deref()).await;
+
     tx.commit().await?;
 
     get_with_warnings(pool, id).await
@@ -502,6 +514,44 @@ pub(crate) async fn insert_event_log(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Emits `live_on`/`live_off` for a `kind='live'` transition, inside the
+/// caller's transaction. Errors are logged, never propagated: the
+/// announcement is a side effect of the broadcast, not part of its contract.
+async fn emit_live_announcement(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    action: Action,
+    current: &CurrentRow,
+    end_storage: Option<&str>,
+) {
+    if !matches!(current.kind, BroadcastKind::Live) {
+        return;
+    }
+    let event = match action {
+        Action::Start => AnnouncementEvent::LiveOn,
+        Action::End => AnnouncementEvent::LiveOff,
+        Action::Cancel => return,
+    };
+    let start_time = parse_storage_time(&current.starts_at)
+        .ok()
+        .map(fmt_api_time);
+    let end_time = end_storage
+        .and_then(|raw| parse_storage_time(raw).ok())
+        .map(fmt_api_time);
+    if let Err(err) = crate::store::announcements::emit_live_tx(
+        tx,
+        event,
+        &current.id,
+        current.show_id.as_deref(),
+        &current.caster_id,
+        start_time,
+        end_time,
+    )
+    .await
+    {
+        tracing::warn!(broadcast_id = %current.id, "announcement emit failed: {err:#}");
+    }
 }
 
 fn non_empty(field: &'static str, raw: &str) -> ApiResult<String> {
