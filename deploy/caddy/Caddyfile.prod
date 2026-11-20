@@ -15,3 +15,9 @@ http://:12080 {
 	}
 	import radio_zukka_routes
 }
+
+# #44 Metrics bridge (§3.8): the shared Prometheus scrapes the scheduler over
+# this port in the `mellon-network`. No TLS, no auth — internal scrape path.
+http://:12091 {
+	reverse_proxy scheduler:9091
+}

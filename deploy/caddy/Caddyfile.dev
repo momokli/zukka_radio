@@ -22,3 +22,9 @@ https://:12080 {
 	}
 	import radio_zukka_routes
 }
+
+# #44 Metrics bridge (§3.8): scheduler is reachable via the shared `egress`
+# network. HTTP (not TLS): the scrape path stays internal/D EV-only.
+http://:12091 {
+	reverse_proxy scheduler:9091
+}

@@ -55,8 +55,13 @@ services:
       LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
       SCHEDULER_SERVICE_TOKEN: ${ZUKKA_SCHEDULER_SERVICE_TOKEN}
       ICECAST_STATUS_URL: ${ZUKKA_ICECAST_STATUS_URL}
+      # #44: dedicated Prometheus listener (§3.8), scraped via the caddy
+      # bridge :12091 (mellon-network).
+      ZUKKA_METRICS_BIND: 0.0.0.0:9091
     ports:
       - "127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}:8080"
+    expose:
+      - "9091"
     volumes:
       - zukka_data:/data
       - recordings_staging:/recordings
@@ -120,11 +125,15 @@ services:
       ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
     ports:
       - "127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080"
+    # #44: expose the metrics bridge :12091 for the shared Prometheus
+    # (mellon-network, §3.8).
+    expose:
+      - "12091"
     volumes:
       - ../deploy/caddy:/etc/caddy:ro
       - caddy_data:/data
       - hls:/srv/hls:ro
-    networks: [front, egress]
+    networks: [front, egress, mellon-network]
 
 volumes:
   zukka_data:
@@ -139,3 +148,7 @@ networks:
   back:
     internal: true
   egress:
+  # #44: shared metrics network — only caddy joins it, so the shared
+  # Prometheus reaches the metrics bridge :12091 (§3.8).
+  mellon-network:
+    external: true

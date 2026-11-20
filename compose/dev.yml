@@ -55,8 +55,12 @@ services:
       LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
       SCHEDULER_SERVICE_TOKEN: ${ZUKKA_SCHEDULER_SERVICE_TOKEN}
       ICECAST_STATUS_URL: ${ZUKKA_ICECAST_STATUS_URL}
+      # #44: dedicated Prometheus listener (§3.8).
+      ZUKKA_METRICS_BIND: 0.0.0.0:9091
     ports:
       - "127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12110}:8080"
+    expose:
+      - "9091"
     volumes:
       - zukka_data:/data
       - recordings_staging:/recordings
