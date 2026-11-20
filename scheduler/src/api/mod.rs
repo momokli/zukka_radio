@@ -19,8 +19,10 @@ pub mod tracks;
 pub mod upload_jobs;
 pub mod waveforms;
 
-use axum::extract::{FromRequest, Request};
+use axum::extract::{FromRequest, Request, State};
 use axum::http::HeaderMap;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
@@ -225,9 +227,31 @@ pub fn router(pool: SqlitePool) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(readyz))
         .nest("/api/v1", api)
         .fallback(not_found)
         .with_state(pool)
+}
+
+/// `GET /readyz` — DB readable/writable and intact (§3.6).
+///
+/// The scheduler is the only DB writer; `PRAGMA quick_check` proves the
+/// connection is usable and the file is not corrupt.
+async fn readyz(State(pool): State<SqlitePool>) -> Response {
+    match sqlx::query_scalar::<_, String>("PRAGMA quick_check")
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(result) if result == "ok" => (StatusCode::OK, "ok").into_response(),
+        Ok(result) => {
+            tracing::error!("readyz integrity check failed: {result}");
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response()
+        }
+        Err(err) => {
+            tracing::error!("readyz database check failed: {err:#}");
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response()
+        }
+    }
 }
 
 /// Router fallback: unknown routes answer with the error envelope, not Axum's

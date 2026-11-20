@@ -1,0 +1,49 @@
+name: deploy-dev
+
+# Push auf v2 → ci grün → automatischer DEV-Deploy + Smoke.
+# PROD (#41), Deploy-Fenster/Audience-Gate (#42) sind bewusst nicht Teil von #40.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [v2]
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
+          chmod 600 "$HOME/.ssh/deploy"
+          # Pin the deploy host key so the fresh runner can verify it.
+          ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy (dev)
+        run: |
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
+            zukka-deploy@cast.zukkafabrik.de \
+            "sudo /usr/local/bin/zukka-deploy dev --tag ${{ github.event.workflow_run.head_sha }}"
+
+      # Smoke runs on the deploy host from the git checkout (see
+      # docs/infrastructure.md §3.2: repo/ holds compose/, scripts/, ...); the
+      # DEV listeners are loopback-only. The wrapper already runs the smoke gate
+      # as part of `zukka-deploy dev`; this step re-runs it from the checkout the
+      # workflow can address (D4).
+      - name: Smoke (dev)
+        run: |
+          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
+            zukka-deploy@cast.zukkafabrik.de \
+            "/opt/apps/radio-zukka/repo/scripts/smoke.sh dev"
