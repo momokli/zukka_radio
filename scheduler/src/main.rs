@@ -25,6 +25,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to initialize database at {db_path}"))?;
     tracing::info!("database ready at {db_path}");
 
+    // Issue #101: create the first admin from env when `casters` is empty.
+    // Fail-open on purpose: a broken seed must never stop a running stream.
+    match zukka_scheduler::store::auth::bootstrap_admin(&pool).await {
+        Ok(outcome) => tracing::info!(?outcome, "bootstrap admin check"),
+        Err(err) => tracing::warn!("bootstrap admin failed: {err:#}"),
+    }
+
     // C43: after a restart, replay the persisted live override so Liquidsoap
     // and the control panel do not drift back to FCFS silently.
     if let Err(err) = zukka_scheduler::store::control::reassert_live(&pool).await {

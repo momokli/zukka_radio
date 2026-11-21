@@ -3,8 +3,8 @@
 use askama::Template;
 
 use crate::api_client::{
-    Announcement, AnnouncementTemplate, ConnectedCaster, ControlState, Queue, QueueItem, Show,
-    Track, UploadJob,
+    Announcement, AnnouncementTemplate, CasterDto, ConnectedCaster, ControlState, Queue, QueueItem,
+    Show, Track, UploadJob,
 };
 
 /// Login page (`GET /login`).
@@ -50,6 +50,62 @@ pub struct AccountPage {
 pub struct ErrorPage {
     pub status: u16,
     pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #101: admin user management (`/admin/users`)
+// ---------------------------------------------------------------------------
+
+/// A select option with its selected state precomputed server-side (Askama
+/// cannot compare borrowed values in the template).
+pub struct SelectOption {
+    pub value: String,
+    pub selected: bool,
+}
+
+/// One row of the admin table.
+pub struct AdminUserRow {
+    pub caster: CasterDto,
+    pub is_self: bool,
+    pub is_last_admin: bool,
+    pub role_options: Vec<SelectOption>,
+}
+
+/// The one-time stream password shown after create/regenerate.
+pub struct CreatedCasterView {
+    pub username: String,
+    pub role: String,
+    pub harbor_mount: Option<String>,
+    pub stream_password: Option<String>,
+}
+
+/// Inline field/error message.
+pub struct FieldErrorView {
+    pub field: String,
+    pub message: String,
+}
+
+/// Repopulated create form values after a validation failure.
+#[derive(Default)]
+pub struct AdminUserFormValues {
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub role: String,
+    pub harbor_mount: String,
+}
+
+/// Admin user page (`GET /admin/users`).
+#[derive(Template)]
+#[template(path = "admin_users.html")]
+pub struct AdminUsersPage {
+    pub csrf_token: String,
+    pub casters: Vec<AdminUserRow>,
+    pub roles: Vec<String>,
+    pub created: Option<CreatedCasterView>,
+    pub notice: Option<String>,
+    pub error: Option<FieldErrorView>,
+    pub form: AdminUserFormValues,
 }
 
 /// A track plus the per-viewer row capabilities. `can_toggle` is the

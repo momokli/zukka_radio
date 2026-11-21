@@ -21,6 +21,7 @@ use tower::ServiceExt;
 use zukka_portal::api_client::{
     CasterDto, CreatedSessionDto, IdentityApi, IdentityError, SessionValidationDto,
 };
+use zukka_portal::api_client::{CasterUpdate, CreatedCaster, NewCaster};
 use zukka_portal::app::{AppState, build_router};
 use zukka_portal::auth::AuthContext;
 use zukka_portal::config::Config;
@@ -92,6 +93,26 @@ impl FakeIdentity {
 
 #[async_trait]
 impl IdentityApi for FakeIdentity {
+    async fn list_casters(&self) -> Result<Vec<CasterDto>, IdentityError> {
+        Ok(Vec::new())
+    }
+
+    async fn create_caster(
+        &self,
+        _actor: Option<&str>,
+        _req: &NewCaster,
+    ) -> Result<CreatedCaster, IdentityError> {
+        Err(IdentityError::Upstream("not implemented".into()))
+    }
+
+    async fn update_caster(
+        &self,
+        _actor: Option<&str>,
+        _id: &str,
+        _patch: &CasterUpdate,
+    ) -> Result<CasterDto, IdentityError> {
+        Err(IdentityError::Upstream("not implemented".into()))
+    }
     async fn verify(&self, username: &str, password: &str) -> Result<CasterDto, IdentityError> {
         let casters = self.casters.lock().unwrap();
         match casters

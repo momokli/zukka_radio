@@ -202,7 +202,14 @@ pub fn router(pool: SqlitePool) -> Router {
             "/sessions/{id}",
             patch(auth::touch_session).delete(auth::revoke_session),
         )
-        .route("/casters/{id}", get(auth::get_caster))
+        .route(
+            "/casters",
+            get(auth::list_casters).post(auth::create_caster),
+        )
+        .route(
+            "/casters/{id}",
+            get(auth::get_caster).patch(auth::update_caster),
+        )
         .route("/casters/{id}/password", post(auth::change_password))
         .route(
             "/casters/{id}/stream-password",

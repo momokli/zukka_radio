@@ -52,6 +52,9 @@ pub enum IdentityError {
     /// Bad credentials (scheduler `401`).
     #[error("invalid credentials")]
     InvalidCredentials,
+    /// A duplicate or illegal state (scheduler `409`).
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// Field-level rejection (scheduler `422`).
     #[error("{message}")]
     Validation { field: String, message: String },
@@ -62,9 +65,6 @@ pub enum IdentityError {
     #[error("upstream error: {0}")]
     Upstream(String),
 }
-
-/// Identity operations the portal needs. Implemented by [`HttpIdentityApi`] in
-/// production and by a fake in tests.
 #[async_trait]
 pub trait IdentityApi: Send + Sync {
     /// Verifies credentials; `InvalidCredentials` on `401`.
@@ -105,6 +105,52 @@ pub trait IdentityApi: Send + Sync {
         caster_id: &str,
         password: Option<&str>,
     ) -> Result<Option<String>, IdentityError>;
+
+    /// Lists all casters (admin page, Issue #101).
+    async fn list_casters(&self) -> Result<Vec<CasterDto>, IdentityError>;
+
+    /// Creates a caster; the generated stream password is returned once.
+    async fn create_caster(
+        &self,
+        actor: Option<&str>,
+        req: &NewCaster,
+    ) -> Result<CreatedCaster, IdentityError>;
+
+    /// Updates display name, email, role or active flag.
+    async fn update_caster(
+        &self,
+        actor: Option<&str>,
+        id: &str,
+        patch: &CasterUpdate,
+    ) -> Result<CasterDto, IdentityError>;
+}
+
+/// Body of `POST /internal/casters` (Issue #101).
+#[derive(Debug, Clone)]
+pub struct NewCaster {
+    pub username: String,
+    pub display_name: String,
+    pub password: String,
+    pub role: String,
+    pub harbor_mount: Option<String>,
+    pub email: Option<String>,
+    pub stream_username: Option<String>,
+}
+
+/// Result of a create: the caster plus the one-time stream password.
+#[derive(Debug, Clone)]
+pub struct CreatedCaster {
+    pub caster: CasterDto,
+    pub stream_password: Option<String>,
+}
+
+/// Mutable caster fields (`PATCH /internal/casters/{id}`).
+#[derive(Debug, Clone, Default)]
+pub struct CasterUpdate {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub role: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 /// HTTP client for the scheduler `/internal/*` API.
@@ -149,6 +195,7 @@ impl HttpIdentityApi {
         match status.as_u16() {
             401 => IdentityError::InvalidCredentials,
             404 => IdentityError::NotFound,
+            409 => IdentityError::Conflict(message),
             422 => IdentityError::Validation { field, message },
             other => IdentityError::Upstream(format!("scheduler returned {other}: {message}")),
         }
@@ -306,6 +353,93 @@ impl IdentityApi for HttpIdentityApi {
             .map_err(|e| IdentityError::Upstream(e.to_string()))?;
         Ok(body.password)
     }
+
+    async fn list_casters(&self) -> Result<Vec<CasterDto>, IdentityError> {
+        let response = self
+            .client
+            .get(self.url("/casters"))
+            .bearer_auth(&self.service_token)
+            .send()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))
+    }
+
+    async fn create_caster(
+        &self,
+        actor: Option<&str>,
+        req: &NewCaster,
+    ) -> Result<CreatedCaster, IdentityError> {
+        let mut request = self
+            .client
+            .post(self.url("/casters"))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({
+                "username": req.username,
+                "display_name": req.display_name,
+                "password": req.password,
+                "role": req.role,
+                "harbor_mount": req.harbor_mount,
+                "email": req.email,
+                "stream_username": req.stream_username,
+            }));
+        if let Some(actor) = actor {
+            request = request.header("x-caster-id", actor);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        let body: CreatedCasterResponse = response
+            .json()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))?;
+        Ok(CreatedCaster {
+            caster: body.caster,
+            stream_password: body.stream_password,
+        })
+    }
+
+    async fn update_caster(
+        &self,
+        actor: Option<&str>,
+        id: &str,
+        patch: &CasterUpdate,
+    ) -> Result<CasterDto, IdentityError> {
+        let mut request = self
+            .client
+            .patch(self.url(&format!("/casters/{id}")))
+            .bearer_auth(&self.service_token)
+            .json(&serde_json::json!({
+                "display_name": patch.display_name,
+                "email": patch.email,
+                "role": patch.role,
+                "is_active": patch.is_active,
+            }));
+        if let Some(actor) = actor {
+            request = request.header("x-caster-id", actor);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Self::error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| IdentityError::Upstream(e.to_string()))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +451,13 @@ struct VerifyResponse {
 struct StreamPasswordResponse {
     #[serde(default)]
     password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatedCasterResponse {
+    caster: CasterDto,
+    #[serde(default)]
+    stream_password: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

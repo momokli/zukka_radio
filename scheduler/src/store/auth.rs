@@ -9,7 +9,7 @@
 //! The portal never touches `casters`/`sessions` directly: it goes through the
 //! `/internal/*` API built on top of these functions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::OnceLock;
 
 use argon2::Argon2;
@@ -20,7 +20,7 @@ use rand::rngs::OsRng;
 use sqlx::SqlitePool;
 
 use crate::dto::{CasterDto, CreateSessionRequest, CreatedSessionDto, SessionValidationDto};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, is_foreign_key_violation, unique_violation};
 use crate::store::now_ts;
 use crate::uuid::new_id;
 
@@ -601,6 +601,532 @@ pub async fn change_stream_password(
         .await?;
 
     Ok(if generated { Some(plain) } else { None })
+}
+
+// ---------------------------------------------------------------------------
+// Caster management (Issue #101)
+// ---------------------------------------------------------------------------
+
+/// Env var holding the harbor slot pool size (same value Compose uses).
+pub const HARBOR_SLOTS_ENV: &str = "ZUKKA_HARBOR_SLOTS";
+/// Env var holding the bootstrap admin username (Issue #101).
+pub const BOOTSTRAP_USER_ENV: &str = "ZUKKA_BOOTSTRAP_ADMIN_USER";
+/// Env var holding the bootstrap admin password (Issue #101).
+pub const BOOTSTRAP_PASSWORD_ENV: &str = "ZUKKA_BOOTSTRAP_ADMIN_PASSWORD";
+
+/// Values required to create a caster (§4.2 identity writes).
+#[derive(Debug, Clone)]
+pub struct NewCaster<'a> {
+    pub username: &'a str,
+    pub display_name: &'a str,
+    pub password: &'a str,
+    pub role: &'a str,
+    pub harbor_mount: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub stream_username: Option<&'a str>,
+}
+
+/// Result of a successful create: the caster plus the one-time stream password.
+#[derive(Debug, Clone)]
+pub struct CreatedCaster {
+    pub caster: CasterDto,
+    pub stream_password: Option<String>,
+}
+
+/// Mutable caster fields (`PATCH /internal/casters/{id}`).
+#[derive(Debug, Clone, Default)]
+pub struct CasterPatch<'a> {
+    pub display_name: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub role: Option<&'a str>,
+    pub is_active: Option<bool>,
+}
+
+/// Outcome of the idempotent bootstrap check (Issue #101).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootstrapOutcome {
+    /// A bootstrap admin was created (`mount` is its harbor mount).
+    Created { username: String, mount: String },
+    /// No `ZUKKA_BOOTSTRAP_ADMIN_*` env pair is configured.
+    SkippedNoEnv,
+    /// The `casters` table already has at least one row.
+    SkippedNotEmpty,
+}
+
+struct PreparedCaster {
+    username: String,
+    display_name: String,
+    email: Option<String>,
+    password_hash: String,
+    role_id: String,
+    role: String,
+    stream_username: String,
+    stream_password_hash: String,
+    harbor_mount: String,
+}
+
+fn validate_username(raw: &str) -> ApiResult<String> {
+    let value = raw.trim().to_lowercase();
+    let len = value.chars().count();
+    if !(3..=32).contains(&len) {
+        return Err(ApiError::validation(
+            "username",
+            "username must be 3-32 characters",
+        ));
+    }
+    let mut chars = value.chars();
+    let first_ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let rest_ok =
+        chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !first_ok || !rest_ok {
+        return Err(ApiError::validation(
+            "username",
+            "username may only contain a-z, 0-9, '_' and '-', starting with a letter or digit",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_display_name(raw: &str) -> ApiResult<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(ApiError::validation(
+            "display_name",
+            "display_name must not be empty",
+        ));
+    }
+    if value.chars().count() > 100 {
+        return Err(ApiError::validation(
+            "display_name",
+            "display_name must be at most 100 characters",
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_password(raw: &str) -> ApiResult<()> {
+    if raw.is_empty() {
+        return Err(ApiError::validation(
+            "password",
+            "password must not be empty",
+        ));
+    }
+    if raw.chars().count() < 8 {
+        return Err(ApiError::validation(
+            "password",
+            "password must be at least 8 characters",
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_email(raw: Option<&str>) -> ApiResult<Option<String>> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(value) if !value.contains('@') => {
+            Err(ApiError::validation("email", "email must contain '@'"))
+        }
+        Some(value) => Ok(Some(value.to_string())),
+    }
+}
+
+async fn resolve_role(pool: &SqlitePool, raw: &str) -> ApiResult<(String, String)> {
+    let name = raw.trim().to_lowercase();
+    if !matches!(name.as_str(), "admin" | "operator" | "caster") {
+        return Err(ApiError::validation(
+            "role",
+            "role must be one of admin, operator, caster",
+        ));
+    }
+    let id: Option<String> = sqlx::query_scalar("SELECT id FROM roles WHERE name = ?")
+        .bind(&name)
+        .fetch_optional(pool)
+        .await?;
+    id.map(|id| (id, name))
+        .ok_or_else(|| ApiError::validation("role", "unknown role"))
+}
+
+fn harbor_slot_limit() -> u32 {
+    std::env::var(HARBOR_SLOTS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|slots| *slots > 0)
+        .unwrap_or(32)
+        .min(99)
+}
+
+fn slot_mount(slot: u32) -> String {
+    format!("/live/slot-{slot:02}")
+}
+
+fn parse_slot_mount(mount: &str) -> Option<u32> {
+    let rest = mount.strip_prefix("/live/slot-")?;
+    if rest.len() != 2 || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+async fn occupied_mounts(pool: &SqlitePool) -> ApiResult<HashSet<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT harbor_mount FROM casters WHERE harbor_mount IS NOT NULL")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(mount,)| mount).collect())
+}
+
+fn resolve_mount(provided: Option<&str>, occupied: &HashSet<String>) -> ApiResult<String> {
+    let slots = harbor_slot_limit();
+    match provided.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => {
+            let slot = parse_slot_mount(raw).filter(|slot| (1..=slots).contains(slot));
+            let Some(slot) = slot else {
+                return Err(ApiError::validation(
+                    "harbor_mount",
+                    format!("harbor_mount must match /live/slot-NN with slot 1..={slots}"),
+                ));
+            };
+            let mount = slot_mount(slot);
+            if occupied.contains(&mount) {
+                return Err(ApiError::conflict(
+                    "duplicate_harbor_mount",
+                    "this harbor mount is already taken",
+                ));
+            }
+            Ok(mount)
+        }
+        None => {
+            for slot in 1..=slots {
+                let mount = slot_mount(slot);
+                if !occupied.contains(&mount) {
+                    return Ok(mount);
+                }
+            }
+            Err(ApiError::conflict(
+                "harbor_pool_exhausted",
+                "no free harbor mount slot left",
+            ))
+        }
+    }
+}
+
+/// Maps a failed caster write onto the precise `409`/`422` codes.
+fn map_caster_write_error(err: sqlx::Error) -> ApiError {
+    if let Some(message) = unique_violation(&err) {
+        if message.contains("casters.username") {
+            return ApiError::conflict(
+                "duplicate_username",
+                "a caster with this username already exists",
+            );
+        }
+        if message.contains("casters.harbor_mount") {
+            return ApiError::conflict(
+                "duplicate_harbor_mount",
+                "this harbor mount is already taken",
+            );
+        }
+        if message.contains("casters.email") {
+            return ApiError::conflict(
+                "duplicate_email",
+                "a caster with this email already exists",
+            );
+        }
+        if message.contains("casters.stream_username") {
+            return ApiError::conflict(
+                "duplicate_stream_username",
+                "this stream username is already taken",
+            );
+        }
+    }
+    if is_foreign_key_violation(&err) {
+        return ApiError::validation("role", "unknown role");
+    }
+    err.into()
+}
+
+async fn insert_caster_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    prepared: &PreparedCaster,
+    actor: Option<&str>,
+    extra_details: Option<serde_json::Value>,
+) -> ApiResult<String> {
+    let id = new_id();
+    let ts = now_ts();
+    sqlx::query(
+        "INSERT INTO casters (id, username, display_name, email, password_hash, role_id, \
+         stream_username, stream_password_hash, harbor_mount, is_active, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&prepared.username)
+    .bind(&prepared.display_name)
+    .bind(&prepared.email)
+    .bind(&prepared.password_hash)
+    .bind(&prepared.role_id)
+    .bind(&prepared.stream_username)
+    .bind(&prepared.stream_password_hash)
+    .bind(&prepared.harbor_mount)
+    .bind(&ts)
+    .bind(&ts)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_caster_write_error)?;
+
+    let mut details = serde_json::json!({
+        "username": prepared.username,
+        "role": prepared.role,
+        "harbor_mount": prepared.harbor_mount,
+    });
+    if let Some(extra) = extra_details {
+        if let (Some(object), serde_json::Value::Object(extra)) = (details.as_object_mut(), extra) {
+            object.extend(extra);
+        }
+    }
+    sqlx::query(
+        "INSERT INTO event_log (id, occurred_at, event, actor_caster_id, caster_id, details, \
+         created_at) VALUES (?, ?, 'caster_created', ?, ?, ?, ?)",
+    )
+    .bind(new_id())
+    .bind(&ts)
+    .bind(actor)
+    .bind(&id)
+    .bind(details.to_string())
+    .bind(&ts)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(id)
+}
+
+/// Creates a caster with a validated username, role and harbor slot, and a
+/// freshly generated stream password (returned exactly once).
+pub async fn create_caster(
+    pool: &SqlitePool,
+    req: &NewCaster<'_>,
+    actor: Option<&str>,
+) -> ApiResult<CreatedCaster> {
+    let username = validate_username(req.username)?;
+    let display_name = validate_display_name(req.display_name)?;
+    validate_password(req.password)?;
+    let email = normalize_email(req.email)?;
+    let (role_id, role) = resolve_role(pool, req.role).await?;
+
+    // Pre-check for a precise `duplicate_username` code: the insert also hits
+    // `casters.stream_username` (default = username), which would otherwise
+    // mask the username conflict.
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT username FROM casters WHERE username = ?")
+            .bind(&username)
+            .fetch_optional(pool)
+            .await?;
+    if existing.is_some() {
+        return Err(ApiError::conflict(
+            "duplicate_username",
+            "a caster with this username already exists",
+        ));
+    }
+
+    let occupied = occupied_mounts(pool).await?;
+    let harbor_mount = resolve_mount(req.harbor_mount, &occupied)?;
+
+    let stream_username = req
+        .stream_username
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| username.clone());
+    let stream_password = generate_stream_password();
+
+    let prepared = PreparedCaster {
+        username,
+        display_name,
+        email,
+        password_hash: hash_password(req.password)?,
+        role_id,
+        role,
+        stream_username,
+        stream_password_hash: hash_password(&stream_password)?,
+        harbor_mount,
+    };
+
+    let mut tx = pool.begin().await?;
+    let id = insert_caster_tx(&mut tx, &prepared, actor, None).await?;
+    tx.commit().await?;
+
+    Ok(CreatedCaster {
+        caster: get_caster(pool, &id).await?,
+        stream_password: Some(stream_password),
+    })
+}
+
+/// Lists all casters ordered by username (case-insensitive).
+pub async fn list_casters(pool: &SqlitePool) -> ApiResult<Vec<CasterDto>> {
+    let sql = format!("{CASTER_SELECT} ORDER BY c.username COLLATE NOCASE");
+    let rows = sqlx::query_as::<_, CasterAuthRow>(&sql)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(CasterAuthRow::into_dto).collect())
+}
+
+/// Number of casters (bootstrap idempotence).
+pub async fn count_casters(pool: &SqlitePool) -> ApiResult<i64> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM casters")
+        .fetch_one(pool)
+        .await?)
+}
+
+/// Updates the mutable caster fields. A role change or deactivation revokes
+/// all of that caster's sessions. Username and mount never change here.
+pub async fn update_caster(
+    pool: &SqlitePool,
+    id: &str,
+    patch: &CasterPatch<'_>,
+    actor: Option<&str>,
+) -> ApiResult<CasterDto> {
+    #[derive(Debug, sqlx::FromRow)]
+    struct Existing {
+        display_name: String,
+        email: Option<String>,
+        is_active: i64,
+        role_id: String,
+        role_name: String,
+    }
+
+    let existing = sqlx::query_as::<_, Existing>(
+        "SELECT c.display_name, c.email, c.is_active, c.role_id, r.name AS role_name \
+         FROM casters c JOIN roles r ON r.id = c.role_id WHERE c.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(existing) = existing else {
+        return Err(ApiError::not_found("caster", id));
+    };
+
+    let display_name = match patch.display_name {
+        Some(raw) => validate_display_name(raw)?,
+        None => existing.display_name.clone(),
+    };
+    let email = match patch.email {
+        Some(raw) => normalize_email(Some(raw))?,
+        None => existing.email.clone(),
+    };
+    let (role_id, role_name) = match patch.role {
+        Some(raw) => resolve_role(pool, raw).await?,
+        None => (existing.role_id.clone(), existing.role_name.clone()),
+    };
+    let role_changed = role_name != existing.role_name;
+    let is_active = patch.is_active.unwrap_or(existing.is_active != 0);
+    let ts = now_ts();
+
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE casters SET display_name = ?, email = ?, role_id = ?, is_active = ?, \
+         updated_at = ? WHERE id = ?",
+    )
+    .bind(&display_name)
+    .bind(&email)
+    .bind(&role_id)
+    .bind(i64::from(is_active))
+    .bind(&ts)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_caster_write_error)?;
+
+    let event = if role_changed {
+        "role_changed"
+    } else {
+        "caster_updated"
+    };
+    let details = serde_json::json!({ "role": role_name, "is_active": is_active });
+    sqlx::query(
+        "INSERT INTO event_log (id, occurred_at, event, actor_caster_id, caster_id, details, \
+         created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(new_id())
+    .bind(&ts)
+    .bind(event)
+    .bind(actor)
+    .bind(id)
+    .bind(details.to_string())
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    if role_changed || !is_active {
+        revoke_other_sessions(pool, id, None).await?;
+    }
+
+    get_caster(pool, id).await
+}
+
+/// Idempotent bootstrap: creates the first admin from
+/// `ZUKKA_BOOTSTRAP_ADMIN_USER`/`ZUKKA_BOOTSTRAP_ADMIN_PASSWORD` when the
+/// `casters` table is empty. The password is never logged.
+pub async fn bootstrap_admin(pool: &SqlitePool) -> ApiResult<BootstrapOutcome> {
+    let username = std::env::var(BOOTSTRAP_USER_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let password = std::env::var(BOOTSTRAP_PASSWORD_ENV)
+        .ok()
+        .filter(|value| !value.is_empty());
+    let (Some(username), Some(password)) = (username, password) else {
+        return Ok(BootstrapOutcome::SkippedNoEnv);
+    };
+
+    if count_casters(pool).await? > 0 {
+        return Ok(BootstrapOutcome::SkippedNotEmpty);
+    }
+
+    let username = validate_username(&username)?;
+    validate_password(&password)?;
+    let display_name = if username == "admin" {
+        "Administrator".to_string()
+    } else {
+        username.clone()
+    };
+    let occupied = occupied_mounts(pool).await?;
+    let harbor_mount = resolve_mount(None, &occupied)?;
+    let stream_password = generate_stream_password();
+
+    let prepared = PreparedCaster {
+        username: username.clone(),
+        display_name,
+        email: None,
+        password_hash: hash_password(&password)?,
+        role_id: "0192f0a1-0001-7000-8000-000000000001".to_string(),
+        role: "admin".to_string(),
+        stream_username: username.clone(),
+        stream_password_hash: hash_password(&stream_password)?,
+        harbor_mount: harbor_mount.clone(),
+    };
+
+    let mut tx = pool.begin().await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM casters")
+        .fetch_one(&mut *tx)
+        .await?;
+    if count > 0 {
+        tx.commit().await?;
+        return Ok(BootstrapOutcome::SkippedNotEmpty);
+    }
+    insert_caster_tx(
+        &mut tx,
+        &prepared,
+        None,
+        Some(serde_json::json!({ "actor": "bootstrap" })),
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(BootstrapOutcome::Created {
+        username,
+        mount: harbor_mount,
+    })
 }
 
 #[cfg(test)]
