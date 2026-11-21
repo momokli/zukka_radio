@@ -25,8 +25,8 @@ use tower::ServiceExt;
 use zukka_portal::api_client::{
     CasterDto, ConnectedCaster, ControlSource, ControlState, CreatedSessionDto, FakeControlApi,
     FakeQueueApi, FakeTrackApi, IdentityApi, IdentityError, JobError, LiveState, NewUploadJob,
-    NewWaveform, NowPlaying, SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch,
-    Waveform, WaveformApi, WaveformApiError,
+    NewWaveform, NowPlaying, ObservedNowPlaying, SessionValidationDto, UploadJob, UploadJobApi,
+    UploadJobPatch, Waveform, WaveformApi, WaveformApiError,
 };
 use zukka_portal::api_client::{CasterUpdate, CreatedCaster, NewCaster};
 use zukka_portal::app::{AppState, build_router};
@@ -34,6 +34,7 @@ use zukka_portal::config::Config;
 use zukka_portal::music_api::FakeMusicApi;
 use zukka_portal::rate_limit::WindowLimiter;
 use zukka_portal::rbac;
+use zukka_portal::templates::ControlView;
 
 // ---------------------------------------------------------------------------
 // Fake identity
@@ -286,7 +287,62 @@ fn sample_state(active_caster: Option<&str>) -> ControlState {
             artist: Some("Kranich".into()),
             duration_ms: 210_000,
         }),
+        // Issue #140: Icecast observation fields.
+        observed_layer: Some("queue".into()),
+        derived_layer: Some("queue".into()),
+        active_layer_source: Some("observed".into()),
+        observed: true,
+        on_air: true,
+        observed_now_playing: None,
     }
+}
+
+#[test]
+fn observed_relay_and_silence_render() {
+    let mut state = sample_state(None);
+    state.active_layer = Some("relay".into());
+    state.observed_layer = Some("relay".into());
+    state.derived_layer = None;
+    state.active_layer_source = Some("observed".into());
+    state.observed = true;
+    state.on_air = true;
+    state.now_playing = None;
+    state.observed_now_playing = Some(ObservedNowPlaying {
+        title: Some("Deep Space".into()),
+        artist: Some("SomaFM".into()),
+        source: Some("Icecast".into()),
+    });
+    let view = ControlView::from_state(state, false);
+    assert_eq!(view.active_layer.as_deref(), Some("relay"));
+    assert!(view.on_air);
+    assert_eq!(view.layer_source.as_deref(), Some("beobachtet"));
+    assert_eq!(view.now_title.as_deref(), Some("Deep Space"));
+    assert_eq!(view.now_source.as_deref(), Some("Icecast"));
+
+    let mut silent = sample_state(None);
+    silent.active_layer = None;
+    silent.observed_layer = None;
+    silent.derived_layer = None;
+    silent.active_layer_source = None;
+    silent.observed = false;
+    silent.on_air = false;
+    silent.now_playing = None;
+    silent.observed_now_playing = None;
+    let view = ControlView::from_state(silent, false);
+    assert!(!view.on_air);
+    assert!(view.active_layer.is_none());
+    assert!(view.now_title.is_none());
+}
+
+#[test]
+fn derived_layer_labels_as_abgeleitet() {
+    let mut state = sample_state(None);
+    state.active_layer_source = Some("derived".into());
+    state.observed_layer = None;
+    state.derived_layer = Some("queue".into());
+    state.observed = false;
+    let view = ControlView::from_state(state, false);
+    assert_eq!(view.layer_source.as_deref(), Some("abgeleitet"));
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +534,72 @@ async fn state_fragment_renders_content() {
     assert!(!body.contains("Keine verbundenen Caster."));
     assert!(body.contains("/live/mira"), "connected caster + mount");
     assert!(body.contains("3:30"), "duration formatted");
+}
+
+/// Issue #140: the fragment shows the effective layer with its observation
+/// origin ("beobachtet").
+#[tokio::test]
+async fn fragment_shows_observed_layer_origin() {
+    let control = Arc::new(FakeControlApi::new());
+    control.set_state(sample_state(None));
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("On Air:"), "{body}");
+    assert!(body.contains("beobachtet"), "observation origin: {body}");
+    assert!(body.contains("Datenbank"), "DB now-playing origin: {body}");
+}
+
+/// Issue #140: a relay seen via ICY metadata is named, and the observed
+/// now-playing fills the gap left by the DB path.
+#[tokio::test]
+async fn fragment_shows_relay_from_icecast() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut state = sample_state(None);
+    state.active_layer = Some("relay".into());
+    state.observed_layer = Some("relay".into());
+    state.derived_layer = None;
+    state.active_layer_source = Some("observed".into());
+    state.observed = true;
+    state.on_air = true;
+    state.now_playing = None;
+    state.observed_now_playing = Some(ObservedNowPlaying {
+        title: Some("Deep Space".into()),
+        artist: Some("SomaFM".into()),
+        source: Some("Icecast".into()),
+    });
+    control.set_state(state);
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("relay"), "relay named: {body}");
+    assert!(body.contains("SomaFM"), "observed artist: {body}");
+    assert!(body.contains("Deep Space"), "observed title: {body}");
+    assert!(body.contains("Icecast"), "observed origin: {body}");
+}
+
+/// Issue #140: no source on air renders "Stille".
+#[tokio::test]
+async fn fragment_shows_silence() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut state = sample_state(None);
+    state.active_layer = None;
+    state.observed_layer = None;
+    state.derived_layer = None;
+    state.active_layer_source = None;
+    state.observed = false;
+    state.on_air = false;
+    state.now_playing = None;
+    state.observed_now_playing = None;
+    control.set_state(state);
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Stille"), "{body}");
+    assert!(body.contains("Nichts läuft."), "{body}");
 }
 
 #[tokio::test]

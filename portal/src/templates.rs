@@ -404,6 +404,14 @@ pub struct ControlView {
     pub now_title: Option<String>,
     pub now_artist: Option<String>,
     pub now_duration: String,
+    /// Origin label of the now-playing item ("Datenbank" / "Icecast").
+    pub now_source: Option<String>,
+    /// Icecast reports audible output (Issue #140).
+    pub on_air: bool,
+    /// Observed / derived layer plus a human-readable origin label (#140).
+    pub observed_layer: Option<String>,
+    pub derived_layer: Option<String>,
+    pub layer_source: Option<String>,
     /// Whether the viewer may act (`control.write`); buttons hidden otherwise.
     pub can_write: bool,
     /// The scheduler was unreachable — render a hint instead of a `500` (D20).
@@ -424,14 +432,33 @@ impl ControlView {
                 enabled: source.enabled,
             })
             .collect();
-        let (now_title, now_artist, now_duration) = match state.now_playing {
+
+        // DB now-playing wins; otherwise fall back to the Icecast observation
+        // (relay/rotation never appear in the DB path — DD4, #140).
+        let (now_title, now_artist, now_duration, now_source) = match state.now_playing {
             Some(item) => (
                 Some(item.title),
                 item.artist,
                 format_duration(item.duration_ms),
+                Some("Datenbank".to_string()),
             ),
-            None => (None, None, String::new()),
+            None => match state.observed_now_playing {
+                Some(item) => (
+                    item.title,
+                    item.artist,
+                    String::new(),
+                    Some(item.source.unwrap_or_else(|| "Icecast".to_string())),
+                ),
+                None => (None, None, String::new(), None),
+            },
         };
+
+        let layer_source = state.active_layer_source.as_deref().map(|raw| match raw {
+            "observed" => "beobachtet".to_string(),
+            "derived" => "abgeleitet".to_string(),
+            other => other.to_string(),
+        });
+
         let has_connected = !state.live.connected.is_empty();
         Self {
             layers,
@@ -445,6 +472,11 @@ impl ControlView {
             now_title,
             now_artist,
             now_duration,
+            now_source,
+            on_air: state.on_air,
+            observed_layer: state.observed_layer,
+            derived_layer: state.derived_layer,
+            layer_source,
             can_write,
             scheduler_error: false,
         }
@@ -464,6 +496,11 @@ impl ControlView {
             now_title: None,
             now_artist: None,
             now_duration: String::new(),
+            now_source: None,
+            on_air: false,
+            observed_layer: None,
+            derived_layer: None,
+            layer_source: None,
             can_write,
             scheduler_error: true,
         }
