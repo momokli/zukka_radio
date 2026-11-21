@@ -11,7 +11,37 @@ relay = input.http(
   user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
 
-fallback_jingle = single("/rotation/fun.mp3")
+# Priority-1 fun layer (issue #121): re-requesting the configured jingle as
+# soon as it ends loops one file. `playlist(loop=true, <audio file>)` is not an
+# option here: it parses the file as an M3U and fails on a bare mp3 (verified
+# against v2.4.5). A missing path is retried instead of ending the source, and
+# the low sine keeps the icecast source alive while making the fault audible
+# (a silent stream is exactly the failure #121 reports).
+fun_jingle_available = file.exists(fun_jingle_path)
+fun_jingle_mode = fun_jingle_choice(fun_jingle_available)
+
+if fun_jingle_mode == "substitute" then
+  log(level=3, fun_jingle_log(fun_jingle_path))
+end
+
+fun_jingle_loop = request.dynamic(
+  retry_delay=5.0,
+  prefetch=1,
+  fun () ->
+    if fun_jingle_path == "" then
+      null
+    else
+      request.create(fun_jingle_path)
+    end
+)
+
+# Low amplitude: audible as a technical fault, not as a music bed.
+fun_jingle_substitute = sine(220.0, amplitude=0.05)
+
+fallback_jingle = fallback(
+  track_sensitive=false,
+  [fun_jingle_loop, fun_jingle_substitute]
+)
 
 # --- scheduler pull layers (issue #106) ------------------------------------
 
