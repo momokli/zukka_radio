@@ -406,10 +406,19 @@ pub async fn complete_upload(
     Ok(())
 }
 
-/// Records an upload failure: the job becomes `failed` with `error`, the tape
-/// row is left untouched (still `pending`, so a retry stays possible) and the
-/// caller keeps the staging file. A `done` job is terminal (`409`).
-pub async fn fail_upload(pool: &SqlitePool, job_id: &str, error: &str) -> ApiResult<()> {
+/// Records an upload failure. A retryable failure moves the job back to
+/// `pending` with `error` set (the claim query then applies the usual
+/// `attempts` backoff), so the next poll pass retries it automatically. When
+/// `terminal` is set (attempt cap reached) the job stays `failed`; the tape
+/// row is left untouched either way and the caller keeps the staging file.
+/// A `done` job is terminal (`409`).
+pub async fn fail_upload(
+    pool: &SqlitePool,
+    job_id: &str,
+    error: &str,
+    terminal: bool,
+) -> ApiResult<()> {
+    let target_state = if terminal { "failed" } else { "pending" };
     let mut tx = pool.begin().await?;
 
     let current = sqlx::query_as::<_, TapeJobRow>(&format!("{JOB_SELECT} WHERE id = ?"))
@@ -427,17 +436,18 @@ pub async fn fail_upload(pool: &SqlitePool, job_id: &str, error: &str) -> ApiRes
             ),
         ));
     }
-    if !transition_allowed(&current.state, "failed") {
+    if !transition_allowed(&current.state, target_state) {
         return Err(ApiError::conflict(
             "invalid_state_transition",
             format!(
-                "tape job {job_id} cannot move from '{}' to 'failed'",
-                current.state
+                "tape job {job_id} cannot move from '{}' to '{target_state}'",
+                current.state,
             ),
         ));
     }
 
-    sqlx::query("UPDATE tape_jobs SET state = 'failed', error = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE tape_jobs SET state = ?, error = ?, updated_at = ? WHERE id = ?")
+        .bind(target_state)
         .bind(error)
         .bind(now_ts())
         .bind(job_id)

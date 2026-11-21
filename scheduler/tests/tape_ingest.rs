@@ -307,6 +307,15 @@ async fn happy_path_uploads_and_completes() {
         seen[1].contains("hello zukka"),
         "PUT body must stream the staging file"
     );
+    assert_eq!(
+        header_value(&seen[1], "content-length").as_deref(),
+        Some(CONTENT.len().to_string().as_str()),
+        "PUT must announce the streamed size"
+    );
+    assert!(
+        !seen[1].to_ascii_lowercase().contains("transfer-encoding:"),
+        "Content-Length replaces chunked encoding"
+    );
 
     let (state, error, attempts) = job_state(&fixture.pool).await;
     assert_eq!(state, "done");
@@ -387,8 +396,12 @@ async fn put_failure_keeps_job_and_file_then_requeue_succeeds() {
         .expect("run_once");
     assert_eq!(report.failed, 1);
 
-    let (state, error, _) = job_state(&fixture.pool).await;
-    assert_eq!(state, "failed");
+    let (state, error, attempts) = job_state(&fixture.pool).await;
+    assert_eq!(
+        state, "pending",
+        "a retryable failure requeues the job automatically"
+    );
+    assert_eq!(attempts, 1);
     assert!(
         error.as_deref().unwrap_or_default().contains("500"),
         "error must name the status: {error:?}"
@@ -402,15 +415,15 @@ async fn put_failure_keeps_job_and_file_then_requeue_succeeds() {
         "staging file must survive a failure"
     );
 
-    // Requeue: the failed job becomes pending again and is retried.
+    // Requeue: `fail_upload` already set the job back to `pending`; only the
+    // backoff window is aged here (never the state), so the real claim retries.
     sqlx::query(
-        "UPDATE tape_jobs SET state = 'pending', attempts = 0, \
-         updated_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
+        "UPDATE tape_jobs SET attempts = 0, updated_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
     )
     .bind(JOB)
     .execute(&fixture.pool)
     .await
-    .expect("requeue");
+    .expect("age backoff");
 
     let healthy = mock_api(vec![reply(404), reply(200)]).await;
     let report = tape_ingest::run_once(&fixture.pool, &config(&fixture, &healthy.base))
@@ -457,10 +470,48 @@ async fn unreachable_server_keeps_job_and_file() {
     assert_eq!(report.failed, 1);
 
     let (state, error, _) = job_state(&fixture.pool).await;
-    assert_eq!(state, "failed");
+    assert_eq!(
+        state, "pending",
+        "a retryable failure requeues the job automatically"
+    );
     assert!(error.is_some());
     let (status, _, _, _, _, _, _) = tape_fields(&fixture.pool).await;
     assert_eq!(status, "pending");
     assert!(fixture.recordings.join(format!("{TAPE}.mp3")).exists());
+    drop(fixture.dir);
+}
+
+// ---------------------------------------------------------------------------
+// T5 — attempt cap marks the job and tape terminal
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn attempt_cap_fails_job_and_tape() {
+    let fixture = setup().await;
+    // The next claim raises attempts to the cap, so this failure is terminal.
+    sqlx::query(
+        "UPDATE tape_jobs SET attempts = 7, updated_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
+    )
+    .bind(JOB)
+    .execute(&fixture.pool)
+    .await
+    .expect("prime attempts");
+
+    let mock = mock_api(vec![reply(404), reply(500)]).await;
+    let report = tape_ingest::run_once(&fixture.pool, &config(&fixture, &mock.base))
+        .await
+        .expect("run_once");
+    assert_eq!(report.failed, 1);
+
+    let (state, error, attempts) = job_state(&fixture.pool).await;
+    assert_eq!(state, "failed", "attempt cap is terminal");
+    assert_eq!(attempts, 8);
+    assert!(error.as_deref().unwrap_or_default().contains("500"));
+    let (status, _, _, _, _, _, _) = tape_fields(&fixture.pool).await;
+    assert_eq!(status, "failed");
+    assert!(
+        fixture.recordings.join(format!("{TAPE}.mp3")).exists(),
+        "staging file stays for manual recovery"
+    );
     drop(fixture.dir);
 }

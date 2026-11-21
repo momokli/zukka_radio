@@ -344,11 +344,12 @@ Broadcast endet
                + upload-Job state='done'
   → scheduler: DELETE lokale Datei in recordings_staging
 
-Upload-Fehler (Netz/5xx/Hash): upload-Job state='failed' mit error,
-tapes.status bleibt 'pending', Staging-Datei bleibt liegen. Der nächste
-Poll-Pass claimt den Job erneut (Backoff aus attempts); erst nach 8
-Fehlversuchen wird tapes.status='failed' gesetzt. Die Datei wird NUR nach
-erfolgreichem DB-Commit gelöscht — sie ist die Recovery-Quelle.
+Upload-Fehler (Netz/5xx/Hash): upload-Job geht mit error zurück auf
+state='pending', tapes.status bleibt 'pending', Staging-Datei bleibt liegen.
+Der nächste Poll-Pass claimt den Job automatisch erneut (Backoff aus
+attempts); erst nach 8 Fehlversuchen wird der Job terminal state='failed'
+und tapes.status='failed' gesetzt. Die Datei wird NUR nach erfolgreichem
+DB-Commit gelöscht — sie ist die Recovery-Quelle.
 
 tapes-worker
   → liest tape_jobs (read-only DB)

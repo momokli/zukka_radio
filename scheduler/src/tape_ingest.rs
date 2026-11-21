@@ -116,6 +116,7 @@ pub async fn run_once(pool: &SqlitePool, cfg: &IngestConfig) -> ApiResult<Report
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|err| crate::error::ApiError::Internal(anyhow::anyhow!("http client: {err}")))?;
 
@@ -220,6 +221,7 @@ async fn handle_job(
             .header("X-Name", &job.slug)
             .header("X-Original-Path", original_path(&job.tape_id))
             .header("Content-Type", "audio/mpeg")
+            .header(reqwest::header::CONTENT_LENGTH, size_bytes)
             .body(body)
             .send()
             .await
@@ -271,10 +273,11 @@ fn object_url(base: &str, sha256: &str) -> String {
 
 async fn fail(pool: &SqlitePool, job: &TapeJobClaimDto, message: String) -> JobOutcome {
     tracing::warn!(tape_id = %job.tape_id, job_id = %job.id, "tape ingest failed: {message}");
-    if let Err(err) = tape_jobs::fail_upload(pool, &job.id, &message).await {
+    let terminal = job.attempts >= MAX_UPLOAD_ATTEMPTS;
+    if let Err(err) = tape_jobs::fail_upload(pool, &job.id, &message, terminal).await {
         tracing::warn!(job_id = %job.id, "failed to record upload failure: {err}");
     }
-    if job.attempts >= MAX_UPLOAD_ATTEMPTS {
+    if terminal {
         let result = sqlx::query(
             "UPDATE tapes SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'pending'",
         )
