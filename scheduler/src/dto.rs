@@ -844,6 +844,11 @@ pub struct ControlStateDto {
     /// `true` when `active_layer` is the observed (Icecast-derived) one.
     #[serde(default)]
     pub observed: bool,
+    /// Machine-readable observation reason (`silent`, `icecast_unreachable`,
+    /// `live`, `db_match`, `rotation_match`, `external`, `relay_setting`,
+    /// `unknown`), or `null` (Issue #140).
+    #[serde(default)]
+    pub observed_reason: Option<String>,
     /// Icecast reports an audible source (false when silent/unreachable).
     #[serde(default)]
     pub on_air: bool,

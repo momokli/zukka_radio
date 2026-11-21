@@ -11,7 +11,8 @@
 //! | --------------------------------- | ------- | ----------------------------------- |
 //! | `zukka_icecast_listeners`         | gauge   | reuses [`crate::api::ops`] poll     |
 //! | `zukka_live_sources`              | gauge   | `store::control::live_source_count` |
-//! | `zukka_source_state{layer}`       | gauge   | `store::control::state` (6 layers)  |
+//! | `zukka_source_state{layer}`       | gauge   | derived K3 layer (6 layers)         |
+//! | `zukka_source_observed{layer}`    | gauge   | observed Icecast layer (#140)       |
 //! | `zukka_queue_fill_seconds{queue}` | gauge   | SQL join `queue_items` → `tracks`   |
 //! | `zukka_hls_segment_age_seconds`   | gauge   | newest file in `ZUKKA_HLS_DIR`      |
 //! | `zukka_music_api_errors_total`    | counter | external-authority poll failures    |
@@ -193,22 +194,24 @@ pub async fn render(pool: &SqlitePool) -> String {
     };
     out.push_str(&format!("zukka_live_sources {live_sources}\n"));
 
-    // zukka_source_state{layer} — 1 for the active layer, else 0.
+    // zukka_source_state{layer} — 1 for the derived (K3) layer, else 0.
+    // DD7: the monitoring contract stays on the derived layer; the observed
+    // Icecast layer is exposed separately as `zukka_source_observed`.
     header_block(
         &mut out,
         "zukka_source_state",
-        "Whether a priority layer is the active output layer (1) or not (0).",
+        "Whether a priority layer is the derived (scheduler DB) output layer (1) or not (0).",
         "gauge",
     );
-    let (active_layer, observed_layer) = match crate::store::control::state(pool).await {
-        Ok(state) => (state.active_layer, state.observed_layer),
+    let (derived_layer, observed_layer) = match crate::store::control::state(pool).await {
+        Ok(state) => (state.derived_layer, state.observed_layer),
         Err(err) => {
             tracing::warn!("metrics: control state failed: {err:#}");
             (None, None)
         }
     };
     for layer in LAYERS {
-        let value = u8::from(active_layer == Some(layer));
+        let value = u8::from(derived_layer == Some(layer));
         out.push_str(&format!(
             "zukka_source_state{{layer=\"{}\"}} {value}\n",
             escape_label(layer.as_str())
@@ -216,7 +219,7 @@ pub async fn render(pool: &SqlitePool) -> String {
     }
 
     // zukka_source_observed{layer} — #140: 1 for the Icecast-observed layer.
-    // `zukka_source_state` keeps its derived/effective contract above.
+    // `zukka_source_state` keeps its derived contract above (DD7).
     header_block(
         &mut out,
         "zukka_source_observed",

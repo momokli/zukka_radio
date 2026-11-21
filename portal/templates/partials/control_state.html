@@ -64,14 +64,12 @@
 
   <section class="control-section">
     <h2>Status</h2>
-    <p>On Air:
-      {% match view.active_layer %}
-      {% when Some with (layer) %}
-      <strong>{{ layer }}</strong>{% match view.layer_source %}{% when Some with (label) %} <span class="muted">({{ label }})</span>{% when None %}{% endmatch %}
-      {% when None %}
-      {% if view.on_air %}<strong>unbekannt</strong>{% else %}<strong>Stille</strong>{% endif %}
-      {% endmatch %}
-    </p>
+    <p>On Air: <strong>{{ view.on_air_label }}</strong>{% match view.on_air_note %}{% when Some with (note) %} <span class="muted">({{ note }})</span>{% when None %}{% endmatch %}</p>
+    {% match view.derived_layer %}
+    {% when Some with (derived) %}
+    <p class="muted">Geplant (abgeleitet): <code>{{ derived }}</code></p>
+    {% when None %}
+    {% endmatch %}
     <p>Pause: <strong>{% if view.paused %}an{% else %}aus{% endif %}</strong>{% if view.derived %} <span class="muted">(Quelle abgeleitet)</span>{% endif %}</p>
     {% if view.can_write %}
     <form method="post" action="/control/pause" class="inline">

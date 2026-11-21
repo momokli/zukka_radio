@@ -410,6 +410,7 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
         derived_layer,
         active_layer_source,
         observed: observed.layer.is_some(),
+        observed_reason: Some(observed.reason.to_string()),
         on_air: observed.on_air,
         observed_now_playing: observed.now_playing,
     })

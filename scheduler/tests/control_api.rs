@@ -777,6 +777,7 @@ async fn t27_state_observed_relay_from_icecast() {
     assert_eq!(body["active_layer"], "relay");
     assert_eq!(body["active_layer_source"], "observed");
     assert_eq!(body["observed"], true);
+    assert_eq!(body["observed_reason"], "external");
     assert_eq!(body["on_air"], true);
     assert_eq!(body["observed_now_playing"]["title"], "SomaFM - Deep Space");
     assert_eq!(body["observed_now_playing"]["artist"], "SomaFM");
@@ -798,6 +799,7 @@ async fn t28_state_unreachable_icecast_falls_back_to_derived() {
     assert_eq!(body["active_layer"], "queue");
     assert_eq!(body["active_layer_source"], "derived");
     assert_eq!(body["observed"], false);
+    assert_eq!(body["observed_reason"], "icecast_unreachable");
     assert_eq!(body["on_air"], false);
     assert!(body["observed_now_playing"].is_null());
 }
@@ -818,8 +820,57 @@ async fn t27_silent_icecast_keeps_derived_layer() {
     let (status, body) = get(&app, "/api/v1/control/state").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["on_air"], false);
+    assert_eq!(body["observed_reason"], "silent");
     assert_eq!(body["observed_layer"], Value::Null);
     // relay setting still derives `relay` on the DB path.
     assert_eq!(body["active_layer"], "relay");
     assert_eq!(body["active_layer_source"], "derived");
+}
+
+/// DD7 (#140): `zukka_source_state` stays on the derived K3 layer even when
+/// Icecast observes an external relay; the observed layer is reported only via
+/// `zukka_source_observed`.
+#[tokio::test]
+async fn t27_metrics_source_state_stays_derived() {
+    let _env = lock_state_env();
+    let url = spawn_icecast_fixture(
+        r#"{"icestats":{"source":{"server_name":"zukka","listenurl":"http://icecast:8000/stream.mp3",
+        "title":"SomaFM - Deep Space","artist":"SomaFM","listeners":9}}}"#,
+    )
+    .await;
+    // Rust 2024: process-env mutation is unsafe; `STATE_ENV_LOCK` serializes it.
+    unsafe {
+        std::env::set_var(zukka_scheduler::icecast::ICECAST_STATUS_URL_ENV, &url);
+    }
+
+    let (_dir, pool, app) = setup().await;
+    seed_setting(&pool, "control.forced_layer", "queue").await;
+
+    let request = Request::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .expect("request");
+    let response = app.oneshot(request).await.expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes);
+
+    // Derived (K3) layer stays authoritative for the monitoring contract...
+    assert!(
+        body.contains(r#"zukka_source_state{layer="queue"} 1"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"zukka_source_state{layer="relay"} 0"#),
+        "{body}"
+    );
+    // ...while the observed relay is exposed separately.
+    assert!(
+        body.contains(r#"zukka_source_observed{layer="relay"} 1"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"zukka_source_observed{layer="queue"} 0"#),
+        "{body}"
+    );
 }

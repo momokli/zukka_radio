@@ -408,6 +408,12 @@ pub struct ControlView {
     pub now_source: Option<String>,
     /// Icecast reports audible output (Issue #140).
     pub on_air: bool,
+    /// Machine-readable observation reason (`silent`, `icecast_unreachable`, …).
+    pub observed_reason: Option<String>,
+    /// "On Air" label derived from the **observed** signal (US7, #140).
+    pub on_air_label: String,
+    /// Optional note explaining the on-air label (e.g. "Icecast nicht erreichbar").
+    pub on_air_note: Option<String>,
     /// Observed / derived layer plus a human-readable origin label (#140).
     pub observed_layer: Option<String>,
     pub derived_layer: Option<String>,
@@ -460,6 +466,22 @@ impl ControlView {
         });
 
         let has_connected = !state.live.connected.is_empty();
+
+        // US7 (#140): render "On Air" from the *observed* signal, not the
+        // effective layer — a derived layer must not hide an observed silence.
+        let (on_air_label, on_air_note) = match state.observed_reason.as_deref() {
+            Some("silent") => ("Stille".to_string(), None),
+            Some("icecast_unreachable") => (
+                "unbekannt".to_string(),
+                Some("Icecast nicht erreichbar".to_string()),
+            ),
+            _ => match state.observed_layer.as_deref() {
+                Some(layer) => (layer.to_string(), Some("beobachtet".to_string())),
+                None if state.on_air => ("unbekannt".to_string(), None),
+                None => ("Stille".to_string(), None),
+            },
+        };
+
         Self {
             layers,
             active_layer,
@@ -474,6 +496,9 @@ impl ControlView {
             now_duration,
             now_source,
             on_air: state.on_air,
+            observed_reason: state.observed_reason,
+            on_air_label,
+            on_air_note,
             observed_layer: state.observed_layer,
             derived_layer: state.derived_layer,
             layer_source,
@@ -498,6 +523,9 @@ impl ControlView {
             now_duration: String::new(),
             now_source: None,
             on_air: false,
+            observed_reason: None,
+            on_air_label: "Stille".to_string(),
+            on_air_note: None,
             observed_layer: None,
             derived_layer: None,
             layer_source: None,

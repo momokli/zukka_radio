@@ -2268,6 +2268,9 @@ pub struct ControlState {
     pub active_layer_source: Option<String>,
     #[serde(default)]
     pub observed: bool,
+    /// Machine-readable observation reason (#140).
+    #[serde(default)]
+    pub observed_reason: Option<String>,
     #[serde(default)]
     pub on_air: bool,
     #[serde(default)]

@@ -292,6 +292,7 @@ fn sample_state(active_caster: Option<&str>) -> ControlState {
         derived_layer: Some("queue".into()),
         active_layer_source: Some("observed".into()),
         observed: true,
+        observed_reason: Some("db_match".into()),
         on_air: true,
         observed_now_playing: None,
     }
@@ -305,6 +306,7 @@ fn observed_relay_and_silence_render() {
     state.derived_layer = None;
     state.active_layer_source = Some("observed".into());
     state.observed = true;
+    state.observed_reason = Some("external".into());
     state.on_air = true;
     state.now_playing = None;
     state.observed_now_playing = Some(ObservedNowPlaying {
@@ -325,12 +327,14 @@ fn observed_relay_and_silence_render() {
     silent.derived_layer = None;
     silent.active_layer_source = None;
     silent.observed = false;
+    silent.observed_reason = Some("silent".into());
     silent.on_air = false;
     silent.now_playing = None;
     silent.observed_now_playing = None;
     let view = ControlView::from_state(silent, false);
     assert!(!view.on_air);
     assert!(view.active_layer.is_none());
+    assert_eq!(view.observed_reason.as_deref(), Some("silent"));
     assert!(view.now_title.is_none());
 }
 
@@ -562,6 +566,7 @@ async fn fragment_shows_relay_from_icecast() {
     state.derived_layer = None;
     state.active_layer_source = Some("observed".into());
     state.observed = true;
+    state.observed_reason = Some("external".into());
     state.on_air = true;
     state.now_playing = None;
     state.observed_now_playing = Some(ObservedNowPlaying {
@@ -590,6 +595,7 @@ async fn fragment_shows_silence() {
     state.derived_layer = None;
     state.active_layer_source = None;
     state.observed = false;
+    state.observed_reason = Some("silent".into());
     state.on_air = false;
     state.now_playing = None;
     state.observed_now_playing = None;
@@ -600,6 +606,61 @@ async fn fragment_shows_silence() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("Stille"), "{body}");
     assert!(body.contains("Nichts läuft."), "{body}");
+}
+
+/// Issue #140 / US7: a silent Icecast with a non-null derived layer still
+/// renders "Stille" (the observed signal wins over the derived intent).
+#[tokio::test]
+async fn fragment_shows_silence_despite_derived_layer() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut state = sample_state(None);
+    // Effective layer stays on the derived one, but Icecast is silent.
+    state.active_layer = Some("rotation".into());
+    state.observed_layer = None;
+    state.derived_layer = Some("rotation".into());
+    state.active_layer_source = Some("derived".into());
+    state.observed = false;
+    state.observed_reason = Some("silent".into());
+    state.on_air = false;
+    state.now_playing = None;
+    state.observed_now_playing = None;
+    control.set_state(state);
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Stille"), "silence despite derived: {body}");
+    assert!(
+        body.contains("Geplant (abgeleitet): <code>rotation</code>"),
+        "derived intent still visible: {body}"
+    );
+}
+
+/// Issue #140: an unreachable Icecast renders "unbekannt", never "Stille".
+#[tokio::test]
+async fn fragment_shows_unknown_when_icecast_unreachable() {
+    let control = Arc::new(FakeControlApi::new());
+    let mut state = sample_state(None);
+    state.active_layer = Some("queue".into());
+    state.observed_layer = None;
+    state.derived_layer = Some("queue".into());
+    state.active_layer_source = Some("derived".into());
+    state.observed = false;
+    state.observed_reason = Some("icecast_unreachable".into());
+    state.on_air = false;
+    state.now_playing = None;
+    state.observed_now_playing = None;
+    control.set_state(state);
+    let app = router(caster_perms(), control);
+    let (session, _) = login(&app).await;
+    let (status, body) = get(&app, &session, "/control/state", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("unbekannt"), "{body}");
+    assert!(
+        body.contains("Icecast nicht erreichbar"),
+        "explains the outage: {body}"
+    );
+    assert!(!body.contains("Stille"), "not silent: {body}");
 }
 
 #[tokio::test]
