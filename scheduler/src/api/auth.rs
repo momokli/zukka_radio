@@ -2,8 +2,10 @@
 //!
 //! Two distinct concerns live here:
 //!
-//! * The **Liquidsoap token** layer ([`require_token`]) guards only the
-//!   `/playback/*` sub-router (wired in [`crate::api::playback`]). Fail-closed.
+//! * The **Liquidsoap token** layer ([`require_token`]) guards the
+//!   `/playback/*` sub-router (wired in [`crate::api::playback`]) and, since
+//!   Issue #105, the Liquidsoap-facing `/internal/harbor/auth` route (wired in
+//!   [`crate::api`]). Fail-closed.
 //! * The **identity authority** (Issue #16): service-token-guarded `/internal`
 //!   handlers for `verify`, session write-through and password changes. The
 //!   scheduler is the only writer of `casters`/`sessions`/`roles` (§4.1/§4.3).
@@ -152,8 +154,10 @@ pub async fn verify(
 /// `POST /internal/harbor/auth` — fail-closed Harbor ingest check (§4.2, #33).
 ///
 /// Called by Liquidsoap's `input.harbor(auth=…)` callback on connection setup.
-/// Must answer fast (< 200 ms): the store does one indexed lookup and exactly
-/// one Argon2 verification, no extra DB roundtrip.
+/// Guarded by the Liquidsoap token (`X-Liquidsoap-Token`, [`require_token`]),
+/// not the portal service token (§4.1, #105). Must answer fast (< 200 ms): the
+/// store does one indexed lookup and exactly one Argon2 verification, no extra
+/// DB roundtrip.
 pub async fn harbor_auth(
     State(pool): State<SqlitePool>,
     ApiJson(req): ApiJson<HarborAuthRequest>,

@@ -47,9 +47,14 @@ services:
       scheduler:
         condition: service_healthy
     # #109: output.icecast reads the source password from the environment and
+    # #109: output.icecast reads the source password from the environment and
     # fails fast when unset. Must match the icecast service value.
+    # #105: Harbor auth calls the scheduler (back net) with the Liquidsoap
+    # token; `SCHEDULER_BASE_URL` defaults to the in-network name.
     environment:
       ZUKKA_ICECAST_SOURCE_PASSWORD: ${ZUKKA_ICECAST_SOURCE_PASSWORD}
+      LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
+      SCHEDULER_BASE_URL: ${ZUKKA_SCHEDULER_URL:-http://scheduler:8080}
     ports:
       - "0.0.0.0:${ZUKKA_PORT_HARBOR:-12001}:8001"
     volumes:

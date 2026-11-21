@@ -195,7 +195,6 @@ pub fn router(pool: SqlitePool) -> Router {
     // portal service token (§4.1); RBAC stays a portal concern (§6.10.1).
     let internal = Router::new()
         .route("/auth/verify", post(auth::verify))
-        .route("/harbor/auth", post(auth::harbor_auth))
         .route("/sessions", post(auth::create_session))
         .route("/sessions/current", get(auth::current_session))
         .route(
@@ -232,6 +231,15 @@ pub fn router(pool: SqlitePool) -> Router {
             get(waveforms::get_one),
         )
         .route_layer(axum::middleware::from_fn(auth::require_service_token));
+    // Issue #105: `/harbor/auth` is Liquidsoap-facing, so it carries the
+    // Liquidsoap token layer (`X-Liquidsoap-Token`), not the portal service
+    // token (§4.1). It is merged **after** the `internal` route_layer so it
+    // does not inherit the service-token guard; the path stays
+    // `/api/v1/internal/harbor/auth`.
+    let harbor = Router::new()
+        .route("/harbor/auth", post(auth::harbor_auth))
+        .route_layer(axum::middleware::from_fn(auth::require_token));
+    let internal = internal.merge(harbor);
     let api = api.nest("/internal", internal);
 
     Router::new()

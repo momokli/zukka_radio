@@ -112,15 +112,22 @@ Variante — das Portal zeigt dem Caster seinen Slot als „dein Mount".
 Konsequenz: `N` muss **≥ Anzahl aktiver Caster** sein. Eine Pool-Vergrößerung
 ist ein Script-Änderung mit Neustart (§4, O1).
 
-### D4 — Auth über das Portal
+### D4 — Auth über den Scheduler
 
 `input.harbor(auth=...)` bekommt `({address, password, user}) -> bool`. Der
-Callback ruft `POST /internal/harbor/auth` auf dem **Portal** auf (Contract in
-`portal.md` §3.4), nicht auf dem Scheduler.
+Callback ruft `POST /api/v1/internal/harbor/auth` auf dem **Scheduler** auf
+(Contract in `consolidated-architecture.md` §4.2), nicht auf dem Portal. Der
+Pfad ist mit dem Liquidsoap-Token geschützt: Header
+`X-Liquidsoap-Token: $LIQUIDSOAP_TOKEN` (§4.1) — **nicht** mit dem
+Portal-Service-Token (Least Privilege, Issue #105).
 
-- Timeout 500 ms. `portal.md` fordert eine Antwort in **< 200 ms**; Liquidsoap
-  weist die Verbindung bei Überschreitung seines Timeouts ab.
-- **Fail-closed** bei unbekannten Credentials.
+- Ziel-URL aus `SCHEDULER_BASE_URL` (Default `http://scheduler:8080`), Token
+  aus `LIQUIDSOAP_TOKEN`. Fehlt eines der beiden, ist die Prüfung fail-closed
+  (`false`).
+- Timeout 500 ms. Der Handler antwortet in **< 200 ms**; Liquidsoap weist die
+  Verbindung bei Überschreitung seines Timeouts ab.
+- **Fail-closed:** nur HTTP `200` ⇒ `true`; alles andere (401/422/5xx,
+  Verbindungsfehler) ⇒ `false`.
 - Etablierte Verbindungen werden nicht nachträglich gekappt — `auth` läuft nur
   beim Verbindungsaufbau. Ein Credential-Entzug wirkt erst beim nächsten
   Connect. Das ist gewollt: „Kein Kick/Bann — nur wer ist live."
@@ -233,15 +240,16 @@ publiziert und ist nur über das `back`-Netz erreichbar.
 > ist ein Container-interner Port und kollidiert nicht mit dem dortigen Schema —
 > er muss aber in die Compose-/Netzwerkdefinition aufgenommen werden.
 
-### D15 — Events pusht Liquidsoap an zwei Ziele
+### D15 — Events pusht Liquidsoap nur an den Scheduler
 
-- Verbindungsereignisse → **Portal** (`/internal/harbor/connected`,
-  `/internal/harbor/disconnected`, Contract in `portal.md`).
 - Wiedergabeereignisse → **Scheduler** (`/playback/started`, `/playback/ended`,
   `/playback/error`, Contract in `data-model.md`).
+- Verbindungsereignisse (`connected`/`disconnected`) → **entfallen** in v2: der
+  Scheduler ist Auth-Autorität (D4), ein eigener Event-Push an das Portal
+  entfällt (`consolidated-architecture.md` §5).
 
-Auth: Portal `Authorization: Bearer <INTERNAL_TOKEN>`, Scheduler
-`X-Liquidsoap-Token` (beides laut `infrastructure.md` §3).
+Auth: Scheduler `X-Liquidsoap-Token` (`$LIQUIDSOAP_TOKEN`,
+`consolidated-architecture.md` §4.1).
 
 Hörerzahlen und Mount-Status kommen aus den Icecast-Admin-Stats. Zwei Quellen,
 klar getrennt: Liquidsoap weiß, _was läuft_; Icecast weiß, _wer zuhört_.
@@ -349,21 +357,29 @@ rotation_src = crossfade(
 # lib/harbor.liq
 harbor_mounts = ["/live/slot-01", "/live/slot-02", ...]   # N Slots, aus Env
 
+scheduler_base_url = environment.get(default="", "SCHEDULER_BASE_URL")
+liquidsoap_token   = environment.get(default="", "LIQUIDSOAP_TOKEN")
+
 def harbor_auth(m) =
   # Der Callback kennt den Mount nicht — er kommt per Closure aus dem Slot.
   fun (r) ->
-    try
-      resp = http.post(
-        "http://portal:8080/internal/harbor/auth",
-        json.stringify([("mount", m),
-                        ("username", r.user),
-                        ("password", r.password)]),
-        headers = [("Content-Type", "application/json"),
-                   ("Authorization", "Bearer #{internal_token()}")],
-        timeout = 0.5
-      )
-      resp != ""
-    catch _ -> false
+    if scheduler_base_url == "" or liquidsoap_token == "" then
+      false
+    else
+      try
+        resp = http.post(
+          scheduler_base_url ^ "/api/v1/internal/harbor/auth",
+          data = json.stringify({mount = m,
+                                 username = r.user,
+                                 password = r.password}),
+          headers = [("Content-Type", "application/json"),
+                     ("X-Liquidsoap-Token", liquidsoap_token)],
+          timeout = 0.5
+        )
+        resp.status_code == 200
+      catch e do
+        false
+      end
     end
   end
 end
@@ -376,9 +392,11 @@ Anmerkungen:
   (`harbor_auth(m)`), und der Mount wird aus dem Slot beigesteuert, nicht aus
   dem Callback-Argument.
 - `auth` ist synchron und blockiert den Verbindungsaufbau. 500 ms Timeout, weil
-  `portal.md` < 200 ms verlangt; Liquidsoaps eigener Timeout ist großzügiger,
-  aber ein hängendes Portal darf keinen Caster unbegrenzt warten lassen.
-- Ob `http.post` im Ziel-Build vorhanden ist, wurde **nicht** geprüft.
+  der Handler < 200 ms verlangt; Liquidsoaps eigener Timeout ist großzügiger,
+  aber ein hängender Scheduler darf keinen Caster unbegrenzt warten lassen.
+- Gegen `savonet/liquidsoap:v2.4.5` verifiziert: `http.post` liefert ein
+  Response-Handle mit `status_code`; Fehler werden mit `try … catch e do … end`
+  abgefangen (die Form `catch _ ->` parst **nicht**).
 
 #### FCFS-Registry
 
@@ -712,7 +730,8 @@ def next_for(source_id) =
       timeout = 5.0
     )
     if body == "" then null() else request.create(uri_of(body)) end
-  catch _ -> null()
+  catch e do
+    null()
   end
 end
 
@@ -768,13 +787,8 @@ def emit(url, body, token_header) =
   ignore(http.post(url, json.stringify(body), headers = token_header))
 end
 
-def emit_harbor(path, mount) =
-  emit("http://portal:8080" ^ path,
-       [("mount", mount), ("ts", string_of(time()))],
-       [("Content-Type", "application/json"),
-        ("Authorization", "Bearer #{internal_token()}")])
-end
-
+# v2: Harbor-Verbindungsereignisse an das Portal entfallen (D15,
+# consolidated-architecture.md §5); der Scheduler ist Auth-Autorität (D4).
 def emit_playback(kind, item) =
   emit("http://scheduler:8080/api/v1/playback/" ^ kind,
        item,
@@ -787,8 +801,8 @@ Events:
 
 | Event          | Ziel      | Auslöser                                 |
 | -------------- | --------- | ---------------------------------------- |
-| `connected`    | Portal    | `on_connect` eines Harbor-Slots          |
-| `disconnected` | Portal    | `on_disconnect`                          |
+| `connected`    | — (entfällt) | `on_connect` eines Harbor-Slots       |
+| `disconnected` | — (entfällt) | `on_disconnect`                       |
 | `started`      | Scheduler | `on_track` des Master                    |
 | `ended`        | Scheduler | `on_track`-Wechsel                       |
 | `error`        | Scheduler | fehlgeschlagener Request / Output-Fehler |
@@ -852,9 +866,11 @@ mit der Queue von Caster A, wenn Caster B live geht? Läuft A weiter im
 Hintergrund (dann braucht es pro Queue einen eigenen `request.dynamic`, was D7
 widerspricht) oder pausiert sie? Produktentscheidung.
 
-**O9 — Auth-Transport.**
-`portal.md` definiert `POST /internal/harbor/auth` mit JSON-Body. Ob
-Liquidsoaps `http.post` das im Ziel-Build zuverlässig kann, ist ungeprüft.
+**O9 — Auth-Transport (geklärt, #105).**
+`POST /api/v1/internal/harbor/auth` auf dem Scheduler, JSON-Body. Gegen
+`savonet/liquidsoap:v2.4.5` verifiziert: `http.post` existiert und liefert ein
+Response-Handle mit `status_code`; der Fehlerpfad ist `try … catch e do … end`
+(die Form `catch _ ->` parst **nicht**). `liquidsoap --check` ist grün.
 
 **O10 — Metadaten-Charset.**
 `input.harbor` hat `metadata_charset` und `icy_metadata_charset`. Caster-Tools
@@ -905,11 +921,11 @@ Muss vor dem ersten Deployment geprüft werden.
 Compose-Definition. Wird er versehentlich publiziert, ist die Live-Steuerung
 offen.
 
-**R6 — Auth blockiert den Harbor-Thread und hängt am Portal.**
-`auth` ist synchron mit 500 ms Timeout. Ist das Portal down, können sich keine
-Caster verbinden (fail-closed). Das ist die Kehrseite von D4. Abwägung: Ein
-fail-open würde bei Portal-Ausfall beliebige Credentials akzeptieren — für ein
-Radio mit öffentlichem Ingest ist das schlechter.
+**R6 — Auth blockiert den Harbor-Thread und hängt am Scheduler.**
+`auth` ist synchron mit 500 ms Timeout. Ist der Scheduler down, können sich
+keine Caster verbinden (fail-closed). Das ist die Kehrseite von D4. Abwägung:
+Ein fail-open würde bei Scheduler-Ausfall beliebige Credentials akzeptieren —
+für ein Radio mit öffentlichem Ingest ist das schlechter.
 
 **R7 — `request.dynamic`-Fehler erzeugen Stille.**
 Wenn der Scheduler 5xx liefert und die Rotation ebenfalls leer ist, fällt die

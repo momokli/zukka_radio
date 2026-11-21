@@ -13,6 +13,12 @@ harbor_slots_count = int_of_string(
   environment.get(default="32", "ZUKKA_HARBOR_SLOTS")
 )
 
+# Issue #105: the Harbor auth check calls the scheduler (not the portal) and is
+# guarded by the Liquidsoap token (§4.1). Both values are read unprefixed, like
+# the scheduler reads them; the token must match the scheduler's LIQUIDSOAP_TOKEN.
+scheduler_base_url = environment.get(default="", "SCHEDULER_BASE_URL")
+liquidsoap_token = environment.get(default="", "LIQUIDSOAP_TOKEN")
+
 def harbor_mount(i) =
   # list.init/list.map pass a zero-based index; slots are 1-based.
   # Canonical mount string carries the leading slash (issue #30 D-A): the same
@@ -26,13 +32,29 @@ harbor_mounts = list.init(harbor_slots_count, harbor_mount)
 # {address, user, password}, not the requested mount. The mount is captured
 # here so the real check (issue #33) can attribute credentials to a slot.
 #
-# TODO(#33): replace the fail-open placeholder below with the portal call
-#   POST /internal/harbor/auth (contract in docs/liquidsoap.md §3.3).
-# The marker is intentional: without it this would be a silent fail-open.
+# Fail-closed (issue #105): only HTTP 200 from the scheduler ⇒ true. A missing
+# token/URL, a non-200 status, or a connection error all ⇒ false. `catch e do`
+# is the 2.4.5 syntax (the doc form `catch _ ->` does not parse).
 def harbor_auth(mount) =
   fun (r) -> begin
-    log("harbor auth placeholder accepted mount=#{mount} user=#{r.user} (TODO #33)")
-    true
+    if scheduler_base_url == "" or liquidsoap_token == "" then
+      log("harbor auth rejected mount=#{mount} user=#{r.user}: missing SCHEDULER_BASE_URL/LIQUIDSOAP_TOKEN")
+      false
+    else
+      try
+        resp = http.post(
+          scheduler_base_url ^ "/api/v1/internal/harbor/auth",
+          data=json.stringify({mount=mount, username=r.user, password=r.password}),
+          headers=[("Content-Type", "application/json"),
+                   ("X-Liquidsoap-Token", liquidsoap_token)],
+          timeout=0.5
+        )
+        resp.status_code == 200
+      catch e do
+        log("harbor auth error mount=#{mount} user=#{r.user}: #{e}")
+        false
+      end
+    end
   end
 end
 
