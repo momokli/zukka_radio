@@ -84,13 +84,14 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
 /// Pure channel selection: in `dev` a set test chat wins, every other
 /// environment ignores it. `None` when the main chat is unset.
 pub fn resolve_chat(env: Option<&str>, main: Option<&str>, test: Option<&str>) -> Option<String> {
-    let main = trimmed(main)?;
+    // DEV: the test channel is enough on its own — a main channel is not
+    // required (and usually not configured in DEV).
     if env.map(str::trim) == Some("dev") {
         if let Some(test) = trimmed(test) {
             return Some(test.to_string());
         }
     }
-    Some(main.to_string())
+    trimmed(main).map(str::to_string)
 }
 
 /// Pure config construction (no env access — easy to unit-test).
@@ -351,6 +352,20 @@ mod tests {
         assert_eq!(
             resolve_chat(Some("dev"), Some("main"), Some("   ")),
             Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_chat_dev_test_channel_needs_no_main() {
+        // DEV usually has no main channel configured; the test channel alone
+        // must enable delivery.
+        assert_eq!(
+            resolve_chat(Some("dev"), None, Some("test")),
+            Some("test".to_string())
+        );
+        assert_eq!(
+            resolve_chat(Some("dev"), Some(""), Some("test")),
+            Some("test".to_string())
         );
     }
 
