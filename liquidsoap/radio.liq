@@ -17,6 +17,7 @@ settings.log.level := 3
 %include "lib/playback.liq"
 %include "lib/layers.liq"
 %include "lib/master.liq"
+%include "lib/events.liq"
 %include "lib/tape.liq"
 %include "lib/outputs.liq"
 %include "lib/control.liq"
