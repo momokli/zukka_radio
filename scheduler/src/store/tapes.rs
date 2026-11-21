@@ -89,7 +89,11 @@ pub async fn finalize_live_tape(
 
     let ended = fmt_storage_time(ended_at);
     let now = now_ts();
-    sqlx::query("UPDATE tapes SET ended_at = ?, updated_at = ? WHERE id = ?")
+    // Clamp to the tape's own `started_at`: the schema enforces
+    // `CHECK (ended_at >= started_at)` and the caller may pass a `now` that
+    // trails the tape start (clock step, cancel shortly after start). The
+    // canonical UTC storage form makes the text `max()` chronological.
+    sqlx::query("UPDATE tapes SET ended_at = max(?, started_at), updated_at = ? WHERE id = ?")
         .bind(&ended)
         .bind(&now)
         .bind(&id)

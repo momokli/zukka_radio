@@ -540,6 +540,13 @@ Ablauf:
 den Mix als MP3 192k.
 3. Scheduler ruft `tape.stop` am Broadcast-Ende und stempelt `tapes.ended_at`.
 
+Auch ein **Cancel** eines bereits laufenden (`live`) Broadcasts schließt den
+Recorder: der Scheduler finalisiert das pending live-Tape (`ended_at` wird auf
+`>= started_at` geklemmt, `status` bleibt `pending`) und pusht `tape.stop`.
+Wird ein noch `scheduled` Broadcast gecancelt, existiert kein Tape — es passiert
+nichts (kein Fehler). Cancel ist damit deckungsgleich mit End, nur ohne
+`broadcasts.ends_at`-Stempel.
+
 Format und Pfad (consolidated §3.6/§3.7): **MP3 192k**, `/recordings/<uuidv7>.mp3`.
 Der Tap sitzt auf `safe_radio` (`mksafe(radio)`, PCM) — wie die Icecast-/HLS-Kette
 und damit vor dem Encoding; ein Quellen-Ausfall nimmt Stille auf, statt den
