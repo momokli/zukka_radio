@@ -43,8 +43,11 @@ jobs:
 
       - name: Every service is running
         run: |
-          docker compose -f compose/dev.yml ps --format json \
-            | jq -s -e 'add | all(.[]; .State == "running")'
+          total=$(docker compose -f compose/dev.yml config --services | wc -l)
+          running=$(docker compose -f compose/dev.yml ps --status running --quiet | wc -l)
+          echo "services=$total running=$running"
+          docker compose -f compose/dev.yml ps
+          test "$total" -eq "$running"
 
       - name: Smoke
         run: ./scripts/smoke.sh dev
