@@ -498,3 +498,77 @@ dass der Scheduler den upload-Job in derselben Tx wie das Finalisieren
 - `cargo fmt --all` → sauber
 - `cargo clippy --workspace --all-targets -- -D warnings` → exit 0
 - `cargo test --workspace` → alle Binaries gruen; `tape_lifecycle_ingest` 1/1
+
+## Tester-Report (Stage 6, Integration/E2E)
+
+Host planet · Branch `feat/132-tape-ingest` @ `2a5ba7f` (+ neue Tests) · Repo `zukka_radio`
+
+### Ausgefuehrte Befehle
+
+| Befehl | Ergebnis |
+|---|---|
+| `cargo test --workspace` | exit 0 — alle Binaries gruen, 0 failed (u. a. `tape_ingest` 7/7, `tape_lifecycle_ingest` 2/2, `tape_jobs_api` 13/13, `schema_invariants` 21/21, `migration_smoke` 5/5) |
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, keine Warnungen |
+| Wiederholung 3x: `tape_ingest`, `tape_lifecycle_ingest`, `tape_jobs_api`, `schema_invariants`, `migration_smoke` | 3/3 gruen — kein Flake |
+
+Zusaetzlich wurde die komplette Suite ein zweites Mal (Summary-Lauf) ausgefuehrt: exit 0.
+Kein Flake beobachtet (der im Developer-Report erwaehnte einmalige `rotation_m3u`-Flake
+trat in keinem Lauf auf).
+
+### E2E-Pfad (fachlich, Black-Box gegen DB + HTTP-Router)
+
+Abgedeckt durch `tape_lifecycle_ingest::ingested_tape_becomes_ready_and_public` (neu):
+live broadcast start → Tape pending → end → upload-Job pending → `run_once` gegen
+Mock → `tapes.status='processing'`, `music_api_id`/`storage_key`=sha256, `size_bytes`,
+`format='mp3'`, `mime='audio/mpeg'`, `etag`, probe+peaks pending, upload `done`,
+Staging-Datei entfernt → Worker claimt probe (`pending→running`) + PATCH `done`
+(`duration_ms=3600000`) → Tape bleibt `processing` → peaks claim + PATCH `done` →
+`tapes.status='ready'` → **oeffentlicher Feed** (`zukka_tapes::api::router`,
+echte Read-Only-Oberflaeche) listet den Tape-Slug.
+
+Feed-Filter explizit geprueft: `processing` + `visible=1` → **nicht** im Feed;
+`ready` + `visible=1` → im Feed; `ready` + `visible=0` → **nicht** im Feed
+(`WHERE t.visible = 1 AND t.status = 'ready'`).
+
+### Fehler-/Grenzfaelle
+
+- **Fehlende Staging-Datei:** `tape_ingest::missing_staging_file_at_cap_fails_tape` (neu) —
+  Datei fehlt + `attempts=7` → naechster Lauf terminal: Job `failed` (8), `error` nennt
+  die fehlende Datei, `tapes.status='failed'`; kein Mock-Kontakt.
+- **Paralleler Doppel-Ingest:** `tape_ingest::concurrent_runs_upload_once` (neu) — zwei
+  gleichzeitige `run_once` → genau **ein** Upload (`HEAD`+`PUT` = 2 Requests), Job `done`
+  mit `attempts=1`, keine Doppel-Uploads/Unique-Konflikte; dritter Lauf claimt nichts.
+- **Idempotenter Broadcast-End:** `finalize_enqueues_upload_job_and_ingest_completes` —
+  zweites `finalize_live_tape` erzeugt **keinen** zweiten upload-Job
+  (`ON CONFLICT DO NOTHING`, Zaehler bleibt 1).
+- **Retry/Cap/Unreachable:** bestehende T3 (PUT 500 → `pending`, Datei bleibt, echter
+  Claim retried), T4 (Server unerreichbar), T5 (Cap terminal) weiter gruen.
+
+### Music-API-Contract gegen `docs/portal.md`
+
+- `PUT /objects/{sha256}` und `HEAD /objects/{sha256}` — Pfad aus `object_url`
+  (`{base}/objects/{sha}`), **kein** `/api/v1`-Praefix. T1 assertet exakt diesen Pfad.
+- Dedupe: `HEAD 200` → kein `PUT` (`Report.deduped`), T2 gruen.
+- Header: `Authorization: Bearer`, `X-Name` (Tape-Slug), `X-Original-Path`
+  (`/recordings/{tape_id}.mp3`), `Content-Type: audio/mpeg`, `Content-Length`
+  (aus `metadata().len()`), kein `Transfer-Encoding: chunked` — T1 assertet alle.
+- `X-ISRC` wird korrekt **nicht** gesetzt (Live-Tape ohne ISRC).
+
+### Ergaenzte Tests (nur Tests, kein Produktionscode)
+
+- `scheduler/tests/tape_lifecycle_ingest.rs`: `ingested_tape_becomes_ready_and_public`
+  (Ingest → probe/peaks via `/internal/tape-jobs` → ready → Feed inkl. Filter).
+- `scheduler/tests/tape_ingest.rs`: `missing_staging_file_at_cap_fails_tape`,
+  `concurrent_runs_upload_once`.
+- `scheduler/Cargo.toml`: Dev-Dependency `zukka-tapes = { path = "../tapes" }`
+  (nur Test-Binary, damit der Feed ueber den echten Public-Router geprueft wird).
+- `Cargo.lock` entsprechend aktualisiert.
+
+### Restrisiken
+
+- `music_api_id` ist `UNIQUE`: byte-identische Tapes kollidieren in `complete_upload`
+  (Dedupe auf Objektebene, Tape-Row-Kollision ungeloest) — unveraendert aus Verifier.
+- ETag der echten Music API bleibt unverifiziert (Fallback `etag=sha256`).
+- Kein Deploy; Feed-Pruefung nutzt denselben DB-Pool (kein echter Read-Only-Pool),
+  die SQL-Filter selbst sind identisch zum Produktionspfad.

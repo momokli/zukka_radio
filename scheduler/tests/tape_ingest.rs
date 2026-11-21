@@ -515,3 +515,92 @@ async fn attempt_cap_fails_job_and_tape() {
     );
     drop(fixture.dir);
 }
+
+// ---------------------------------------------------------------------------
+// T6 — missing staging file at the attempt cap marks job + tape terminal
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn missing_staging_file_at_cap_fails_tape() {
+    let fixture = setup().await;
+    // No staging file at all + the next claim raises attempts to the cap.
+    tokio::fs::remove_file(fixture.recordings.join(format!("{TAPE}.mp3")))
+        .await
+        .expect("remove staging file");
+    sqlx::query(
+        "UPDATE tape_jobs SET attempts = 7, updated_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
+    )
+    .bind(JOB)
+    .execute(&fixture.pool)
+    .await
+    .expect("prime attempts");
+
+    // No mock server is contacted: the missing file short-circuits the job.
+    let cfg = IngestConfig {
+        music_api_base: "http://127.0.0.1:9".into(),
+        token: "test-token".into(),
+        staging_root: fixture.recordings.clone(),
+    };
+    let report = tape_ingest::run_once(&fixture.pool, &cfg)
+        .await
+        .expect("run_once");
+    assert_eq!(report.failed, 1);
+
+    let (state, error, attempts) = job_state(&fixture.pool).await;
+    assert_eq!(state, "failed", "cap is terminal for a missing file");
+    assert_eq!(attempts, 8);
+    assert!(
+        error.as_deref().unwrap_or_default().contains("missing"),
+        "error must name the missing staging file: {error:?}"
+    );
+    let (status, _, _, _, _, _, _) = tape_fields(&fixture.pool).await;
+    assert_eq!(status, "failed");
+    drop(fixture.dir);
+}
+
+// ---------------------------------------------------------------------------
+// T7 — two concurrent ingest passes upload the tape exactly once
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrent_runs_upload_once() {
+    let fixture = setup().await;
+    // One upload = HEAD + PUT; the mock never sees a second pair.
+    let mock = mock_api(vec![reply(404), reply(200)]).await;
+    let cfg = config(&fixture, &mock.base);
+
+    let (first, second) = tokio::join!(
+        tape_ingest::run_once(&fixture.pool, &cfg),
+        tape_ingest::run_once(&fixture.pool, &cfg),
+    );
+    let first = first.expect("first run_once");
+    let second = second.expect("second run_once");
+    assert_eq!(
+        first.uploaded + second.uploaded,
+        1,
+        "exactly one pass performs the upload"
+    );
+
+    // The mock completes only if exactly two requests arrived; a duplicate
+    // upload would leave it waiting for more replies.
+    let seen = tokio::time::timeout(Duration::from_secs(5), mock.handle)
+        .await
+        .expect("duplicate upload: mock saw more than HEAD+PUT")
+        .expect("mock join");
+    assert_eq!(seen.len(), 2);
+
+    let (state, error, attempts) = job_state(&fixture.pool).await;
+    assert_eq!(state, "done");
+    assert_eq!(error, None);
+    assert_eq!(attempts, 1);
+    let (status, music_api_id, _, _, _, _, _) = tape_fields(&fixture.pool).await;
+    assert_eq!(status, "processing");
+    assert_eq!(music_api_id.as_deref(), Some(CONTENT_SHA));
+
+    // A third, sequential pass finds nothing left to claim.
+    let report = tape_ingest::run_once(&fixture.pool, &cfg)
+        .await
+        .expect("third run_once");
+    assert_eq!((report.uploaded, report.deduped, report.failed), (0, 0, 0));
+    drop(fixture.dir);
+}

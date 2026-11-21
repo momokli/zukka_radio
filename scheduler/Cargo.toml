@@ -38,6 +38,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+zukka-tapes = { path = "../tapes" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 mime = "0.3"

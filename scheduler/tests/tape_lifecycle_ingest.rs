@@ -18,6 +18,7 @@
 //! then logs "push disabled" instead of failing.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::Router;
@@ -33,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
+use zukka_scheduler::api::auth as api_auth;
 use zukka_scheduler::store::tapes;
 use zukka_scheduler::tape_ingest::{self, IngestConfig};
 
@@ -249,6 +251,71 @@ async fn upload_job_count(pool: &SqlitePool, tape_id: &str) -> i64 {
         .expect("upload job count")
 }
 
+fn service_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let token = "lifecycle-ingest-token".to_string();
+        // SAFETY: set once for the whole test binary, before any request.
+        unsafe { std::env::set_var(api_auth::SERVICE_TOKEN_ENV, &token) };
+        token
+    })
+}
+
+async fn send_auth(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {}", service_token()));
+    let request = match body {
+        Some(value) => {
+            builder = builder.header("content-type", "application/json");
+            builder
+                .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                .unwrap()
+        }
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = app.clone().oneshot(request).await.expect("router response");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
+}
+
+/// Feed slugs straight from the public read-only tapes API over the same DB.
+async fn feed_slugs(pool: &SqlitePool) -> Vec<String> {
+    let app = zukka_tapes::api::router(
+        pool.clone(),
+        "https://tapes.test".into(),
+        "http://music.invalid".into(),
+        "token".into(),
+        "http://scheduler.invalid".into(),
+        "token".into(),
+    );
+    let (status, value) = send(&app, Method::GET, "/api/v1/tapes", None).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    value["tapes"]
+        .as_array()
+        .expect("feed tapes array")
+        .iter()
+        .map(|tape| tape["slug"].as_str().expect("slug").to_string())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The test
 // ---------------------------------------------------------------------------
@@ -369,6 +436,192 @@ async fn finalize_enqueues_upload_job_and_ingest_completes() {
     assert!(
         !recordings.join(format!("{tape_id}.mp3")).exists(),
         "staging file removed after completion"
+    );
+
+    drop(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Ingest → probe/peaks → ready → public feed
+// ---------------------------------------------------------------------------
+
+/// Full black-box path: transition from the DB persists through the worker
+/// endpoints until the tape appears in the public feed.
+///
+/// 1. upload completes → `tapes.status='processing'`, `probe`/`peaks` pending;
+/// 2. a worker claims `probe` (`pending→running`) and PATCHes it `done` with
+///    `duration_ms` → tape stays `processing`;
+/// 3. the same for `peaks` → `tapes.status='ready'`;
+/// 4. the public feed (`zukka_tapes::api::router`, the real read-only surface)
+///    shows the tape only when `status='ready'` **and** `visible=1`.
+#[tokio::test]
+async fn ingested_tape_becomes_ready_and_public() {
+    let (dir, pool, app) = setup().await;
+    let recordings: PathBuf = dir.path().join("recordings");
+    tokio::fs::create_dir_all(&recordings)
+        .await
+        .expect("recordings dir");
+
+    // Live broadcast: start registers the tape, end enqueues the upload job.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/v1/broadcasts",
+        Some(json!({
+            "caster_id": CASTER, "show_id": SHOW, "kind": "live",
+            "title": "Ready Slot", "starts_at": START
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let live_id = body["id"].as_str().expect("broadcast id").to_string();
+
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/broadcasts/{live_id}/start"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/broadcasts/{live_id}/end"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (tape_id, slug): (String, String) =
+        sqlx::query_as("SELECT id, slug FROM tapes WHERE broadcast_id = ?")
+            .bind(&live_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tape row");
+
+    // Ingest (upload + hashing) against the mock music API.
+    tokio::fs::write(recordings.join(format!("{tape_id}.mp3")), CONTENT)
+        .await
+        .expect("staging file");
+    let mock = mock_api(vec![
+        reply(404),
+        Reply {
+            status: 200,
+            etag: Some("\"abc123\""),
+        },
+    ])
+    .await;
+    let cfg = IngestConfig {
+        music_api_base: mock.base.clone(),
+        token: "test-token".into(),
+        staging_root: recordings.clone(),
+    };
+    let report = tape_ingest::run_once(&pool, &cfg).await.expect("run_once");
+    assert_eq!(report.uploaded, 1);
+    let _seen = tokio::time::timeout(Duration::from_secs(5), mock.handle)
+        .await
+        .expect("mock timed out")
+        .expect("mock join");
+
+    let (status, _): (String, Option<String>) =
+        sqlx::query_as("SELECT status, music_api_id FROM tapes WHERE id = ?")
+            .bind(&tape_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tape after ingest");
+    assert_eq!(status, "processing");
+
+    // Make it visible while still `processing`: the feed must filter on
+    // `status='ready'`, not just on visibility.
+    sqlx::query("UPDATE tapes SET visible = 1 WHERE id = ?")
+        .bind(&tape_id)
+        .execute(&pool)
+        .await
+        .expect("publish flag");
+    assert!(
+        !feed_slugs(&pool).await.contains(&slug),
+        "a processing tape must stay out of the feed even when visible"
+    );
+
+    // Worker claims probe, then patches it done with the probe metadata.
+    let (status, body) = send_auth(
+        &app,
+        Method::POST,
+        "/api/v1/internal/tape-jobs/claim",
+        Some(json!({ "kinds": ["probe"], "limit": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let probe_id = body["jobs"][0]["id"]
+        .as_str()
+        .expect("claimed probe job")
+        .to_string();
+    let (status, body) = send_auth(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/internal/tape-jobs/{probe_id}"),
+        Some(json!({
+            "state": "done", "duration_ms": 3_600_000,
+            "format": "mp3", "mime": "audio/mpeg"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, duration): (String, Option<i64>) =
+        sqlx::query_as("SELECT status, duration_ms FROM tapes WHERE id = ?")
+            .bind(&tape_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tape after probe");
+    assert_eq!(status, "processing", "probe done keeps the tape processing");
+    assert_eq!(duration, Some(3_600_000));
+    assert!(!feed_slugs(&pool).await.contains(&slug));
+
+    // Worker claims peaks, then patches it done → tape turns `ready`.
+    let (status, body) = send_auth(
+        &app,
+        Method::POST,
+        "/api/v1/internal/tape-jobs/claim",
+        Some(json!({ "kinds": ["peaks"], "limit": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let peaks_id = body["jobs"][0]["id"]
+        .as_str()
+        .expect("claimed peaks job")
+        .to_string();
+    let (status, body) = send_auth(
+        &app,
+        Method::PATCH,
+        &format!("/api/v1/internal/tape-jobs/{peaks_id}"),
+        Some(json!({ "state": "done" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let status: String = sqlx::query_scalar("SELECT status FROM tapes WHERE id = ?")
+        .bind(&tape_id)
+        .fetch_one(&pool)
+        .await
+        .expect("tape status");
+    assert_eq!(status, "ready", "peaks done publishes the tape");
+
+    // Visible + ready → the public feed lists the tape.
+    let slugs = feed_slugs(&pool).await;
+    assert!(
+        slugs.contains(&slug),
+        "ready + visible tape must appear in the feed: {slugs:?}"
+    );
+
+    // Hiding it again removes it from the feed (`visible=1` filter).
+    sqlx::query("UPDATE tapes SET visible = 0 WHERE id = ?")
+        .bind(&tape_id)
+        .execute(&pool)
+        .await
+        .expect("unpublish");
+    assert!(
+        !feed_slugs(&pool).await.contains(&slug),
+        "a hidden tape must not be public"
     );
 
     drop(dir);
