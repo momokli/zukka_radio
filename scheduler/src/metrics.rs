@@ -200,17 +200,33 @@ pub async fn render(pool: &SqlitePool) -> String {
         "Whether a priority layer is the active output layer (1) or not (0).",
         "gauge",
     );
-    let active_layer = match crate::store::control::state(pool).await {
-        Ok(state) => state.active_layer,
+    let (active_layer, observed_layer) = match crate::store::control::state(pool).await {
+        Ok(state) => (state.active_layer, state.observed_layer),
         Err(err) => {
             tracing::warn!("metrics: control state failed: {err:#}");
-            None
+            (None, None)
         }
     };
     for layer in LAYERS {
         let value = u8::from(active_layer == Some(layer));
         out.push_str(&format!(
             "zukka_source_state{{layer=\"{}\"}} {value}\n",
+            escape_label(layer.as_str())
+        ));
+    }
+
+    // zukka_source_observed{layer} — #140: 1 for the Icecast-observed layer.
+    // `zukka_source_state` keeps its derived/effective contract above.
+    header_block(
+        &mut out,
+        "zukka_source_observed",
+        "Whether a priority layer was observed on the Icecast output (1) or not (0).",
+        "gauge",
+    );
+    for layer in LAYERS {
+        let value = u8::from(observed_layer == Some(layer));
+        out.push_str(&format!(
+            "zukka_source_observed{{layer=\"{}\"}} {value}\n",
             escape_label(layer.as_str())
         ));
     }

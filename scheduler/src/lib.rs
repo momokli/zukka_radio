@@ -8,6 +8,7 @@ pub mod api;
 pub mod db;
 pub mod dto;
 pub mod error;
+pub mod icecast;
 pub mod liquidsoap;
 pub mod metrics;
 pub mod migrate;

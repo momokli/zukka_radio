@@ -100,24 +100,10 @@ async fn fetch_and_sum(url: &str) -> Result<u64, String> {
 /// fields or non-numeric values count as `0`; a missing `source` (no streams)
 /// is `0`. Returns `None` only when the JSON itself is unparseable.
 pub fn sum_listeners(body: &str) -> Option<u64> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let source = match value.get("icestats").and_then(|s| s.get("source")) {
-        Some(source) => source,
-        // No `icestats.source` at all ⇒ no streams ⇒ 0 listeners.
-        None => return Some(0),
-    };
-    let sources: Vec<&serde_json::Value> = match source {
-        serde_json::Value::Array(items) => items.iter().collect(),
-        serde_json::Value::Object(_) => vec![source],
-        // `source` present but neither object nor array (e.g. `null`) ⇒ 0.
-        _ => return Some(0),
-    };
-    let total = sources
-        .iter()
-        .filter_map(|source| source.get("listeners"))
-        .filter_map(serde_json::Value::as_u64)
-        .sum();
-    Some(total)
+    // #140: share the tolerant parser with the observation layer. Unparseable
+    // JSON stays `None`; an absent/empty source sums to `0`.
+    crate::icecast::parse_snapshot(body)
+        .map(|snapshot| snapshot.sources.iter().map(|source| source.listeners).sum())
 }
 
 #[cfg(test)]

@@ -825,13 +825,61 @@ pub struct ControlStateDto {
     pub paused: bool,
     /// `settings['control.forced_layer']` as a layer, or `null`.
     pub forced_layer: Option<SourceLayer>,
-    /// K3 derivation of the active output layer, or `null`.
+    /// Effective active output layer = `observed_layer.or(derived_layer)`.
     pub active_layer: Option<SourceLayer>,
-    /// Always `true` in #22 — `active_layer` is an approximation (K2).
+    /// Always `true` in #22 — `active_layer` remains an approximation (K2).
     pub derived: bool,
     pub live: LiveStateDto,
-    /// `store::playback::current`, or `null`.
+    /// `store::playback::current`, or `null` (DB path, unchanged).
     pub now_playing: Option<PlaybackItemDto>,
+    /// Layer observed from Icecast metadata, or `null` (Issue #140).
+    #[serde(default)]
+    pub observed_layer: Option<SourceLayer>,
+    /// The K3 derivation from the scheduler DB (Issue #140).
+    #[serde(default)]
+    pub derived_layer: Option<SourceLayer>,
+    /// Where the effective `active_layer` came from, or `null` (Issue #140).
+    #[serde(default)]
+    pub active_layer_source: Option<LayerSource>,
+    /// `true` when `active_layer` is the observed (Icecast-derived) one.
+    #[serde(default)]
+    pub observed: bool,
+    /// Icecast reports an audible source (false when silent/unreachable).
+    #[serde(default)]
+    pub on_air: bool,
+    /// ICY title/artist from Icecast (relay/rotation), or `null`.
+    #[serde(default)]
+    pub observed_now_playing: Option<ObservedNowPlaying>,
+}
+
+/// Origin of the effective control-state layer (Issue #140).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayerSource {
+    /// K3 approximation from the scheduler DB.
+    Derived,
+    /// Derived from the Icecast status document.
+    Observed,
+}
+
+impl LayerSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LayerSource::Derived => "derived",
+            LayerSource::Observed => "observed",
+        }
+    }
+}
+
+/// ICY now-playing as observed on the Icecast output (Issue #140).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedNowPlaying {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -31,7 +31,8 @@ use sqlx::sqlite::SqliteConnection;
 
 use crate::dto::{
     ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlSkipRequest,
-    ControlStateDto, ControlSwitchRequest, LiveStateDto, SourceDto, SourceLayer,
+    ControlStateDto, ControlSwitchRequest, LayerSource, LiveStateDto, ObservedNowPlaying,
+    SourceDto, SourceLayer,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::liquidsoap::push_best_effort;
@@ -344,7 +345,12 @@ pub async fn skip(pool: &SqlitePool, req: &ControlSkipRequest) -> ApiResult<()> 
 /// Composes the full read-only control-panel state (`GET /control/state`).
 ///
 /// Pure `SELECT`s over existing tables (K1): no writes, no lock beyond reading.
-/// `active_layer` is the K3 approximation; `derived` is always `true` (K2).
+/// `active_layer` is the effective layer — the observed Icecast layer when one
+/// can be derived, else the K3 approximation. `derived` stays `true` forever
+/// (compatibility, #22); the origin is exposed via `active_layer_source`.
+///
+/// Observation is fail-open: an unreachable Icecast never makes `state()`
+/// fail (Issue #140) — `active_layer` then simply falls back to `derived`.
 pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
     let sources = crate::store::sources::list(pool).await?;
 
@@ -370,13 +376,29 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
 
     let connected = connected_casters(pool).await?;
     let now_playing = crate::store::playback::current(pool).await?;
-    let active_layer = active_layer(pool, &sources).await?;
+
+    // (a) the existing K3 derivation from the scheduler DB.
+    let derived_layer = active_layer(pool, &sources).await?;
+
+    // (b) the observed layer from Icecast (fail-open, never an Err).
+    let hints = observation_hints(pool, now_playing.as_ref()).await?;
+    let snapshot = crate::icecast::observe_icecast().await;
+    let observed = crate::icecast::derive_observed_layer(snapshot.as_ref(), &hints);
+
+    let effective_layer = observed.layer.or(derived_layer);
+    let active_layer_source = if observed.layer.is_some() {
+        Some(LayerSource::Observed)
+    } else if derived_layer.is_some() {
+        Some(LayerSource::Derived)
+    } else {
+        None
+    };
 
     Ok(ControlStateDto {
         sources,
         paused,
         forced_layer,
-        active_layer,
+        active_layer: effective_layer,
         derived: true,
         live: LiveStateDto {
             override_caster_id,
@@ -384,6 +406,51 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
             connected,
         },
         now_playing,
+        observed_layer: observed.layer,
+        derived_layer,
+        active_layer_source,
+        observed: observed.layer.is_some(),
+        on_air: observed.on_air,
+        observed_now_playing: observed.now_playing,
+    })
+}
+
+/// Gathers the local signals [`crate::icecast::derive_observed_layer`] may use.
+async fn observation_hints(
+    pool: &SqlitePool,
+    now_playing: Option<&crate::dto::PlaybackItemDto>,
+) -> ApiResult<crate::icecast::ObservedHints> {
+    let db_now_playing = now_playing.map(|item| ObservedNowPlaying {
+        title: Some(item.title.clone()),
+        artist: item.artist.clone(),
+        source: Some("db".to_string()),
+    });
+
+    let relay_active_setting =
+        get_setting(pool, "control.relay_active").await?.as_deref() == Some("true");
+    let fun_active_setting =
+        get_setting(pool, "control.fun_active").await?.as_deref() == Some("true");
+
+    let running_kind: Option<String> = sqlx::query_scalar(
+        "SELECT kind FROM broadcasts WHERE status = 'live' ORDER BY starts_at, id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    // Bounded read: title matching only needs a representative slice.
+    let shared_titles: Vec<String> = sqlx::query_scalar(
+        "SELECT title FROM tracks WHERE visibility = 'shared' ORDER BY id LIMIT 2000",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(crate::icecast::ObservedHints {
+        db_now_playing,
+        live_active: live_is_active(pool).await?,
+        relay_active_setting,
+        fun_active_setting,
+        running_kind,
+        shared_titles,
     })
 }
 
