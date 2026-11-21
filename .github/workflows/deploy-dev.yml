@@ -7,9 +7,9 @@ name: deploy-dev
 # der Gruppe `momo` (Schreibzugriff auf /srv/zukka-dev/repo) und der Gruppe
 # `docker`.
 #
-# Stream-Schutz: scheduler/portal/tapes werden immer neu erstellt. Caddy,
-# Icecast und Liquidsoap nur, wenn niemand auf dem DEV-Stream hört — ein
-# Recreate würde die Hörer trennen.
+# Stream-Schutz gibt es hier bewusst nicht: DEV ist Testumgebung, ein
+# Deploy darf alles neu erstellen. Der Hörer-Gate gehört in den PROD-Pfad
+# (`zukka-deploy prod --check-window`).
 on:
   workflow_run:
     workflows: [ci]
@@ -42,25 +42,11 @@ jobs:
           docker build -f tapes/Dockerfile          -t "ghcr.io/momokli/zukka-tapes:$SHA" .
           docker build -f deploy/icecast/Dockerfile -t "ghcr.io/momokli/zukka-icecast:$SHA" .
 
-      - name: Deploy app services
+      - name: Deploy (dev)
         run: |
           cd /srv/zukka-dev/repo
           sed -i "s|^ZUKKA_TAG=.*|ZUKKA_TAG=${{ github.event.workflow_run.head_sha }}|" env/dev.env
-          docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait \
-            scheduler portal tapes
-
-      - name: Deploy stream stack (only when idle)
-        run: |
-          cd /srv/zukka-dev/repo
-          listeners=$(curl -fsS http://127.0.0.1:12100/status-json.xsl \
-            | python3 -c 'import sys,json; s=json.load(sys.stdin)["icestats"].get("source"); s=s if isinstance(s,list) else ([s] if s else []); print(sum(int(x.get("listeners",0)) for x in s))')
-          echo "DEV listeners: $listeners"
-          if [ "$listeners" -eq 0 ]; then
-            docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait \
-              caddy icecast liquidsoap
-          else
-            echo "::warning::stream stack not recreated — $listeners listener(s) active"
-          fi
+          docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait
 
       - name: Smoke (dev)
         run: /srv/zukka-dev/repo/scripts/smoke.sh dev
