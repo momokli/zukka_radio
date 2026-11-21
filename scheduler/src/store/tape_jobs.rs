@@ -15,9 +15,18 @@ use sqlx::SqlitePool;
 use crate::dto::{PatchTapeJobRequest, TapeJobClaimDto, TapeJobDto};
 use crate::error::{ApiError, ApiResult};
 use crate::store::now_ts;
+use crate::uuid::new_id;
 
 /// Legal `kind` values (`tape_jobs.kind` CHECK).
 pub const KINDS: [&str; 2] = ["probe", "peaks"];
+
+/// Ingest job kind (#132). Never claimable by the read-only tapes-worker —
+/// only `tape_ingest` claims it directly.
+pub const UPLOAD_KIND: &str = "upload";
+
+/// Terminal retry cap for the upload job: after this many attempts the tape is
+/// marked `failed` and the staging file is kept for manual recovery.
+pub const MAX_UPLOAD_ATTEMPTS: i64 = 8;
 
 /// Legal `state` values (`tape_jobs.state` CHECK).
 pub const STATES: [&str; 4] = ["pending", "running", "done", "failed"];
@@ -216,6 +225,15 @@ pub async fn patch(
         .await?
         .ok_or_else(|| ApiError::not_found("tape_job", id))?;
 
+    // #132: upload jobs belong to the scheduler-internal ingest task. A worker
+    // patching one would corrupt the ingest state machine.
+    if current.kind == UPLOAD_KIND {
+        return Err(ApiError::conflict(
+            "upload_job_not_patchable",
+            format!("tape job {id} is an ingest job and cannot be patched via the worker API"),
+        ));
+    }
+
     if !transition_allowed(&current.state, &req.state) {
         return Err(ApiError::conflict(
             "invalid_state_transition",
@@ -287,6 +305,147 @@ pub async fn patch(
         .fetch_one(pool)
         .await?;
     Ok(row.into_dto())
+}
+
+/// Successful upload metadata written back to `tapes` (#132).
+#[derive(Debug, Clone)]
+pub struct UploadOutcome {
+    /// Content hash of the staging file; doubles as `tapes.music_api_id`.
+    pub sha256: String,
+    /// File size in bytes.
+    pub size_bytes: i64,
+    /// `ETag` from the music API, if it returned one.
+    pub etag: Option<String>,
+}
+
+/// Completes an `upload` job and all of its `tapes` side effects in one
+/// transaction (#132):
+///
+/// - `tapes` → `status='processing'`, `music_api_id`/`storage_key`/`size_bytes`/
+///   `etag`/`format='mp3'`/`mime='audio/mpeg'`,
+/// - `probe` and `peaks` jobs → `pending` (`ON CONFLICT DO NOTHING`, so a
+///   repeated completion cannot duplicate them),
+/// - the `upload` job → `done`.
+///
+/// The caller deletes the staging file only after this returns `Ok`.
+pub async fn complete_upload(
+    pool: &SqlitePool,
+    job_id: &str,
+    tape_id: &str,
+    outcome: &UploadOutcome,
+) -> ApiResult<()> {
+    let mut tx = pool.begin().await?;
+
+    let current = sqlx::query_as::<_, TapeJobRow>(&format!("{JOB_SELECT} WHERE id = ?"))
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("tape_job", job_id))?;
+
+    if current.kind != UPLOAD_KIND {
+        return Err(ApiError::conflict(
+            "not_an_upload_job",
+            format!(
+                "tape job {job_id} has kind '{}', expected 'upload'",
+                current.kind
+            ),
+        ));
+    }
+    if !transition_allowed(&current.state, "done") {
+        return Err(ApiError::conflict(
+            "invalid_state_transition",
+            format!(
+                "tape job {job_id} cannot move from '{}' to 'done'",
+                current.state
+            ),
+        ));
+    }
+    if current.tape_id != tape_id {
+        return Err(ApiError::conflict(
+            "tape_mismatch",
+            format!("tape job {job_id} does not belong to tape {tape_id}"),
+        ));
+    }
+
+    let now = now_ts();
+    sqlx::query(
+        "UPDATE tapes SET music_api_id = ?, storage_key = ?, size_bytes = ?, etag = ?, \
+         format = 'mp3', mime = 'audio/mpeg', status = 'processing', updated_at = ? \
+         WHERE id = ?",
+    )
+    .bind(&outcome.sha256)
+    .bind(&outcome.sha256)
+    .bind(outcome.size_bytes)
+    .bind(&outcome.etag)
+    .bind(&now)
+    .bind(tape_id)
+    .execute(&mut *tx)
+    .await?;
+
+    for kind in KINDS {
+        sqlx::query(
+            "INSERT INTO tape_jobs (id, tape_id, kind, state, attempts, created_at, updated_at) \
+             VALUES (?, ?, ?, 'pending', 0, ?, ?) ON CONFLICT (tape_id, kind) DO NOTHING",
+        )
+        .bind(new_id())
+        .bind(tape_id)
+        .bind(kind)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("UPDATE tape_jobs SET state = 'done', error = NULL, updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Records an upload failure: the job becomes `failed` with `error`, the tape
+/// row is left untouched (still `pending`, so a retry stays possible) and the
+/// caller keeps the staging file. A `done` job is terminal (`409`).
+pub async fn fail_upload(pool: &SqlitePool, job_id: &str, error: &str) -> ApiResult<()> {
+    let mut tx = pool.begin().await?;
+
+    let current = sqlx::query_as::<_, TapeJobRow>(&format!("{JOB_SELECT} WHERE id = ?"))
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("tape_job", job_id))?;
+
+    if current.kind != UPLOAD_KIND {
+        return Err(ApiError::conflict(
+            "not_an_upload_job",
+            format!(
+                "tape job {job_id} has kind '{}', expected 'upload'",
+                current.kind
+            ),
+        ));
+    }
+    if !transition_allowed(&current.state, "failed") {
+        return Err(ApiError::conflict(
+            "invalid_state_transition",
+            format!(
+                "tape job {job_id} cannot move from '{}' to 'failed'",
+                current.state
+            ),
+        ));
+    }
+
+    sqlx::query("UPDATE tape_jobs SET state = 'failed', error = ?, updated_at = ? WHERE id = ?")
+        .bind(error)
+        .bind(now_ts())
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Fetches one job or `404` (used by tests and future tooling).

@@ -29,6 +29,13 @@ pub async fn claim(
                 ));
             }
             for kind in &kinds {
+                // #132: ingest jobs are claimed by the scheduler itself, never
+                // by the read-only tapes-worker.
+                if kind == store::tape_jobs::UPLOAD_KIND {
+                    return Err(ApiError::bad_request(
+                        "kind 'upload' is an internal ingest job and cannot be claimed by workers",
+                    ));
+                }
                 if !store::tape_jobs::KINDS.contains(&kind.as_str()) {
                     return Err(ApiError::validation(
                         "kinds",

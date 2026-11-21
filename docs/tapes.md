@@ -49,6 +49,19 @@ einzige Datei-Autorität** (architecture §6), **Zeit immer Europe/Berlin**
 Tapes ist **nicht** abhängig vom Scheduler für Lese-Anfragen. Fällt der Scheduler
 aus, bleibt der Feed vollständig funktionsfähig (nur der LIVE-Badge degradiert).
 
+### Ist-Stand (2026-11-21, #132)
+
+Der Scheduler besitzt den Ingest: Liquidsoap schreibt
+`/recordings/<tape_id>.mp3`, ein Poll-Task im Scheduler hasht die Datei
+streaming, dedupliziert per `HEAD /objects/{sha256}`, lädt sie sonst per
+`PUT /objects/{sha256}` zur Music API, füllt `tapes` (music_api_id,
+storage_key, size_bytes, etag, format='mp3', mime='audio/mpeg',
+status='processing') und reiht `probe`/`peaks` in `tape_jobs` ein. Die
+Staging-Datei wird erst nach erfolgreichem Commit gelöscht; Fehler lassen
+Job (`failed`, retrybar) und Datei liegen. Der read-only tapes-worker claimt
+weiterhin nur `probe`/`peaks` — `kind='upload'` ist an
+`/internal/tape-jobs/claim` gesperrt (400) und per PATCH nicht änderbar (409).
+
 ---
 
 ## 2. Entscheidungen

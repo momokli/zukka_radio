@@ -334,11 +334,21 @@ live-Broadcast startet
 
 Broadcast endet
   → scheduler: control tape.stop
+  → scheduler: INSERT tape_jobs (kind='upload', state='pending')
+  → scheduler-Ingest-Task (Poll-Loop, §2.1):
   → scheduler: Upload MP3 192k → music-api (streaming, kein RAM-Puffer)
-  → scheduler: UPDATE tapes SET music_api_id, storage_key, size_bytes, etag,
-               duration_ms, status='processing'
-  → scheduler: INSERT tape_jobs (probe, peaks)
+               HEAD /objects/{sha256} (Dedupe) → sonst PUT /objects/{sha256}
+  → scheduler: in EINER Tx: UPDATE tapes SET music_api_id, storage_key,
+               size_bytes, etag, format='mp3', mime, status='processing'
+               + INSERT tape_jobs (probe, peaks, ON CONFLICT DO NOTHING)
+               + upload-Job state='done'
   → scheduler: DELETE lokale Datei in recordings_staging
+
+Upload-Fehler (Netz/5xx/Hash): upload-Job state='failed' mit error,
+tapes.status bleibt 'pending', Staging-Datei bleibt liegen. Der nächste
+Poll-Pass claimt den Job erneut (Backoff aus attempts); erst nach 8
+Fehlversuchen wird tapes.status='failed' gesetzt. Die Datei wird NUR nach
+erfolgreichem DB-Commit gelöscht — sie ist die Recovery-Quelle.
 
 tapes-worker
   → liest tape_jobs (read-only DB)

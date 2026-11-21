@@ -16,5 +16,6 @@ pub mod rate_limit;
 pub mod recovery;
 pub mod rrule;
 pub mod store;
+pub mod tape_ingest;
 pub mod time;
 pub mod uuid;

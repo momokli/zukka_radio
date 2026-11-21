@@ -469,6 +469,53 @@ async fn patch_endpoint_enforces_probe_duration() {
 }
 
 #[tokio::test]
+async fn ingest_jobs_are_not_worker_claimable_or_patchable() {
+    let (_dir, pool) = setup().await;
+    seed_tape(&pool, "t1", "slug1", "pending").await;
+    seed_job(&pool, "ju", "t1", "upload", "pending", 0, TS).await;
+    seed_job(&pool, "jp", "t1", "probe", "pending", 0, TS).await;
+    let app = app(pool);
+
+    // #132: the worker must not be able to claim the ingest job.
+    let (status, value) = send(
+        &app,
+        Method::POST,
+        "/api/v1/internal/tape-jobs/claim",
+        Some(json!({ "kinds": ["upload"] })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], "bad_request");
+
+    // The default claim still returns only probe/peaks jobs.
+    let (status, value) = send(
+        &app,
+        Method::POST,
+        "/api/v1/internal/tape-jobs/claim",
+        Some(json!({ "limit": 4 })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let jobs = value["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["kind"], "probe");
+
+    // PATCH on an ingest job is refused with 409.
+    let (status, value) = send(
+        &app,
+        Method::PATCH,
+        "/api/v1/internal/tape-jobs/ju",
+        Some(json!({ "state": "failed", "error": "nope" })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["error"]["code"], "upload_job_not_patchable");
+}
+
+#[tokio::test]
 async fn tape_waveform_http_accepts_bars_bytes_and_rejects_pairs() {
     let (_dir, pool) = setup().await;
     let app = app(pool);
