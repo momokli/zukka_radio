@@ -55,6 +55,8 @@ services:
       ZUKKA_ICECAST_SOURCE_PASSWORD: ${ZUKKA_ICECAST_SOURCE_PASSWORD}
       LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
       SCHEDULER_BASE_URL: ${ZUKKA_SCHEDULER_URL:-http://scheduler:8080}
+      # #121: priority-1 fallback jingle; mounts stay read-only.
+      ZUKKA_FUN_JINGLE: ${ZUKKA_FUN_JINGLE:-/rotation/fun.mp3}
     ports:
       - "0.0.0.0:${ZUKKA_PORT_HARBOR:-12001}:8001"
     volumes:
