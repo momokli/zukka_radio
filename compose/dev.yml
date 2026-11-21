@@ -50,6 +50,9 @@ services:
     environment:
       ZUKKA_DB: /data/zukka.db
       ZUKKA_BIND: 0.0.0.0:8080
+      # Without RUST_LOG the env filter defaults to `error`, which hides the
+      # startup/bootstrap/dispatch lines.
+      RUST_LOG: ${RUST_LOG:-info}
       ROTATION_M3U_PATH: /rotation/rotation.m3u
       MUSIC_API_BASE_URL: ${ZUKKA_MUSIC_API_URL}
       LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
