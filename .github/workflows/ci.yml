@@ -83,6 +83,13 @@ jobs:
             savonet/liquidsoap:v2.4.5 \
             liquidsoap /etc/liquidsoap/tests/tape_test.liq
 
+      - name: fun jingle helper test
+        run: |
+          docker run --rm -e ZUKKA_HARBOR_SLOTS=0 \
+            -v "$PWD/liquidsoap:/etc/liquidsoap:ro" \
+            savonet/liquidsoap:v2.4.5 \
+            liquidsoap /etc/liquidsoap/tests/fun_jingle_test.liq
+
   icecast-config:
     # #109: hermetic test of the icecast config template render path
     # (envsubst). No Docker, no root, no real secret.
