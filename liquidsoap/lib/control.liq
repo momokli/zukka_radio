@@ -97,3 +97,34 @@ server.register("layer.status", description="Show/Queue-Verfuegbarkeit als JSON"
     ignore(arg)
     layer_status_json()
   end)
+
+# Tape recording (issue #108, consolidated §4.4): open/close the per-broadcast
+# recorder defined in outputs.liq. `tape_status_json`/`tape_start_guard` come
+# from tape.liq; the guard returns "" when a start may proceed.
+server.register("tape.start", description="Tape-Aufnahme starten",
+  usage="<tape_id>", fun (arg) -> begin
+    tape_id = string.trim(arg)
+    guard = tape_start_guard(tape_id, recorder.is_started())
+    if guard == "" then begin
+      tape_current := tape_id
+      recorder.start()
+      log("control tape.start tape_id=#{tape_id}")
+      tape_status_json(true)
+    end else
+      guard
+    end
+  end)
+
+server.register("tape.stop", description="Tape-Aufnahme stoppen",
+  usage="", fun (arg) -> begin
+    ignore(arg)
+    recorder.stop()
+    log("control tape.stop")
+    tape_status_json(false)
+  end)
+
+server.register("tape.status", description="Tape-Status als JSON",
+  usage="", fun (arg) -> begin
+    ignore(arg)
+    tape_status_json(recorder.is_started())
+  end)
