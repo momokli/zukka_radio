@@ -147,30 +147,34 @@ mindestens **zwei fremde Host-Domains** sind unverändert erreichbar
 
 ## 5. Compose/Env-Umschaltung
 
-**Real implementierter Weg (Repo-Stand).** `compose/prod.yml` fährt Caddy mit
-festem `command`:
-
-```text
-["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
-```
-
-mit Port-Mapping `127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080`. `Caddyfile.prod`
-setzt `auto_https off` und `admin off` (`docs/deploy-prod.md`). Die Umschaltung
-`own` → `shared` ist damit **kein Env-Flag**, sondern ein **Caddy-Recreate auf
-denselben Befehl**: der Edge übernimmt den öffentlichen Pfad, der Stack hört
-weiter nur lokal auf `12080`.
+**Real implementierter Weg (Repo-Stand).** `ZUKKA_EDGE_MODE=own|shared` steuert
+die Edge-Verdrahtung (Issue #91). `compose/prod.yml` bleibt die **shared**-Basis:
+Caddy mit `caddy:2.9` und festem `command`
+`["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]`,
+Port-Mapping nur `127.0.0.1:${ZUKKA_PORT_CADDY:-12080}:12080`. Das Override
+`compose/prod-own.yml` setzt **nur** für `caddy` das Image
+`ghcr.io/caddybuilds/caddy-cloudflare:2.9`, `command` → `Caddyfile.prod-own` und
+den zusätzlichen Publish `0.0.0.0:${ZUKKA_EDGE_HOST_PORT:-12443}:12443`.
+`deploy/systemd/zukka-deploy` liest `ZUKKA_EDGE_MODE` aus dem PROD-env-file und
+bindet das Override nur bei `own` mit `-f` ein (Caddy-Validate dann gegen
+`Caddyfile.prod-own`); bei `shared` bleibt es beim bisherigen Befehl.
+`Caddyfile.prod`/`Caddyfile.prod-own` setzen `auto_https off` und `admin off`
+(`docs/deploy-prod.md`). Die Umschaltung `own` → `shared` ist damit ein
+**Flag-Wechsel auf `shared`** plus Caddy-Recreate: der Edge übernimmt den
+öffentlichen Pfad, der Stack hört weiter nur lokal auf `12080`.
 
 **In der Doku genannter Zielzustand.** `infrastructure.md` §2.5/§3.1/§6 Phase 6
 (Schritt 27) nennt `ZUKKA_EDGE_MODE=own|shared`; Ziel ist `shared`
 (`Caddyfile.prod`).
 
-**Abweichung Repo ↔ Doku (Vorbedingung).** `env/prod.env.example` enthält
-**kein** `ZUKKA_EDGE_MODE` (nur `ZUKKA_PORT_CADDY_TLS=12443`), `compose/prod.yml`
-hat **keinen** `command:`-Switch (es wählt nie `Caddyfile.prod-own`), und
-`ZUKKA_DOMAIN_CAST` zeigt auf `cast.zukkafabrik.de` statt
-`ingest.zukkafabrik.de`. Der dokumentierte `own`-Parallelbetrieb ist im Repo
-**nicht verdrahtet** → **Blocker vor dem Fenster** (eigenes Issue,
-Compose-Switch). In #45 gilt: **keine** Compose-/Env-Änderung.
+**Abweichung Repo ↔ Doku (behoben, Issue #91).** `env/prod.env.example` enthält
+nun `ZUKKA_EDGE_MODE=own`, `ZUKKA_EDGE_HOST_PORT=12443`, `ZUKKA_ACME_EMAIL=` und
+`CLOUDFLARE_API_TOKEN=` (Platzhalter, kein Secret); der tote Key
+`ZUKKA_PORT_CADDY_TLS` ist entfernt. `compose/prod-own.yml` (neu) wählt im
+own-Modus `Caddyfile.prod-own` + `0.0.0.0:12443`, `deploy/systemd/zukka-deploy`
+verdrahtet den Mode. Der dokumentierte `own`-Parallelbetrieb ist damit im Repo
+**verdrahtet** — die frühere Vorbedingung/Blocker ist behoben. `ZUKKA_DOMAIN_CAST`
+(`cast.*` vs. `ingest.*`) bleibt ein **separater** Drift, nicht Teil von #91.
 
 **vorher / nachher:**
 

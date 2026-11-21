@@ -1,6 +1,12 @@
-# PROD parallel operation before cutover: own TLS via ACME DNS-01.
+# PROD parallel operation before cutover: own TLS via ACME DNS-01 (Issue #91).
+#
+# Public site on 0.0.0.0:12443 (own edge) PLUS the internal http://:12080
+# app-router (analog Caddyfile.prod), so the unchanged smoke gate
+# (scripts/smoke.sh prod, probing http://127.0.0.1:12080/__zu/health) keeps
+# working in own mode. The only own↔shared difference is the 12443 listener.
 {
 	admin off
+	auto_https off
 	servers {
 		trusted_proxies static 127.0.0.1/32
 	}
@@ -8,6 +14,15 @@
 
 import routes.caddy
 
+# Interner App-Router (Ziel des Smoke-Gates) — analog Caddyfile.prod.
+http://:12080 {
+	handle /__zu/health {
+		respond "ok" 200
+	}
+	import radio_zukka_routes
+}
+
+# Öffentlicher eigener TLS-Listener (own mode, ACME DNS-01).
 https://:12443 {
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}

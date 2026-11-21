@@ -481,7 +481,8 @@ ZUKKA_IMAGE_LIQUIDSOAP=savonet/liquidsoap@sha256:<digest>
 ### 3.2 Docker Compose
 
 Dateien: `deploy/compose/compose.base.yml` (Anker/Common),
-`compose.dev.yml`, `compose.prod.yml`. Aufruf immer mit
+`compose.dev.yml`, `compose.prod.yml` (shared-Basis) und `compose.prod-own.yml`
+(Override nur `ZUKKA_EDGE_MODE=own`, Issue #91). Aufruf immer mit
 `-p zukka-<env> --env-file /etc/zukka/<env>.env`.
 
 **Verzeichnis-Layout auf dem Host** (alle relativen Bind-Mounts der Compose-Dateien
@@ -630,8 +631,9 @@ services:
 
   caddy:
     <<: *defaults
-    image: ghcr.io/caddybuilds/caddy-cloudflare:2.9 # Pin per Digest im Betrieb
-    # shared = Caddyfile.prod · own = Caddyfile.prod-own (TLS auf 12443)
+    image: caddy:2.9 # shared-Basis; own-Override: cloudflare-Image (unten)
+    # shared = Caddyfile.prod, nur 127.0.0.1:12080 (kein TLS, kein 12443).
+    # own = via compose/prod-own.yml (Caddyfile.prod-own, 0.0.0.0:12443).
     command:
       [
         "caddy",
@@ -643,7 +645,6 @@ services:
       ]
     ports:
       - "127.0.0.1:${ZUKKA_PORT_CADDY}:12080"
-      - "0.0.0.0:${ZUKKA_EDGE_HOST_PORT}:12443" # nur ZUKKA_EDGE_MODE=own
     volumes:
       - ../caddy:/etc/caddy-config:ro
       - hls:/srv/hls:ro
@@ -657,6 +658,29 @@ services:
       timeout: 3s
       retries: 5
     deploy: { resources: { limits: { memory: 256M } } }
+```
+
+Override `compose.prod-own.yml` (nur `ZUKKA_EDGE_MODE=own`; wird zusammen mit
+`compose.prod.yml` aufgerufen — Compose kann Ports/command nicht per Env-Wert
+umschalten, daher das `-f`-Override):
+
+```yaml
+# docker compose -f compose/prod.yml -f compose/prod-own.yml --env-file env/prod.env up -d
+services:
+  caddy:
+    image: ghcr.io/caddybuilds/caddy-cloudflare:2.9 # Pin per Digest im Betrieb
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy-config/Caddyfile.prod-own",
+        "--adapter",
+        "caddyfile",
+      ]
+    ports:
+      # Compose konkateniert `ports`; die Basis-12080 bleibt, hier nur 12443:
+      - "0.0.0.0:${ZUKKA_EDGE_HOST_PORT}:12443"
 ```
 
 Anmerkungen, die beim Implementieren beachtet werden müssen:
@@ -684,9 +708,11 @@ Dateien:
 - `deploy/caddy/Caddyfile.prod` — `auto_https off`, Listener 12080 (Ziel des
   Shared Edge); `auto_https off` gilt, TLS macht der Edge.
 - `deploy/caddy/Caddyfile.prod-own` — Parallelbetrieb vor dem Cutover: gleiche
-  Routen, aber Site `https://:12443` mit
-  `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }` (Datei wird per
-  `command:`-Auswahl in Compose gewählt, nicht per Caddy-Bedingung).
+  Routen, Site `https://:12443` mit
+  `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }` **plus** interner
+  `http://:12080`-Router (analog `Caddyfile.prod`, damit der Smoke-Gate
+  `scripts/smoke.sh prod` greift); `admin off` + `auto_https off` (Datei wird
+  per Override `compose/prod-own.yml` gewählt, nicht per Caddy-Bedingung).
 - `deploy/caddy/edge/zukka-prod.caddy` — Snippet für den Shared Edge (Phase 6).
 
 `routes.caddy` (Kern; Werte aus Env):
@@ -817,18 +843,22 @@ http://:12091 {
 ```caddyfile
 {
 	admin off
+	auto_https off
 	servers {
 		trusted_proxies static 127.0.0.1/32
 	}
 }
 
+# Interner App-Router (Ziel des Smoke-Gates), analog Caddyfile.prod.
+http://:12080 {
+	handle /__zu/health { respond "ok" 200 }
+	import radio_zukka_routes
+}
+
+# Öffentlicher eigener TLS-Listener (own mode, ACME DNS-01).
 https://:12443 {
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-	}
-	encode zstd gzip
-	request_body {
-		max_size 2GB
 	}
 	import radio_zukka_routes
 }

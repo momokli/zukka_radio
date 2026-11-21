@@ -1,0 +1,21 @@
+# radio zukka v2 — PROD edge override: ZUKKA_EDGE_MODE=own (Issue #91)
+#
+# Always used together with the shared baseline:
+#   docker compose -f compose/prod.yml -f compose/prod-own.yml \
+#     --env-file env/prod.env up -d
+#
+# This override touches ONLY the caddy service: it swaps in the
+# cloudflare-capable image (ACME DNS-01), selects Caddyfile.prod-own and adds the
+# public 0.0.0.0:${ZUKKA_EDGE_HOST_PORT} listener. compose/prod.yml stays the
+# shared baseline (caddy:2.9 + Caddyfile.prod, loopback 12080 only). `ports` are
+# concatenated by Compose, so the baseline's 127.0.0.1:12080 publish remains and
+# only the 12443 publish is appended here. The deploy wrapper
+# (deploy/systemd/zukka-deploy) includes this file only when ZUKKA_EDGE_MODE=own.
+
+services:
+  caddy:
+    image: ghcr.io/caddybuilds/caddy-cloudflare:2.9
+    command:
+      ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod-own", "--adapter", "caddyfile"]
+    ports:
+      - "0.0.0.0:${ZUKKA_EDGE_HOST_PORT:-12443}:12443"
