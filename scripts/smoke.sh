@@ -48,30 +48,6 @@ check() {
     done
 }
 
-# Non-fatal check: retries briefly, then only warns (never fails the run).
-# Used for the HLS stream, which depends on Liquidsoap — currently crashlooping
-# with a fallible-source error unrelated to #40 (see #84). The smoke gate must
-# still cover the services the deploy actually touches
-# (scheduler/portal/tapes/caddy).
-check_warn() {
-    local name="$1"
-    local url="$2"
-    shift 2
-    local warn_deadline=$((SECONDS + 10))
-
-    while true; do
-        if curl -fsS --max-time 5 "$@" "$url" >/dev/null 2>&1; then
-            echo "ok   ${name}"
-            return 0
-        fi
-        if (( SECONDS >= warn_deadline )); then
-            echo "WARN ${name} (${url}) — non-fatal, see #84" >&2
-            return 0
-        fi
-        sleep 2
-    done
-}
-
 if [[ "$env_name" == "dev" ]]; then
     caddy_port="${ZUKKA_SMOKE_CADDY_PORT:-12180}"
     scheduler_base="${ZUKKA_SMOKE_SCHEDULER:-http://127.0.0.1:12110}"
@@ -110,7 +86,7 @@ check "tapes /healthz" "${scheme}://${domain_tapes}:${caddy_port}/healthz" \
     "${tls_opts[@]}" --resolve "${domain_tapes}:${caddy_port}:${caddy_addr}"
 check "scheduler /healthz" "${scheduler_base}/healthz"
 check "scheduler /readyz" "${scheduler_base}/readyz"
-check_warn "hls index.m3u8" "${scheme}://${domain_radio}:${caddy_port}/hls/index.m3u8" \
+check "hls index.m3u8" "${scheme}://${domain_radio}:${caddy_port}/hls/index.m3u8" \
     "${tls_opts[@]}" --resolve "${domain_radio}:${caddy_port}:${caddy_addr}"
 
 echo "smoke(${env_name}): all checks passed"

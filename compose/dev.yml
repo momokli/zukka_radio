@@ -32,6 +32,14 @@ services:
   liquidsoap:
     <<: *common
     image: savonet/liquidsoap:v2.4.5
+    # The scheduler image pre-creates /hls and /recordings with uid 65532, so
+    # the named volumes are initialised with that owner. Liquidsoap must run as
+    # the same uid to write HLS segments and recordings (its default uid 100
+    # gets "Permission denied" on /hls).
+    user: "65532:65532"
+    depends_on:
+      scheduler:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${ZUKKA_PORT_HARBOR:-12101}:8001"
     volumes:

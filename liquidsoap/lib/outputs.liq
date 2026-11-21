@@ -20,13 +20,18 @@ output.icecast(
 # land in the shared `hls` volume; Caddy serves them read-only at /hls/*.
 # `persist_at` keeps the segment counter across restarts so clients do not get
 # a broken playlist state.
+#
+# The stream name (first tuple element) determines the playlist filename:
+# `index` -> index.m3u8 + index_<n>.ts. The `playlist` argument is ignored for
+# the list form, so the name must be `index` to match the Caddy route and the
+# smoke check.
 output.file.hls(
   playlist = "index.m3u8",
   segment_duration = 4.0,
   segments = 6,
   persist_at = "/hls/.persist",
   "/hls",
-  [("aac", %ffmpeg(format="mpegts", %audio(codec="aac", b="128k")))],
+  [("index", %ffmpeg(format="mpegts", %audio(codec="aac", b="128k")))],
   safe_radio
 )
 
