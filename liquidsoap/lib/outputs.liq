@@ -6,11 +6,27 @@
 
 safe_radio = mksafe(radio)
 
+# Icecast source password comes from the environment (same value the icecast
+# container renders into its config, issue #109). No default: an unset/empty
+# value is a misconfiguration; fail fast instead of streaming with a bogus
+# password.
+icecast_source_password = environment.get(
+  default="",
+  "ZUKKA_ICECAST_SOURCE_PASSWORD"
+)
+
+if icecast_source_password == "" then
+  log.critical(
+    "ZUKKA_ICECAST_SOURCE_PASSWORD is unset or empty; refusing to start (issue #109)"
+  )
+  shutdown()
+end
+
 output.icecast(
   %mp3(bitrate=192),
   host="icecast",
   port=8000,
-  password="hackme",  # TODO(M4): source from the generated config
+  password=icecast_source_password,
   mount="stream.mp3",
   name="radio zukka",
   safe_radio
