@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-20T10:00:00.000Z",
+  "casters": [
+    {
+      "username": "momo",
+      "display_name": "momo",
+      "email": null,
+      "aktiv": true
+    },
+    {
+      "username": "MoMo",
+      "display_name": "momo second",
+      "email": null,
+      "aktiv": true
+    }
+  ],
+  "tracks": [
+    {
+      "file_id": 3001,
+      "title": "first",
+      "artist": "x",
+      "album": "y",
+      "duration_ms": 1000,
+      "storage_key": "azura/3001.ogg",
+      "isrc": "DEZZ00003001",
+      "caster": "momo"
+    },
+    {
+      "file_id": 3001,
+      "title": "duplicate file id",
+      "artist": "x",
+      "album": "y",
+      "duration_ms": 1000,
+      "storage_key": "azura/3001b.ogg",
+      "isrc": "DEZZ00003002",
+      "caster": "momo"
+    }
+  ],
+  "tapes": [
+    {
+      "legacy_id": "rec-dup",
+      "broadcast_id": "bc-dup",
+      "caster": "momo",
+      "title": "t1",
+      "started_at": "2024-01-01T19:00:00.000Z",
+      "ended_at": "2024-01-01T20:00:00.000Z",
+      "storage_key": "recordings/rec-dup.ogg",
+      "format": "ogg",
+      "size_bytes": 1,
+      "music_api_id": null
+    },
+    {
+      "legacy_id": "rec-dup",
+      "broadcast_id": "bc-dup",
+      "caster": "momo",
+      "title": "t2 (same natural key)",
+      "started_at": "2024-01-01T20:00:00.000Z",
+      "ended_at": "2024-01-01T21:00:00.000Z",
+      "storage_key": "recordings/rec-dup.ogg",
+      "format": "ogg",
+      "size_bytes": 2,
+      "music_api_id": null
+    }
+  ]
+}

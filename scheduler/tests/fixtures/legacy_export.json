@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-20T10:00:00.000Z",
+  "casters": [
+    {
+      "username": "momo",
+      "display_name": "momo",
+      "email": "momo@radio-zukka.example",
+      "aktiv": true
+    },
+    {
+      "username": "hovio",
+      "display_name": "hovio",
+      "email": null,
+      "aktiv": true
+    },
+    {
+      "username": "mctoastus",
+      "display_name": "mctoastus",
+      "email": "duck@radio-zukka.example",
+      "aktiv": false
+    }
+  ],
+  "tracks": [
+    {
+      "file_id": 1001,
+      "title": "ANKD — 01.01.24 20:00",
+      "artist": "ANKD",
+      "album": "ANKD @ radio zukka",
+      "duration_ms": 183000,
+      "storage_key": "azura/1001.ogg",
+      "isrc": "DEZZ00000001",
+      "caster": "hovio"
+    },
+    {
+      "file_id": 1002,
+      "title": "duck — 02.01.24 21:00",
+      "artist": "duck",
+      "album": "duck @ radio zukka",
+      "duration_ms": 240000,
+      "storage_key": "azura/1002.ogg",
+      "isrc": null,
+      "caster": "mctoastus"
+    },
+    {
+      "file_id": 1003,
+      "title": "momo — 03.01.24 22:00",
+      "artist": "momo",
+      "album": "momo @ radio zukka",
+      "duration_ms": 300000,
+      "storage_key": "azura/1003.ogg",
+      "isrc": "",
+      "caster": "momo"
+    }
+  ],
+  "tapes": [
+    {
+      "legacy_id": "rec-2024-01-01-ankd",
+      "broadcast_id": "bc-2024-01-01-ankd",
+      "caster": "hovio",
+      "title": "ANKD Live",
+      "started_at": "2024-01-01T19:00:00.000Z",
+      "ended_at": "2024-01-01T21:00:00.000Z",
+      "storage_key": "recordings/rec-2024-01-01-ankd.ogg",
+      "format": "ogg",
+      "size_bytes": 123456789,
+      "music_api_id": null
+    },
+    {
+      "legacy_id": "rec-2024-01-02-duck",
+      "broadcast_id": null,
+      "caster": "mctoastus",
+      "title": "duck Upload",
+      "started_at": "2024-01-02T18:30:00.000Z",
+      "ended_at": "2024-01-02T19:30:00.000Z",
+      "storage_key": "uploads/rec-2024-01-02-duck.mp3",
+      "format": "mp3",
+      "size_bytes": 98765432,
+      "music_api_id": "tape-42"
+    }
+  ]
+}

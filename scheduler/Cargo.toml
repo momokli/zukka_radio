@@ -9,6 +9,10 @@ rust-version.workspace = true
 name = "zukka-scheduler"
 path = "src/main.rs"
 
+[[bin]]
+name = "zukka-migrate"
+path = "src/bin/zukka-migrate.rs"
+
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true
@@ -16,6 +20,7 @@ axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+clap.workspace = true
 hmac.workspace = true
 rand.workspace = true
 reqwest.workspace = true
