@@ -10,6 +10,10 @@
 //! 2. `POST /broadcasts/{id}/end` finalizes it and pushes `tape.stop`.
 //! 3. A second `end` is still `409 illegal_transition` (behaviour unchanged).
 //! 4. A `playlist` start creates no tape.
+//! 5. `POST /broadcasts/{id}/cancel` on a **live** broadcast finalizes the
+//!    pending tape and pushes `tape.stop` (#108 cancel leak).
+//! 6. Cancelling a still-`scheduled` live broadcast has no tape and pushes
+//!    nothing (no error).
 
 use std::time::Duration;
 
@@ -160,7 +164,8 @@ async fn create_broadcast(app: &Router, payload: Value) -> String {
 
 #[tokio::test]
 async fn live_start_end_register_and_finalize_tape() {
-    let (url, server) = mock_control_server(2).await;
+    // Four control pushes: live#1 start/end, live#2 start/cancel.
+    let (url, server) = mock_control_server(4).await;
     // Safe: this test binary contains exactly one test.
     unsafe { std::env::set_var(zukka_scheduler::liquidsoap::CONTROL_URL_ENV, &url) };
 
@@ -268,12 +273,91 @@ async fn live_start_end_register_and_finalize_tape() {
         .expect("count");
     assert_eq!(count, 0, "playlist must not create a tape");
 
-    // The mock saw exactly the two recorder pushes, in order.
+    // 5. Cancel a *live* broadcast: the pending tape is finalized and
+    //    tape.stop is pushed (the #108 cancel leak).
+    let live_cancel_id = create_broadcast(
+        &app,
+        json!({
+            "caster_id": CASTER, "kind": "live",
+            "title": "Live Cancel", "starts_at": "2026-11-20T20:00:00+01:00"
+        }),
+    )
+    .await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/broadcasts/{live_cancel_id}/start"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cancel_tape: (String, String, String) =
+        sqlx::query_as("SELECT id, status, started_at FROM tapes WHERE broadcast_id = ?")
+            .bind(&live_cancel_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tape row for cancelled live broadcast");
+    let (cancel_tape_id, _, cancel_started) = cancel_tape;
+
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/broadcasts/{live_cancel_id}/cancel"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "cancelled");
+
+    let (cancel_status, cancel_end): (String, String) =
+        sqlx::query_as("SELECT status, ended_at FROM tapes WHERE id = ?")
+            .bind(&cancel_tape_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tape after cancel");
+    assert_eq!(
+        cancel_status, "pending",
+        "status stays pending after cancel"
+    );
+    assert!(
+        cancel_end >= cancel_started,
+        "cancel must finalize ended_at >= started_at ({cancel_end} vs {cancel_started})"
+    );
+
+    // 6. Cancelling a still-scheduled live broadcast: no tape, no push.
+    let live_sched_id = create_broadcast(
+        &app,
+        json!({
+            "caster_id": CASTER, "kind": "live",
+            "title": "Live Never Started", "starts_at": "2026-11-21T20:00:00+01:00"
+        }),
+    )
+    .await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/broadcasts/{live_sched_id}/cancel"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "cancelled");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tapes WHERE broadcast_id = ?")
+        .bind(&live_sched_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        count, 0,
+        "cancel of a never-started live broadcast has no tape"
+    );
+
+    // The mock saw exactly the recorder pushes, in order.
     let requests = tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .expect("mock server timed out")
         .expect("mock server task");
-    assert_eq!(requests.len(), 2, "two control pushes");
+    assert_eq!(requests.len(), 4, "four control pushes");
     assert!(
         requests[0].starts_with("POST /control"),
         "unexpected request: {}",
@@ -288,5 +372,15 @@ async fn live_start_end_register_and_finalize_tape() {
         requests[1].ends_with("tape.stop"),
         "stop command: {}",
         requests[1]
+    );
+    assert!(
+        requests[2].ends_with(&format!("tape.start {cancel_tape_id}")),
+        "second start push carries the tape id: {}",
+        requests[2]
+    );
+    assert!(
+        requests[3].ends_with("tape.stop"),
+        "cancel push must be tape.stop: {}",
+        requests[3]
     );
 }
