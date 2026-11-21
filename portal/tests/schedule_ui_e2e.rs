@@ -1082,3 +1082,354 @@ async fn calendar_renders_same_berlin_time_across_dst() {
         "both sides of the DST transition render 20:00 Berlin: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #119: broadcast lifecycle (start/end/cancel)
+// ---------------------------------------------------------------------------
+
+fn seeded(status: &str, starts: &str, ends: Option<&str>) -> Broadcast {
+    let mut b = broadcast("bc-1", None, "c-1", "Live Show", starts, ends);
+    b.status = status.into();
+    b
+}
+
+/// B1 — htmx `start` → `204` + refresh + success toast, store `live`.
+#[tokio::test]
+async fn start_htmx_refreshes_with_success_toast() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/start",
+        true,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers.get("hx-refresh").unwrap(), "true");
+    let trigger = headers.get("hx-trigger").expect("toast").to_str().unwrap();
+    assert!(trigger.contains("\"level\":\"success\""), "{trigger}");
+    assert_eq!(backend.all_broadcasts()[0].status, "live");
+}
+
+/// B2 — `start` without a CSRF token → `403`, store unchanged.
+#[tokio::test]
+async fn start_without_csrf_is_403() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let cookie_header = cookie(&session);
+    let (status, _, _) = send(
+        &app,
+        Method::POST,
+        "/schedule/bc-1/start",
+        &[
+            ("cookie", &cookie_header),
+            ("sec-fetch-site", "same-origin"),
+            ("content-type", "application/x-www-form-urlencoded"),
+        ],
+        Some(String::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(backend.all_broadcasts()[0].status, "scheduled");
+}
+
+/// B3 — caster without `broadcast.write` → `403`, store unchanged.
+#[tokio::test]
+async fn start_without_permission_is_403() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(no_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/start",
+        false,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(backend.all_broadcasts()[0].status, "scheduled");
+}
+
+/// B4 — non-htmx `end` on `live` → `303 /schedule`, store `ended`.
+#[tokio::test]
+async fn end_non_htmx_redirects_and_mutates() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("live", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/end",
+        false,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get(header::LOCATION).unwrap(), "/schedule");
+    assert_eq!(backend.all_broadcasts()[0].status, "ended");
+}
+
+/// B5 — htmx `cancel` on `scheduled` → success toast, entry leaves the grid.
+#[tokio::test]
+async fn cancel_htmx_and_gone_from_grid() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/cancel",
+        true,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(backend.all_broadcasts()[0].status, "cancelled");
+    let (_, body) = get(
+        &app,
+        &session,
+        "/schedule?view=week&anchor=2026-11-18",
+        false,
+    )
+    .await;
+    assert!(!body.contains("bc-1"), "cancelled entry hidden: {body}");
+}
+
+/// B6 — illegal transition: htmx → error toast; non-htmx → `409`.
+#[tokio::test]
+async fn illegal_transition_toast_and_409() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("live", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/start",
+        true,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let trigger = headers.get("hx-trigger").expect("toast").to_str().unwrap();
+    assert!(trigger.contains("\"level\":\"error\""), "{trigger}");
+
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/start",
+        false,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// B7 — `cancel` on an unknown id → `404`.
+#[tokio::test]
+async fn cancel_unknown_is_404() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/nope/cancel",
+        false,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// B8 — a `scheduled` card (with `broadcast.write`) shows Start + Abbrechen.
+#[tokio::test]
+async fn scheduled_card_shows_start_and_cancel() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (_, body) = get(
+        &app,
+        &session,
+        "/schedule?view=week&anchor=2026-11-18",
+        false,
+    )
+    .await;
+    assert!(
+        body.contains("/schedule/bc-1/start"),
+        "start button: {body}"
+    );
+    assert!(
+        body.contains("/schedule/bc-1/cancel"),
+        "cancel button: {body}"
+    );
+}
+
+/// B9 — a `live` card shows Ende + Abbrechen but no Start.
+#[tokio::test]
+async fn live_card_shows_end_and_cancel_only() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("live", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (_, body) = get(
+        &app,
+        &session,
+        "/schedule?view=week&anchor=2026-11-18",
+        false,
+    )
+    .await;
+    assert!(body.contains("/schedule/bc-1/end"), "end button: {body}");
+    assert!(
+        body.contains("/schedule/bc-1/cancel"),
+        "cancel button: {body}"
+    );
+    assert!(
+        !body.contains("/schedule/bc-1/start"),
+        "no start button: {body}"
+    );
+}
+
+/// B10 — without `broadcast.write` the card has no action buttons.
+#[tokio::test]
+async fn card_without_permission_has_no_buttons() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(no_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (_, body) = get(
+        &app,
+        &session,
+        "/schedule?view=week&anchor=2026-11-18",
+        false,
+    )
+    .await;
+    assert!(!body.contains("/schedule/bc-1/start"), "no start: {body}");
+    assert!(!body.contains("/schedule/bc-1/cancel"), "no cancel: {body}");
+}
+
+/// B11 — htmx `cancel` on a `live` broadcast → success toast, store `cancelled`.
+/// (Fake-only A6 previously covered the transition; this drives the real route.)
+#[tokio::test]
+async fn cancel_live_htmx_becomes_cancelled() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("live", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, headers, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/cancel",
+        true,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let trigger = headers.get("hx-trigger").expect("toast").to_str().unwrap();
+    assert!(trigger.contains("\"level\":\"success\""), "{trigger}");
+    assert_eq!(backend.all_broadcasts()[0].status, "cancelled");
+}
+
+/// B12 — non-htmx `end` on a `scheduled` broadcast → `409`, store unchanged.
+/// (Illegal transition through the `/end` route; the fake-only A4 covered the
+/// transition itself.)
+#[tokio::test]
+async fn end_scheduled_non_htmx_is_409() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded("scheduled", "2026-11-18T20:00:00+01:00", None));
+    let app = router(caster_perms(), &backend);
+    let (session, csrf) = login(&app).await;
+    let (status, _, _) = post(
+        &app,
+        &session,
+        &csrf,
+        "/schedule/bc-1/end",
+        false,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(backend.all_broadcasts()[0].status, "scheduled");
+}
+
+/// B13 — an `ended` card (still visible in the grid) exposes no action buttons.
+#[tokio::test]
+async fn ended_card_has_no_action_buttons() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded(
+        "ended",
+        "2026-11-18T20:00:00+01:00",
+        Some("2026-11-18T21:00:00+01:00"),
+    ));
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+    let (status, body) = get(
+        &app,
+        &session,
+        "/schedule?view=week&anchor=2026-11-18",
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("bc-1"), "ended entry still visible: {body}");
+    assert!(!body.contains("/schedule/bc-1/start"), "no start: {body}");
+    assert!(!body.contains("/schedule/bc-1/end"), "no end: {body}");
+    assert!(!body.contains("/schedule/bc-1/cancel"), "no cancel: {body}");
+}
+
+/// B14 — the edit form of an `ended`/`cancelled` broadcast shows no action
+/// buttons (the `cancelled` card is hidden from the grid entirely, so the form
+/// is where the status-gating must still hold).
+#[tokio::test]
+async fn ended_and_cancelled_forms_have_no_action_buttons() {
+    let backend = zukka_portal::api_client::FakeScheduleBackend::new();
+    backend.seed_broadcast(seeded(
+        "ended",
+        "2026-11-18T20:00:00+01:00",
+        Some("2026-11-18T21:00:00+01:00"),
+    ));
+    backend.seed_broadcast({
+        let mut c = seeded("cancelled", "2026-11-19T20:00:00+01:00", None);
+        c.id = "bc-2".into();
+        c
+    });
+    let app = router(caster_perms(), &backend);
+    let (session, _csrf) = login(&app).await;
+
+    for id in ["bc-1", "bc-2"] {
+        let (status, body) = get(&app, &session, &format!("/schedule/{id}/edit"), false).await;
+        assert_eq!(status, StatusCode::OK, "{id}: {body}");
+        assert!(
+            !body.contains(&format!("/schedule/{id}/start")),
+            "{id}: no start: {body}"
+        );
+        assert!(
+            !body.contains(&format!("/schedule/{id}/end")),
+            "{id}: no end: {body}"
+        );
+        assert!(
+            !body.contains(&format!("/schedule/{id}/cancel")),
+            "{id}: no cancel: {body}"
+        );
+    }
+}

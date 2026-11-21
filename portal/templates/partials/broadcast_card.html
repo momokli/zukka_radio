@@ -20,3 +20,44 @@
   {% else %}
   </span>
   {% endif %}
+  {% if card.persisted && card.id != "" && can_write && card.status == "scheduled" %}
+  <form
+    method="post"
+    action="/schedule/{{ card.id }}/start"
+    hx-post="/schedule/{{ card.id }}/start"
+    class="bc-actions"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit">Start</button>
+  </form>
+  <form
+    method="post"
+    action="/schedule/{{ card.id }}/cancel"
+    hx-post="/schedule/{{ card.id }}/cancel"
+    hx-confirm="Broadcast wirklich abbrechen?"
+    class="bc-actions"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit" class="ghost">Abbrechen</button>
+  </form>
+  {% else if card.persisted && card.id != "" && can_write && card.status == "live" %}
+  <form
+    method="post"
+    action="/schedule/{{ card.id }}/end"
+    hx-post="/schedule/{{ card.id }}/end"
+    class="bc-actions"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit">Ende</button>
+  </form>
+  <form
+    method="post"
+    action="/schedule/{{ card.id }}/cancel"
+    hx-post="/schedule/{{ card.id }}/cancel"
+    hx-confirm="Broadcast wirklich abbrechen?"
+    class="bc-actions"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit" class="ghost">Abbrechen</button>
+  </form>
+  {% endif %}

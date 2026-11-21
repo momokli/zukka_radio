@@ -367,6 +367,19 @@ pub fn build_router(state: AppState) -> Router {
             "/schedule/{id}/delete",
             axum::routing::post(crate::schedule::broadcast_delete),
         )
+        // Issue #119: broadcast lifecycle (RBAC + CSRF via the layers).
+        .route(
+            "/schedule/{id}/start",
+            axum::routing::post(crate::schedule::broadcast_start),
+        )
+        .route(
+            "/schedule/{id}/end",
+            axum::routing::post(crate::schedule::broadcast_end),
+        )
+        .route(
+            "/schedule/{id}/cancel",
+            axum::routing::post(crate::schedule::broadcast_cancel),
+        )
         // Issue #38: manual announcements (RBAC + audit via the scheduler).
         .route(
             "/announcements",

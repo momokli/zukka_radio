@@ -532,7 +532,8 @@ GET  /library/tracks/{id}   POST /library/tracks/{id}/visibility, /delete
 GET  /queues                POST /queues
 GET  /queues/{id}           POST /queues/{id}/items, /items/{item}/move, /delete, /skip
 GET  /shows                 POST /shows, /shows/{id}
-GET  /schedule              POST /schedule, /schedule/{id}, /schedule/{id}/delete
+GET  /schedule              POST /schedule, /schedule/{id}, /schedule/{id}/delete,
+                            /schedule/{id}/start, /schedule/{id}/end, /schedule/{id}/cancel
 GET  /control               POST /control/source, /control/pause, /control/skip
 GET  /control/events        SSE (Fallback: Polling alle 3 s)
 GET  /announcements         POST /announcements/templates/{id}, /announcements/send

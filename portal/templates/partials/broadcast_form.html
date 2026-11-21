@@ -115,4 +115,46 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <button type="submit" class="ghost">Löschen</button>
 </form>
+
+{% if form.status == "scheduled" %}
+<form
+  method="post"
+  action="/schedule/{{ form.id }}/start"
+  hx-post="/schedule/{{ form.id }}/start"
+  class="inline bc-actions"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit">Start</button>
+</form>
+<form
+  method="post"
+  action="/schedule/{{ form.id }}/cancel"
+  hx-post="/schedule/{{ form.id }}/cancel"
+  hx-confirm="Broadcast wirklich abbrechen?"
+  class="inline bc-actions"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit" class="ghost">Abbrechen</button>
+</form>
+{% else if form.status == "live" %}
+<form
+  method="post"
+  action="/schedule/{{ form.id }}/end"
+  hx-post="/schedule/{{ form.id }}/end"
+  class="inline bc-actions"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit">Ende</button>
+</form>
+<form
+  method="post"
+  action="/schedule/{{ form.id }}/cancel"
+  hx-post="/schedule/{{ form.id }}/cancel"
+  hx-confirm="Broadcast wirklich abbrechen?"
+  class="inline bc-actions"
+>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+  <button type="submit" class="ghost">Abbrechen</button>
+</form>
+{% endif %}
 {% endif %}
