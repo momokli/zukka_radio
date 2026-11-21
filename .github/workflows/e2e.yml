@@ -1,0 +1,58 @@
+name: e2e
+
+# End-to-end smoke: build the images, start the DEV stack, verify every
+# service is running and healthy. This is the test that catches runtime
+# integration bugs (missing env, crashloops, wrong Caddyfile, ...).
+#
+# It runs on push to v2 and every 6h. It is deliberately NOT a required PR
+# check: a broken stack must not block unrelated PRs. Failures are turned
+# into issues by e2e-issue.yml.
+
+on:
+  push:
+    branches: [v2]
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare env
+        run: cp env/dev.env.example env/dev.env
+
+      - name: Build images
+        run: |
+          SHA="$(git rev-parse --short=12 HEAD)"
+          echo "ZUKKA_TAG=$SHA" >> "$GITHUB_ENV"
+          docker build -f scheduler/Dockerfile      -t "ghcr.io/momokli/zukka-scheduler:$SHA" .
+          docker build -f portal/Dockerfile         -t "ghcr.io/momokli/zukka-portal:$SHA" .
+          docker build -f tapes/Dockerfile          -t "ghcr.io/momokli/zukka-tapes:$SHA" .
+          docker build -f deploy/icecast/Dockerfile -t "ghcr.io/momokli/zukka-icecast:$SHA" .
+
+      - name: Compose up
+        run: docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait
+
+      - name: Every service is running
+        run: |
+          docker compose -f compose/dev.yml ps --format json \
+            | jq -s -e 'add | all(.[]; .State == "running")'
+
+      - name: Smoke
+        run: ./scripts/smoke.sh dev
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f compose/dev.yml logs --no-color
+
+      - name: Down
+        if: always()
+        run: docker compose -f compose/dev.yml down -v

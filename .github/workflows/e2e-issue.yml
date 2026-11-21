@@ -1,0 +1,61 @@
+name: e2e-issue
+
+# Turn an E2E failure into a tracked issue in M8 — Integration.
+# Deduplicated: an open issue with the same title gets a comment instead.
+
+on:
+  workflow_run:
+    workflows: [e2e]
+    types: [completed]
+
+permissions:
+  issues: write
+  actions: read
+
+jobs:
+  issue:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const sha = run.head_sha.slice(0, 7);
+            const title = `e2e: smoke failed on ${run.head_branch} (${sha})`;
+            const body = [
+              `The E2E smoke test failed for \`${run.head_branch}\` at \`${sha}\`.`,
+              ``,
+              `- Run: ${run.html_url}`,
+              `- Logs: ${run.html_url}/attempts/${run.run_attempt}`,
+              ``,
+              `Created automatically. The pipeline triages and fixes it.`,
+            ].join("\n");
+
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "integration",
+              per_page: 100,
+            });
+
+            const dup = existing.find((i) => i.title === title);
+            if (dup) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: dup.number,
+                body: `Still failing: ${run.html_url}`,
+              });
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["integration"],
+              milestone: 9,
+            });
