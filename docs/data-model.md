@@ -733,7 +733,7 @@ Die folgenden DTOs sind die JSON-Repräsentationen der API. Sie enthalten keine 
   "title": "Song",
   "artist": "Artist",
   "duration_ms": 215000,
-  "uri": "https://music-api.example/stream/tracks/42",
+  "uri": "https://music-api.example/isrc/US-XXXX-XXXX/320",
   "cue_in_ms": null,
   "cue_out_ms": null
 }
@@ -902,7 +902,7 @@ Genau eines von `track_id`/`tape_id` muss gesetzt sein. `position` ist optional;
   "title": "Song",
   "artist": "Artist",
   "duration_ms": 215000,
-  "uri": "https://music-api.example/stream/tracks/42",
+  "uri": "https://music-api.example/isrc/US-XXXX-XXXX/320",
   "cue_in_ms": null,
   "cue_out_ms": null
 }

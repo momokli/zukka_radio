@@ -773,7 +773,9 @@ Caster live umsortiert, falsch: der vorgehaltene Track wäre schon veraltet.
 > Liquidsoap aber **keinen Internet-Egress** und einen `tracks_cache` (ro). Beide
 > Angaben sind nicht gleichzeitig erfüllbar. Entweder liefert der Scheduler
 > einen lokalen Pfad in `/tracks`, oder Liquidsoap bekommt eine Egress-Regel zur
-> Music API. Siehe §4, O4.
+> Music API. Siehe §4, O4. (#134: die reale Abspiel-URL ist
+> `{base}/isrc/{isrc}/{format}` für Tracks mit ISRC und
+> `{base}/objects/{hash}` sonst; `format` = `320` per Default.)
 
 **Push (Control):** Der Scheduler setzt Zustand per `POST /control`; die
 Command-Zeile steht im Body (§3.7).
