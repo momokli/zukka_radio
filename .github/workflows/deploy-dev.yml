@@ -1,7 +1,15 @@
 name: deploy-dev
 
 # Push auf v2 → ci grün → automatischer DEV-Deploy + Smoke.
-# PROD (#41), Deploy-Fenster/Audience-Gate (#42) sind bewusst nicht Teil von #40.
+#
+# Läuft auf dem Self-hosted Runner `planet-zukka` direkt auf dem Deploy-Host:
+# kein SSH, kein ufw-Rate-Limit, kein Deploy-Secret. Der Runner ist Mitglied
+# der Gruppe `momo` (Schreibzugriff auf /srv/zukka-dev/repo) und der Gruppe
+# `docker`.
+#
+# Stream-Schutz: scheduler/portal/tapes werden immer neu erstellt. Caddy,
+# Icecast und Liquidsoap nur, wenn niemand auf dem DEV-Stream hört — ein
+# Recreate würde die Hörer trennen.
 on:
   workflow_run:
     workflows: [ci]
@@ -15,35 +23,48 @@ concurrency:
 jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, zukka]
     environment: dev
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure SSH
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: Sync DEV checkout
         run: |
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
-          chmod 600 "$HOME/.ssh/deploy"
-          # Pin the deploy host key so the fresh runner can verify it.
-          ssh-keyscan -H cast.zukkafabrik.de >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
+          cd /srv/zukka-dev/repo
+          git fetch --prune origin
+          git reset --hard "${{ github.event.workflow_run.head_sha }}"
 
-      - name: Deploy (dev)
+      - name: Build images
         run: |
-          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
-            zukka-deploy@cast.zukkafabrik.de \
-            "sudo /usr/local/bin/zukka-deploy dev --tag ${{ github.event.workflow_run.head_sha }}"
+          cd /srv/zukka-dev/repo
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          docker build -f scheduler/Dockerfile      -t "ghcr.io/momokli/zukka-scheduler:$SHA" .
+          docker build -f portal/Dockerfile         -t "ghcr.io/momokli/zukka-portal:$SHA" .
+          docker build -f tapes/Dockerfile          -t "ghcr.io/momokli/zukka-tapes:$SHA" .
+          docker build -f deploy/icecast/Dockerfile -t "ghcr.io/momokli/zukka-icecast:$SHA" .
 
-      # Smoke runs on the deploy host from the git checkout (see
-      # docs/infrastructure.md §3.2: repo/ holds compose/, scripts/, ...); the
-      # DEV listeners are loopback-only. The wrapper already runs the smoke gate
-      # as part of `zukka-deploy dev`; this step re-runs it from the checkout the
-      # workflow can address (D4).
+      - name: Deploy app services
+        run: |
+          cd /srv/zukka-dev/repo
+          sed -i "s|^ZUKKA_TAG=.*|ZUKKA_TAG=${{ github.event.workflow_run.head_sha }}|" env/dev.env
+          docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait \
+            scheduler portal tapes
+
+      - name: Deploy stream stack (only when idle)
+        run: |
+          cd /srv/zukka-dev/repo
+          listeners=$(curl -fsS http://127.0.0.1:12100/status-json.xsl \
+            | python3 -c 'import sys,json; s=json.load(sys.stdin)["icestats"].get("source"); s=s if isinstance(s,list) else ([s] if s else []); print(sum(int(x.get("listeners",0)) for x in s))')
+          echo "DEV listeners: $listeners"
+          if [ "$listeners" -eq 0 ]; then
+            docker compose -f compose/dev.yml --env-file env/dev.env up -d --wait \
+              caddy icecast liquidsoap
+          else
+            echo "::warning::stream stack not recreated — $listeners listener(s) active"
+          fi
+
       - name: Smoke (dev)
-        run: |
-          ssh -i "$HOME/.ssh/deploy" -o StrictHostKeyChecking=accept-new \
-            zukka-deploy@cast.zukkafabrik.de \
-            "/opt/apps/radio-zukka/repo/scripts/smoke.sh dev"
+        run: /srv/zukka-dev/repo/scripts/smoke.sh dev
+
+      - name: Logs on failure
+        if: failure()
+        run: cd /srv/zukka-dev/repo && docker compose -f compose/dev.yml logs --no-color --tail 120
