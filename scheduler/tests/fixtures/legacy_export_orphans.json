@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-20T10:00:00.000Z",
+  "casters": [
+    {
+      "username": "momo",
+      "display_name": "momo",
+      "email": null,
+      "aktiv": true
+    }
+  ],
+  "tracks": [
+    {
+      "file_id": 2001,
+      "title": "ghost track",
+      "artist": "ghost",
+      "album": "ghost",
+      "duration_ms": 1000,
+      "storage_key": "azura/2001.ogg",
+      "isrc": null,
+      "caster": "ghost"
+    }
+  ],
+  "tapes": [
+    {
+      "legacy_id": "rec-orphan-1",
+      "broadcast_id": null,
+      "caster": "ghost",
+      "title": "orphan tape",
+      "started_at": "2024-01-01T19:00:00.000Z",
+      "ended_at": "2024-01-01T20:00:00.000Z",
+      "storage_key": "recordings/rec-orphan-1.ogg",
+      "format": "ogg",
+      "size_bytes": 1,
+      "music_api_id": null
+    }
+  ]
+}
