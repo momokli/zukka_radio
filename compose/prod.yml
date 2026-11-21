@@ -139,6 +139,7 @@ services:
       - ../deploy/caddy:/etc/caddy:ro
       - caddy_data:/data
       - hls:/srv/hls:ro
+      - ../player:/srv/player:ro
     networks: [front, egress, mellon-network]
 
 volumes:

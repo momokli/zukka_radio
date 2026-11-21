@@ -1,30 +1,17 @@
-# DEV: internal TLS, loopback listener behind the host firewall.
-#
-# The app-router listens on container port 12080 (consolidated-architecture
-# §5.3); compose maps host 12180 -> container 12080. The admin API binds
-# 0.0.0.0:2019 so the loopback publish (host 12181 -> 2019) reaches it — the
-# previous 127.0.0.1 bind was unreachable from the host.
-#
-# `tls internal { on_demand }` is required for the host-less site: without a
-# hostname Caddy's internal CA has no subject to pre-issue for, so the TLS
-# handshake failed ("tlsv1 alert internal error") for every SNI. On-demand
-# issuance signs a cert for the requested SNI from the local CA (DEV only).
+# DEV: plain HTTP behind the host edge Caddy (which terminates TLS).
 {
-	admin 0.0.0.0:2019
-	local_certs
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
 }
 
 import routes.caddy
 
-https://:12080 {
-	tls internal {
-		on_demand
+http://:12080 {
+	handle /__zu/health {
+		respond "ok" 200
 	}
 	import radio_zukka_routes
-}
-
-# #44 Metrics bridge (§3.8): scheduler is reachable via the shared `egress`
-# network. HTTP (not TLS): the scrape path stays internal/D EV-only.
-http://:12091 {
-	reverse_proxy scheduler:9091
 }
