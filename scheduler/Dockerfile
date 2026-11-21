@@ -2,7 +2,7 @@
 #   docker build -f scheduler/Dockerfile -t zukka-scheduler:test .
 # syntax=docker/dockerfile:1
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /src
 
 # Workspace manifests first (dependency layer), then sources.
