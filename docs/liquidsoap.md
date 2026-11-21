@@ -196,9 +196,15 @@ unabhängig von unserem Storage und unserer Datenbank.
 
 ### D10 — Fun-Layer garantiert, dass der Stream nie stirbt
 
-`playlist(loop=true)` auf einen lokalen Ordner. Diese Ebene ist **immer**
-verfügbar. Damit kann `fallback` nie „nichts" liefern und der Icecast-Source
-bricht nicht ab, wenn Rotation, Relay und Live gleichzeitig weg sind.
+Die Prio-1-Ebene spielt einen konfigurierbaren Jingle (`ZUKKA_FUN_JINGLE`,
+Default `/rotation/fun.mp3`) in einer Endlosschleife. Technisch ist das ein
+`request.dynamic`, das die Jingle-Datei nach jedem Ende erneut anfordert —
+`playlist(loop=true)` kann eine nackte Audiodatei nicht lesen (sie würde die
+Bytes als M3U parsen). Fehlt die Datei, loggt Liquidsoap bei `level=3` und
+fällt auf eine leise Ersatzquelle (Sinuston) zurück, statt stumm zu werden.
+Diese Ebene ist **immer** verfügbar. Damit kann `fallback` nie „nichts"
+liefern und der Icecast-Source bricht nicht ab, wenn Rotation, Relay und Live
+gleichzeitig weg sind.
 
 ### D11 — Crossfade: Musik ja, Live nur kurz
 
