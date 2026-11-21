@@ -107,7 +107,7 @@ Die DB-Tabelle `sources` spiegelt sie nur (für UI und `enabled`-Schalter).
 | 60   | `queue`    | `request.dynamic`                       | Scheduler `GET /playback/next?layer=queue` |
 | 40   | `rotation` | `playlist` (M3U, `reload_mode="watch"`) | immer                                      |
 | 20   | `relay`    | `input.http` (SomaFM)                   | Relay-Verbindung                           |
-| 1    | `fun`      | `playlist(loop=true)`                   | immer                                      |
+| 1    | `fun`      | `request.dynamic` (Jingle-Loop, Ersatzton) | immer                                      |
 
 `fallback(track_sensitive=false)` — die höchste verfügbare Ebene gewinnt sofort,
 nicht erst am Trackende. Der `fun`-Layer ist die Garantie, dass der Stream nie

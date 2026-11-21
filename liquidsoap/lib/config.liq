@@ -12,6 +12,19 @@
 scheduler_base_url = environment.get(default="", "SCHEDULER_BASE_URL")
 liquidsoap_token = environment.get(default="", "LIQUIDSOAP_TOKEN")
 
+# Fun layer (issue #121): the priority-1 jingle path is operator-configurable.
+# Unset/empty keeps the historical default `/rotation/fun.mp3` (fail-safe, no
+# behavior change for existing deployments).
+fun_jingle_raw = environment.get(default="", "ZUKKA_FUN_JINGLE")
+fun_jingle_path = fun_jingle_resolve(fun_jingle_raw)
+
+if fun_jingle_raw == "" then
+  log(
+    level=4,
+    "fun-jingle: ZUKKA_FUN_JINGLE unset/empty -> default #{fun_jingle_default_path} (issue #121)"
+  )
+end
+
 layers_configured = scheduler_base_url != "" and liquidsoap_token != ""
 
 if not layers_configured then

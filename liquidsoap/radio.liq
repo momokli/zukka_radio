@@ -7,10 +7,12 @@
 
 settings.log.level := 3
 
-# Include order matters: config.liq reads the scheduler URL/token first,
-# harbor.liq creates the slots and the FCFS registry, live.liq consumes
-# `casters` to build `live`, playback.liq provides the pure parse helpers,
-# layers.liq builds show/queue, master.liq wires the chain.
+# Include order matters: fun_jingle.liq provides the pure jingle helpers,
+# config.liq reads the scheduler URL/token and the jingle path next, harbor.liq
+# creates the slots and the FCFS registry, live.liq consumes `casters` to build
+# `live`, playback.liq provides the pure parse helpers, layers.liq builds
+# show/queue and the fun layer, master.liq wires the chain.
+%include "lib/fun_jingle.liq"
 %include "lib/config.liq"
 %include "lib/harbor.liq"
 %include "lib/live.liq"
