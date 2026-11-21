@@ -323,6 +323,8 @@ async fn setup() -> (TempDir, Router, SqlitePool) {
         BASE_URL.to_string(),
         String::new(),
         String::new(),
+        String::new(),
+        String::new(),
     );
     (dir, app, pool)
 }

@@ -194,6 +194,8 @@ async fn setup(upstream_url: &str, tape_size: i64) -> (TempDir, Router) {
         BASE_URL.to_string(),
         upstream_url.to_string(),
         "test-token".to_string(),
+        String::new(),
+        String::new(),
     );
     (dir, app)
 }

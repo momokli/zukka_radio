@@ -90,6 +90,9 @@
             .azuracast-widget .status-badge.rec {
                 background-color: #4caf50;
             }
+            .azuracast-widget .status-badge.live {
+                background-color: #4caf50;
+            }
             .azuracast-widget .track-title {
                 font-size: clamp(0.55rem, 1.5vw, 0.85rem);
                 line-height: 1.1;
@@ -321,10 +324,59 @@
                 else acVolumeIcon.classList.add("fa-volume-up");
             }
 
-            // No public nowplaying API in v2 yet: keep the static label.
+            // Static fallback until the first successful poll (Issue #107).
             badge.className = "status-badge rec";
             badge.textContent = "REC";
             titleEl.textContent = "radio zukka";
+
+            // Public now-playing: same-origin projection served by tapes,
+            // polled every ~10s. A scheduler outage degrades to live:false
+            // with null fields; on error we keep the last known state.
+            const AC_NOWPLAYING_URL = "/api/v1/public/nowplaying";
+            let acNowPlayingInflight = false;
+
+            function acApplyNowPlaying(np) {
+                if (!np || typeof np !== "object") return;
+                const show = (np.show || "").trim();
+                const title = (np.title || "").trim() || show || "radio zukka";
+                const artist = (np.artist || "").trim();
+
+                if (np.live === true) {
+                    badge.className = "status-badge live";
+                    badge.textContent = "LIVE";
+                } else if (show) {
+                    badge.className = "status-badge rec";
+                    badge.textContent = show;
+                } else {
+                    badge.className = "status-badge rec";
+                    badge.textContent = "REC";
+                }
+                titleEl.textContent = title;
+                artistEl.textContent = artist;
+            }
+
+            async function acPollNowPlaying() {
+                if (acNowPlayingInflight || document.hidden) return;
+                acNowPlayingInflight = true;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 5000);
+                try {
+                    const res = await fetch(AC_NOWPLAYING_URL, {
+                        signal: controller.signal,
+                        cache: "no-store",
+                    });
+                    if (!res.ok) throw new Error("nowplaying " + res.status);
+                    acApplyNowPlaying(await res.json());
+                } catch (e) {
+                    // Keep the last known state (initial static fallback stays).
+                } finally {
+                    clearTimeout(timer);
+                    acNowPlayingInflight = false;
+                }
+            }
+
+            acPollNowPlaying();
+            setInterval(acPollNowPlaying, 10000);
         </script>
     </body>
 </html>

@@ -8,6 +8,7 @@ pub mod auth;
 pub mod broadcasts;
 pub mod control;
 pub mod event_log;
+pub mod now;
 pub mod playback;
 pub mod queue_items;
 pub mod queues;

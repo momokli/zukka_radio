@@ -391,7 +391,10 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
 /// `show`/`queue` (running broadcast or active queue with a pending item) →
 /// `rotation` (content present) → `relay`/`fun` (opt-in settings). Only
 /// enabled layers participate; the first matching layer wins.
-async fn active_layer(pool: &SqlitePool, sources: &[SourceDto]) -> ApiResult<Option<SourceLayer>> {
+pub(crate) async fn active_layer(
+    pool: &SqlitePool,
+    sources: &[SourceDto],
+) -> ApiResult<Option<SourceLayer>> {
     let enabled = |layer: SourceLayer| sources.iter().any(|s| s.name == layer && s.enabled);
 
     // (1) forced layer always wins.

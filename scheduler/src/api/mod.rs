@@ -9,6 +9,7 @@ pub mod auth;
 pub mod broadcasts;
 pub mod control;
 pub mod event_log;
+pub mod now;
 pub mod ops;
 pub mod playback;
 pub mod rbac;
@@ -190,6 +191,10 @@ pub fn router(pool: SqlitePool) -> Router {
 
     // Issue #15: operator control endpoints — open for now (TODO(auth)).
     let api = api.nest("/control", control::router());
+
+    // Issue #107: internal public-safe now-playing. The service-token layer is
+    // applied inside the sub-router, so only `/now` is guarded.
+    let api = api.nest("/now", now::router());
 
     // Issue #16: identity authority. Every `/internal/*` route requires the
     // portal service token (§4.1); RBAC stays a portal concern (§6.10.1).
