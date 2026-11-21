@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- radio zukka — Icecast config (DEV/PROD shared, image-internal copy).
-     Source password matches liquidsoap/lib/outputs.liq ("hackme", M4 TODO). -->
+<!-- radio zukka — Icecast config TEMPLATE (DEV/PROD shared).
+     Icecast 2.4.4 does NOT substitute environment variables in its XML config,
+     so this template is rendered at container start by docker-entrypoint.sh
+     (envsubst, package gettext-base) into /etc/icecast2/icecast.xml.
+
+     Only the three password placeholders and the admin user below are
+     substituted; every other `$` in this file is left untouched by scoping
+     envsubst to exactly those variables. Secrets are supplied via the
+     ZUKKA_ICECAST_* environment (see env/*.env.example, docs/infrastructure.md);
+     the entrypoint fails fast when a required secret is missing. -->
 <icecast>
     <location>Zukka Fabrik</location>
     <admin>ops@zukkafabrik.de</admin>
@@ -17,10 +25,10 @@
     </limits>
 
     <authentication>
-        <source-password>hackme</source-password>
-        <relay-password>hackme</relay-password>
-        <admin-user>admin</admin-user>
-        <admin-password>hackme</admin-password>
+        <source-password>${ZUKKA_ICECAST_SOURCE_PASSWORD}</source-password>
+        <relay-password>${ZUKKA_ICECAST_RELAY_PASSWORD}</relay-password>
+        <admin-user>${ZUKKA_ICECAST_ADMIN_USER}</admin-user>
+        <admin-password>${ZUKKA_ICECAST_ADMIN_PASSWORD}</admin-password>
     </authentication>
 
     <hostname>localhost</hostname>

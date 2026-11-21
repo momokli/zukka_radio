@@ -5,17 +5,23 @@
 FROM debian:bookworm-slim
 
 # Pinned distribution version (bookworm, amd64): no floating `:latest`.
+# gettext-base provides envsubst, used by the entrypoint to render the config
+# template (Icecast 2.4.4 does not expand env vars in its XML config).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         icecast2=2.4.4-4+b1 \
+        gettext-base \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY deploy/icecast/icecast.xml /etc/icecast2/icecast.xml
+COPY deploy/icecast/icecast.xml.template /etc/icecast2/icecast.xml.template
+COPY deploy/icecast/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
     CMD ["curl", "-fsS", "http://127.0.0.1:8000/status-json.xsl"]
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["icecast2", "-c", "/etc/icecast2/icecast.xml"]
