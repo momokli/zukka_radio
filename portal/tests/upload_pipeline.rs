@@ -496,6 +496,74 @@ async fn pipeline_dedupes_identical_bytes() {
 }
 
 #[tokio::test]
+async fn pipeline_object_api_chain_head_put_work() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("skipping: ffmpeg/ffprobe missing");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let wav = make_audio(dir.path(), "tone.wav", &[]);
+
+    let jobs = FakeJobs::new();
+    let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
+    let tracks = FakeTrackApi::new();
+
+    let mut staged = stage_file(dir.path(), "tone.wav", "audio/wav", &wav);
+    staged.isrc = Some("DEZZ00000060".into());
+    let sha = staged.sha256.clone();
+
+    let outcome = run(
+        &deps(&jobs, &music, &waveforms, &tracks, dir.path()),
+        "c-1",
+        staged,
+    )
+    .await
+    .expect("pipeline");
+
+    // HEAD /objects/{sha256} is probed exactly once before the store.
+    assert_eq!(music.head_requests(), vec![sha.clone()], "one HEAD probe");
+    // PUT /objects/{sha256} stored the master exactly once and carried X-ISRC.
+    assert_eq!(music.stored_count(), 1, "master stored");
+    assert_eq!(music.put_count(), 1, "master only");
+    assert_eq!(
+        music.put_isrcs(),
+        vec![Some("DEZZ00000060".to_string())],
+        "X-ISRC forwarded on the PUT"
+    );
+    // POST /work {"kind":"analyze"} enqueued for the freshly stored object.
+    assert_eq!(
+        music.work_items(),
+        vec![("analyze".to_string(), sha.clone())],
+        "analyze work enqueued once"
+    );
+    // The local track carries the object hash as its music_api_id (US-8).
+    assert_eq!(tracks.all().len(), 1);
+    assert_eq!(tracks.all()[0].music_api_id, sha);
+    assert_eq!(outcome.music_object_hash, sha);
+
+    // Dedupe: an already-present object (HEAD 200) short-circuits the chain —
+    // no PUT, no second /work, no second local track.
+    let dedupe_music = FakeMusicApi::new();
+    dedupe_music.seed_object(&sha);
+    let dedupe_tracks = FakeTrackApi::new();
+    let mut again = stage_file(dir.path(), "tone.wav", "audio/wav", &wav);
+    again.isrc = Some("DEZZ00000060".into());
+    let second = run(
+        &deps(&jobs, &dedupe_music, &waveforms, &dedupe_tracks, dir.path()),
+        "c-1",
+        again,
+    )
+    .await
+    .expect("second");
+    assert!(second.deduped, "HEAD hit must dedupe");
+    assert_eq!(dedupe_music.head_requests(), vec![sha.clone()]);
+    assert_eq!(dedupe_music.put_count(), 0, "no PUT on dedupe");
+    assert!(dedupe_music.work_items().is_empty(), "no /work on dedupe");
+    assert_eq!(dedupe_tracks.all().len(), 1, "local track still registered");
+}
+
+#[tokio::test]
 async fn pipeline_ffprobe_error_marks_job_failed() {
     if !have("ffprobe") {
         eprintln!("skipping: ffprobe missing");
