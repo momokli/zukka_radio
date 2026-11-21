@@ -4,6 +4,7 @@
 > **Zweck:** Grundlage für visuelle Exploration und daraus abgeleitete Milestones/Issues.
 >
 > Entscheidungen des Operators (2026-11-21):
+>
 > 1. DJ-Monitor ist **v2-kritisch**, nicht später.
 > 2. Das **Mischpult ist das Haupt-UI** des Cockpits; die „simple" Ansicht entfällt.
 > 3. Filter/FX sind **nicht** v2 (später optional).
@@ -52,6 +53,7 @@ Busse                                                            │
 ```
 
 **Wichtig:** Es gibt **zwei Busse**:
+
 - `program`: das, was Hörer hören (Icecast/HLS/Tape).
 - `monitor`/`cue`: das, was der DJ/Operator im Kopfhörer hört (WebRTC). Cue/Solo wirkt nur hier.
 
@@ -62,15 +64,15 @@ gestoppt/gemutet. `mix` dekodiert nur aktive Kanäle.
 
 ## 3. Kanal-Strip
 
-| Element | Umsetzung | Laufzeit |
-|---|---|---|
-| Fader (Gain) | `amplify({float})` | `mixer.set <ch> <db\|linear>` |
-| Mute | Gain-Ref auf 0 / `gate` | `mixer.mute <ch> <bool>` |
-| Solo/Cue | eigener Cue-Bus | `mixer.solo <ch> <bool>` |
-| Exclusive-Unmute | UI-Logik + Command | `mixer.exclusive <ch>` |
-| Meter (RMS/Peak) | `rms(duration)` → `.rms()` | `mixer.meters` (30 Hz) |
-| Gain Control / Limiter | `compress` / `clip` | Konfiguration |
-| Trim | zusätzlicher Gain vor dem Fader | `mixer.trim <ch> <db>` |
+| Element                | Umsetzung                       | Laufzeit                      |
+| ---------------------- | ------------------------------- | ----------------------------- |
+| Fader (Gain)           | `amplify({float})`              | `mixer.set <ch> <db\|linear>` |
+| Mute                   | Gain-Ref auf 0 / `gate`         | `mixer.mute <ch> <bool>`      |
+| Solo/Cue               | eigener Cue-Bus                 | `mixer.solo <ch> <bool>`      |
+| Exclusive-Unmute       | UI-Logik + Command              | `mixer.exclusive <ch>`        |
+| Meter (RMS/Peak)       | `rms(duration)` → `.rms()`      | `mixer.meters` (30 Hz)        |
+| Gain Control / Limiter | `compress` / `clip`             | Konfiguration                 |
+| Trim                   | zusätzlicher Gain vor dem Fader | `mixer.trim <ch> <db>`        |
 
 EQ/Filter: **nicht v2**, optional später (`filter.iir.eq.*`).
 
@@ -80,7 +82,7 @@ EQ/Filter: **nicht v2**, optional später (`filter.iir.eq.*`).
 
 Drei Ebenen, klar getrennt:
 
-1. **Schedule/Priority (primär)** — der Scheduler entscheidet, welche Quelle *soll*.
+1. **Schedule/Priority (primär)** — der Scheduler entscheidet, welche Quelle _soll_.
    Die heutige Kette `live > show > queue > rotation > relay > fun` wird zu einem
    **Preset**, das Kanal-Gains/-Gates setzt.
 2. **Übergänge** — Fades zwischen Quellen (siehe §5).
@@ -94,12 +96,12 @@ Der Operator kann jederzeit **manuell übernehmen** (Override), mit sichtbarem Z
 
 ## 5. Übergänge
 
-| Fall | Operator |
-|---|---|
-| Zusätzliche Quelle einblenden, ohne die laufende zu cutten | `smooth_add` |
-| Track-zu-Track | `crossfade` / `fade.out` + `fade.in` |
+| Fall                                                           | Operator                                        |
+| -------------------------------------------------------------- | ----------------------------------------------- |
+| Zusätzliche Quelle einblenden, ohne die laufende zu cutten     | `smooth_add`                                    |
+| Track-zu-Track                                                 | `crossfade` / `fade.out` + `fade.in`            |
 | Vorausschauend (10 s vor Ende des Podcasts den Set einblenden) | `source.on_position` + `fade.in` / `smooth_add` |
-| Harte Umschaltung (Operator-Klick) | kurzer `fade.out`/`fade.in` (ms–Sekunden) |
+| Harte Umschaltung (Operator-Klick)                             | kurzer `fade.out`/`fade.in` (ms–Sekunden)       |
 
 Die Fade-Dauern sind pro Kanal/Preset konfigurierbar.
 
@@ -130,12 +132,12 @@ DJ-Browser (5 gleichzeitig)
 
 **Latenz-Ziele:**
 
-| Pfad | Ziel |
-|---|---|
-| Fader → Engine | 20–40 ms (ein Frame) |
-| Engine → WebRTC-Monitor | 200–500 ms |
+| Pfad                     | Ziel                        |
+| ------------------------ | --------------------------- |
+| Fader → Engine           | 20–40 ms (ein Frame)        |
+| Engine → WebRTC-Monitor  | 200–500 ms                  |
 | Engine → Icecast (Hörer) | 1–3 s (Burst/Client-Buffer) |
-| Engine → HLS | 6–20 s |
+| Engine → HLS             | 6–20 s                      |
 
 Der öffentliche Stream bleibt bewusst gepuffert (Robustheit). Der Monitor ist der
 „snappy" Weg.
@@ -201,16 +203,16 @@ CockpitState { channels[], master, automation, monitors, listeners, now_playing 
 
 ## 9. Komponenten
 
-| Komponente | Aufgabe | Host |
-|---|---|---|
-| Liquidsoap | Mixer-Graph, Fades, Encoding, Outputs | planet |
-| Scheduler (Rust) | Plan, Schedule, Automation, Commands | planet |
-| Portal (Rust) | Cockpit-UI, Auth, WebSocket-Proxy | planet |
-| monitor-service (Rust, neu) | PCM → Opus → WebRTC (5 Peers) | planet |
-| coturn (neu) | TURN für Remote-DJs | planet / separat |
-| Icecast | öffentlicher Stream | planet |
-| Music API | Object Store, ISRC-Katalog | `.200` |
-| Tapes | öffentlicher Feed, Waveforms, Medien-Proxy mit Cache | planet |
+| Komponente                  | Aufgabe                                              | Host             |
+| --------------------------- | ---------------------------------------------------- | ---------------- |
+| Liquidsoap                  | Mixer-Graph, Fades, Encoding, Outputs                | planet           |
+| Scheduler (Rust)            | Plan, Schedule, Automation, Commands                 | planet           |
+| Portal (Rust)               | Cockpit-UI, Auth, WebSocket-Proxy                    | planet           |
+| monitor-service (Rust, neu) | PCM → Opus → WebRTC (5 Peers)                        | planet           |
+| coturn (neu)                | TURN für Remote-DJs                                  | planet / separat |
+| Icecast                     | öffentlicher Stream                                  | planet           |
+| Music API                   | Object Store, ISRC-Katalog                           | `.200`           |
+| Tapes                       | öffentlicher Feed, Waveforms, Medien-Proxy mit Cache | planet           |
 
 ---
 
@@ -218,12 +220,12 @@ CockpitState { channels[], master, automation, monitors, listeners, now_playing 
 
 Für 4–8 aktive Kanäle, HLS, 5 WebRTC-Monitore:
 
-| Ressource | Bedarf |
-|---|---|
-| CPU | 4 Kerne ok, 8 Kerne für Luft. Decode/Mix < 1 Kern; HLS-AAC ~0,2–0,5 Kern/Stream; WebRTC ~0,1–0,3 Kern/Monitor |
-| RAM | 8 GB ok, 16 GB für Ruhe |
-| Disk | OS/DB klein; Recordings/Tapes groß (SSD > HDD) |
-| Netz | Uplink = Hörer × 192 kbit/s (100 ≈ 20 Mbit/s) + Monitor-Bandbreite |
+| Ressource | Bedarf                                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------------------------- |
+| CPU       | 4 Kerne ok, 8 Kerne für Luft. Decode/Mix < 1 Kern; HLS-AAC ~0,2–0,5 Kern/Stream; WebRTC ~0,1–0,3 Kern/Monitor |
+| RAM       | 8 GB ok, 16 GB für Ruhe                                                                                       |
+| Disk      | OS/DB klein; Recordings/Tapes groß (SSD > HDD)                                                                |
+| Netz      | Uplink = Hörer × 192 kbit/s (100 ≈ 20 Mbit/s) + Monitor-Bandbreite                                            |
 
 **Messung statt Annahme:** Decode/Encode-Benchmark auf planet und `.200` laufen lassen,
 bevor wir die Engine verschieben. Empfehlung: Engine + Monitor auf planet, Object Store
@@ -234,6 +236,7 @@ auf `.200`, Cache auf planet.
 ## 11. User Stories
 
 ### Operator (Cockpit)
+
 - Ich sehe alle Kanäle mit Pegel, Mute/Solo und Quelle.
 - Ich sehe, welcher Kanal on air ist und **warum** (Automatik/Schedule/Override).
 - Ich kann einen Kanal faden, muten, soloen — sofort hörbar.
@@ -242,12 +245,14 @@ auf `.200`, Cache auf planet.
 - Ich sehe Hörerzahl und Now-Playing.
 
 ### DJ/Caster
+
 - Ich logge mich ins Portal ein und sehe mein Setup.
 - Ich verbinde mein Tool mit dem Harbor und bin „verbunden, wartend" oder „live".
 - Ich höre den Programm-Mix live über WebRTC und mische mich ein.
 - Ich höre mein eigenes Signal lokal (kein Roundtrip).
 
 ### Hörer
+
 - Ich höre einen kontinuierlichen Stream (Icecast/HLS), keine Cuts.
 - Ich sehe Now-Playing (Titel/Artist/Show).
 
@@ -268,20 +273,29 @@ auf `.200`, Cache auf planet.
 
 ---
 
-## 13. Offene Entscheidungen
+## 13. Entscheidungen
 
-- [ ] **Liquidsoap-Graph**: `mix` mit 4–8 aktiven Kanälen + gepatchte Stille — bestätigt?
-- [ ] **Patching-Granularität**: reichen vorab angelegte Slots (32 Harbor, 8 Relay, N adhoc)?
-- [ ] **Automation-Modell**: Presets (default/live/relay-only) + Schedule; Level nur Ducking?
-- [ ] **Monitor-Transport**: WebRTC direkt (str0m) vs. SFU (LiveKit/mediasoup)?
-- [ ] **TURN**: coturn auf planet oder separat?
-- [ ] **Cue-Bus**: eigener Mix nur für den Monitor — bestätigt?
-- [ ] **Fader-Kurve**: linear vs. dB (Empfehlung: dB, wie Hardware).
-- [ ] **Meter**: 30 Hz binär — bestätigt?
+Vom Operator bestätigt (2026-11-21): "die Empfehlungen sind gut".
+
+- [x] **Liquidsoap-Graph**: `mix` mit 4–8 aktiven Kanälen; weitere gepatcht, aber gestoppt/gestummt.
+- [x] **Patching**: vorab angelegte Slots (32 Harbor, 8 Relay, N adhoc).
+- [x] **Automation**: Presets (`default`/`live`/`relay-only`) + Schedule; Pegel nur für Ducking/Fade-in.
+- [x] **Monitor-Transport**: direktes WebRTC (`str0m`/`webrtc-rs`) für 5 Peers; SFU erst bei Skalierung.
+- [x] **TURN**: `coturn` auf planet (revisit, falls die Engine den Host wechselt).
+- [x] **Cue-Bus**: eigener Mix, nur im Monitor hörbar.
+- [x] **Fader-Kurve**: dB (wie Hardware).
+- [x] **Meter**: 30 Hz, binäre Float32-Frames.
+
+## 14. Noch offen
+
+- [ ] **Visuelle Exploration** (Figma/Penpot o. ä.) auf Basis von §8.
+- [ ] **Host-Placement**: Engine + Monitor auf planet vs. `.200` — erst nach Decode/Encode-Benchmark.
+- [ ] **Fade-Dauern** pro Preset (Startwerte: 0,5–2 s; vorausschauend 10 s).
+- [ ] **Auth des Monitors**: Session-Cookie vs. kurzlebiges Monitor-Token.
 
 ---
 
-## 14. Risiken
+## 15. Risiken
 
 - **CPU**: `mix` mit vielen aktiven Decodern; HLS-Encoding; WebRTC-Encoding.
 - **Runtime-Patching**: neue Quellen nur in vorab angelegten Slots.
