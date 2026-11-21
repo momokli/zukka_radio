@@ -9,9 +9,11 @@
 # ZUKKA_SMOKE_TIMEOUT seconds (default 30) have elapsed, then the script exits
 # non-zero.
 #
-# DEV terminates TLS in Caddy (self-signed) and exposes the admin API.
-# PROD sits behind the shared edge Caddy: `Caddyfile.prod` sets `auto_https off`
-# and `admin off`, so the checks speak plain HTTP and there is no admin probe.
+# Both environments run the stack Caddy with `admin off` and `auto_https off`.
+# DEV is plain HTTP behind the host edge Caddy (which terminates TLS and
+# proxies to 127.0.0.1:12180); PROD sits behind the shared edge Caddy.
+# Liveness is the site-level `/__zu/health` route in both cases — there is no
+# admin API to probe.
 set -euo pipefail
 
 env_name="${1:-}"
@@ -72,23 +74,18 @@ check_warn() {
 
 if [[ "$env_name" == "dev" ]]; then
     caddy_port="${ZUKKA_SMOKE_CADDY_PORT:-12180}"
-    caddy_admin="${ZUKKA_SMOKE_CADDY_ADMIN:-http://127.0.0.1:12181}"
     scheduler_base="${ZUKKA_SMOKE_SCHEDULER:-http://127.0.0.1:12110}"
 
     domain_radio="${ZUKKA_DOMAIN_RADIO:-radio.dev.zukkafabrik.de}"
     domain_portal="${ZUKKA_DOMAIN_PORTAL:-portal.dev.zukkafabrik.de}"
     domain_tapes="${ZUKKA_DOMAIN_TAPES:-tapes.dev.zukkafabrik.de}"
 
-    scheme="https"
-    tls_opts=(-k)
+    scheme="http"
+    tls_opts=()
 
-    # Caddy exposes no /health on the admin API; its real liveness probe is
-    # GET /config/ (200 once the admin listener is up).
-    #
-    # The app-router is reached with `--resolve`: the URL carries the real
-    # domain (so Caddy gets an SNI and routes by Host) while the connection
-    # targets the loopback listener. `-k` skips the self-signed DEV cert.
-    check "caddy admin /config/" "${caddy_admin}/config/"
+    # `admin off` in Caddyfile.dev: the site-level health route is the
+    # liveness check (same as PROD).
+    check "caddy /__zu/health" "http://${caddy_addr}:${caddy_port}/__zu/health"
 else
     caddy_port="${ZUKKA_SMOKE_CADDY_PORT:-12080}"
     scheduler_base="${ZUKKA_SMOKE_SCHEDULER:-http://127.0.0.1:12010}"

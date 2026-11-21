@@ -58,6 +58,15 @@ services:
       # #44: dedicated Prometheus listener (§3.8), scraped via the caddy
       # bridge :12091 (mellon-network).
       ZUKKA_METRICS_BIND: 0.0.0.0:9091
+      # Announcements: PROD uses ZUKKA_TELEGRAM_CHAT_ID.
+      ZUKKA_ENV: ${ZUKKA_ENV}
+      ZUKKA_TELEGRAM_BOT_TOKEN: ${ZUKKA_TELEGRAM_BOT_TOKEN:-}
+      ZUKKA_TELEGRAM_CHAT_ID: ${ZUKKA_TELEGRAM_CHAT_ID:-}
+      ZUKKA_TELEGRAM_CHAT_ID_TEST: ${ZUKKA_TELEGRAM_CHAT_ID_TEST:-}
+      ZUKKA_ANNOUNCEMENT_POLL_SECS: ${ZUKKA_ANNOUNCEMENT_POLL_SECS:-15}
+      # #101: first admin, created only when the casters table is empty.
+      ZUKKA_BOOTSTRAP_ADMIN_USER: ${ZUKKA_BOOTSTRAP_ADMIN_USER:-}
+      ZUKKA_BOOTSTRAP_ADMIN_PASSWORD: ${ZUKKA_BOOTSTRAP_ADMIN_PASSWORD:-}
     ports:
       - "127.0.0.1:${ZUKKA_PORT_SCHEDULER:-12010}:8080"
     expose:
