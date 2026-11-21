@@ -37,10 +37,7 @@ pub fn slug_from_key(natural_key: &str) -> String {
 
 /// True when `slug` is a valid 8-character Crockford base32 slug.
 pub fn is_valid_slug(slug: &str) -> bool {
-    slug.len() == SLUG_LEN
-        && slug
-            .bytes()
-            .all(|b| ALPHABET.iter().any(|allowed| *allowed == b))
+    slug.len() == SLUG_LEN && slug.bytes().all(|b| ALPHABET.contains(&b))
 }
 
 #[cfg(test)]
