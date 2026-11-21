@@ -29,6 +29,27 @@ pub(crate) fn music_api_base() -> String {
     std::env::var("MUSIC_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:5001".to_string())
 }
 
+/// Default playback tier when `MUSIC_API_PLAYBACK_FORMAT` is unset (E8).
+const PLAYBACK_FORMAT_DEFAULT: &str = "320";
+
+/// Playback format tier (`flac`|`320`|`128`), from `MUSIC_API_PLAYBACK_FORMAT`.
+pub(crate) fn playback_format() -> String {
+    std::env::var("MUSIC_API_PLAYBACK_FORMAT")
+        .unwrap_or_else(|_| PLAYBACK_FORMAT_DEFAULT.to_string())
+}
+
+/// Resolves the Music-API playback URI (E7).
+///
+/// A track with an ISRC streams from `{base}/isrc/{isrc}/{format}`; anything
+/// without one (tapes, ISRC-less uploads) from the content-addressed
+/// `{base}/objects/{hash}` route.
+pub(crate) fn playback_uri(base: &str, isrc: Option<&str>, hash: &str) -> String {
+    match isrc.filter(|value| !value.is_empty()) {
+        Some(isrc) => format!("{base}/isrc/{isrc}/{}", playback_format()),
+        None => format!("{base}/objects/{hash}"),
+    }
+}
+
 /// Projection row: a queue item joined with its media object.
 #[derive(Debug, sqlx::FromRow)]
 struct ItemRow {
@@ -41,6 +62,7 @@ struct ItemRow {
     track_artist: Option<String>,
     track_duration_ms: Option<i64>,
     track_music_api_id: Option<String>,
+    track_isrc: Option<String>,
     tape_title: Option<String>,
     tape_duration_ms: Option<i64>,
     tape_music_api_id: Option<String>,
@@ -49,6 +71,7 @@ struct ItemRow {
 const ITEM_SELECT: &str = "SELECT qi.id AS queue_item_id, qi.kind AS qkind, qi.track_id, qi.tape_id, \
      qi.title_override, t.title AS track_title, t.artist AS track_artist, \
      t.duration_ms AS track_duration_ms, t.music_api_id AS track_music_api_id, \
+     t.isrc AS track_isrc, \
      tp.title AS tape_title, tp.duration_ms AS tape_duration_ms, \
      tp.music_api_id AS tape_music_api_id \
      FROM queue_items qi \
@@ -68,9 +91,10 @@ impl ItemRow {
                 title: self.title_override.or(self.track_title).unwrap_or_default(),
                 artist: self.track_artist,
                 duration_ms: self.track_duration_ms.unwrap_or(0),
-                uri: format!(
-                    "{base}/stream/tracks/{}",
-                    self.track_music_api_id.unwrap_or_default()
+                uri: playback_uri(
+                    &base,
+                    self.track_isrc.as_deref(),
+                    self.track_music_api_id.as_deref().unwrap_or_default(),
                 ),
                 cue_in_ms: None,
                 cue_out_ms: None,
@@ -83,9 +107,10 @@ impl ItemRow {
                 title: self.title_override.or(self.tape_title).unwrap_or_default(),
                 artist: None,
                 duration_ms: self.tape_duration_ms.unwrap_or(0),
-                uri: format!(
-                    "{base}/stream/tapes/{}",
-                    self.tape_music_api_id.unwrap_or_default()
+                uri: playback_uri(
+                    &base,
+                    None,
+                    self.tape_music_api_id.as_deref().unwrap_or_default(),
                 ),
                 cue_in_ms: None,
                 cue_out_ms: None,
@@ -186,10 +211,7 @@ async fn tape_item(pool: &SqlitePool, tape_id: Option<&str>) -> ApiResult<Option
         title: row.title.unwrap_or_default(),
         artist: None,
         duration_ms: row.duration_ms.unwrap_or(0),
-        uri: format!(
-            "{base}/stream/tapes/{}",
-            row.music_api_id.unwrap_or_default()
-        ),
+        uri: playback_uri(&base, None, row.music_api_id.as_deref().unwrap_or_default()),
         cue_in_ms: None,
         cue_out_ms: None,
     }))

@@ -144,7 +144,7 @@ async fn valid_m3u_projection() {
     assert_eq!(ctype.as_deref(), Some("audio/x-mpegurl"));
     assert!(body.starts_with("#EXTM3U\n"), "{body}");
     assert!(
-        body.contains("http://music.test/stream/tracks/m1"),
+        body.contains("http://music.test/objects/m1"),
         "absolute shared url missing: {body}"
     );
     assert!(body.contains("#EXTINF:215,Artist A - Song A"), "{body}");
@@ -262,7 +262,7 @@ async fn order_deterministic() {
     let (status, _ctype, body) =
         get_raw(&app, "/api/v1/playback/rotation.m3u", Some(TEST_TOKEN)).await;
     assert_eq!(status, StatusCode::OK);
-    let first = body.find("/stream/tracks/m30").expect("m30 present");
-    let second = body.find("/stream/tracks/m31").expect("m31 present");
+    let first = body.find("/objects/m30").expect("m30 present");
+    let second = body.find("/objects/m31").expect("m31 present");
     assert!(first < second, "id order violated: {body}");
 }
