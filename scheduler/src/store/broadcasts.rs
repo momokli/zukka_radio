@@ -571,7 +571,24 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
                     }
                 }
             }
-            Action::Cancel => {}
+            Action::Cancel => {
+                // A cancelled *live* broadcast must also close the recorder
+                // (docs/consolidated-architecture.md §3.6): finalize any
+                // pending live tape so `tape.stop` is pushed and the row no
+                // longer keeps the placeholder `ended_at = started_at`.
+                // `finalize_live_tape` clamps the end to the tape's own
+                // `started_at` (schema CHECK `ended_at >= started_at`).
+                match tapes::finalize_live_tape(&mut tx, id, Utc::now()).await {
+                    Ok(Some(_)) => tape_to_stop = true,
+                    Ok(None) => tracing::debug!(
+                        broadcast_id = id,
+                        "cancel: no pending live tape to finalize"
+                    ),
+                    Err(err) => {
+                        tracing::warn!(broadcast_id = id, "tape finalize failed: {err:#}")
+                    }
+                }
+            }
         }
     }
 
