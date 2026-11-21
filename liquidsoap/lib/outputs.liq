@@ -8,7 +8,7 @@ output.icecast(
   password="hackme",  # TODO: sourced from the generated config in M4
   mount="stream.mp3",
   name="radio zukka",
-  radio
+  mksafe(radio)
 )
 
 # TODO(M1): start/stop per broadcast via control tape.start / tape.stop
