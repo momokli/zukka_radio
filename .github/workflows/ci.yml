@@ -158,6 +158,7 @@ jobs:
           cp env/prod.env.example env/prod.env
           docker compose -f compose/dev.yml --env-file env/dev.env config -q
           docker compose -f compose/prod.yml --env-file env/prod.env config -q
+          docker compose -f compose/prod.yml -f compose/prod-own.yml --env-file env/prod.env config -q
 
   build:
     # Push-only: PRs never build or push images. Runs after every CI gate.

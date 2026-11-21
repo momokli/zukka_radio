@@ -234,6 +234,20 @@ deploy_prod() {
     export ZUKKA_ENV_FILE="$env_file"
     local compose=(docker compose -f "$compose_file" --env-file "$env_file")
 
+    # Edge mode (Issue #91): `own` adds the caddy override file and validates
+    # against Caddyfile.prod-own; `shared`/unset keeps the baseline behaviour.
+    # Compose cannot switch ports/command on an env value, so the wrapper does.
+    local caddyfile="/etc/caddy/Caddyfile.prod"
+    if [[ "$(read_edge_mode)" == "own" ]]; then
+        local own_compose="${REPO_DIR}/compose/prod-own.yml"
+        if [[ ! -f "$own_compose" ]]; then
+            echo "zukka-deploy: ZUKKA_EDGE_MODE=own but missing ${own_compose}; aborting" >&2
+            exit 1
+        fi
+        compose+=(-f "$own_compose")
+        caddyfile="/etc/caddy/Caddyfile.prod-own"
+    fi
+
     # First deploy on an empty host: no icecast container exists yet, so without
     # --force the audio path would stay dead (smoke HLS is non-fatal) while the
     # deploy still reports success. Detect that and enable --force so icecast
@@ -257,16 +271,16 @@ deploy_prod() {
     echo "==> recreate tapes"
     "${compose[@]}" up -d --no-deps --wait tapes
 
-    # Caddy runs with `admin off` in Caddyfile.prod: there is no admin API to
-    # reload against. Validate the config, then recreate the container.
+    # Caddy runs with `admin off` in the selected Caddyfile (prod / prod-own):
+    # there is no admin API to reload against. Validate the config, then recreate.
     if ! "${compose[@]}" exec -T caddy caddy version >/dev/null 2>&1; then
         echo "==> start caddy"
         "${compose[@]}" up -d --no-deps --wait caddy
     fi
     echo "==> caddy validate"
     "${compose[@]}" exec -T caddy \
-        caddy validate --config /etc/caddy/Caddyfile.prod --adapter caddyfile
-    echo "==> recreate caddy (no admin-API reload; Caddyfile.prod sets admin off)"
+        caddy validate --config "$caddyfile" --adapter caddyfile
+    echo "==> recreate caddy (no admin-API reload; ${caddyfile} sets admin off)"
     "${compose[@]}" up -d --no-deps --force-recreate --wait caddy
 
     # Audio path: only a forced deploy may restart liquidsoap/icecast
@@ -353,6 +367,13 @@ deploy_prod_rollback() {
 # file is never `source`d (it may hold unrelated secrets / side effects).
 read_service_token() {
     sed -n 's/^ZUKKA_SCHEDULER_SERVICE_TOKEN=//p' "$PROD_ENV_FILE" | head -n 1
+}
+
+# Reads ZUKKA_EDGE_MODE from the PROD env file with a targeted `sed`; the file is
+# never `source`d (it may hold unrelated secrets / side effects). Empty/unset
+# means `shared` (the baseline behind the shared edge, Issue #91).
+read_edge_mode() {
+    sed -n 's/^ZUKKA_EDGE_MODE=//p' "$PROD_ENV_FILE" | head -n 1
 }
 
 # Extracts a JSON number field from the compact (single-line) response body.
