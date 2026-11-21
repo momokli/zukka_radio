@@ -64,7 +64,7 @@
 
   <section class="control-section">
     <h2>Status</h2>
-    <p>On Air: <strong>{{ view.on_air_label }}</strong>{% match view.on_air_note %}{% when Some with (note) %} <span class="muted">({{ note }})</span>{% when None %}{% endmatch %}</p>
+    <p>On Air: <strong>{{ view.on_air_label }}</strong>{% match view.layer_source %}{% when Some with (src) %} <span class="muted">({{ src }})</span>{% when None %}{% endmatch %}{% match view.on_air_note %}{% when Some with (note) %} <span class="muted">— {{ note }}</span>{% when None %}{% endmatch %}</p>
     {% match view.derived_layer %}
     {% when Some with (derived) %}
     <p class="muted">Geplant (abgeleitet): <code>{{ derived }}</code></p>

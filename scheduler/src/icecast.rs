@@ -81,8 +81,6 @@ pub struct ObservedHints {
     pub live_active: bool,
     /// `settings['control.relay_active'] == "true"`.
     pub relay_active_setting: bool,
-    /// `settings['control.fun_active'] == "true"`.
-    pub fun_active_setting: bool,
     /// Kind of the running broadcast (`recording`, `playlist`, `live`, …).
     pub running_kind: Option<String>,
     /// Titles of the shared library (`tracks.visibility = 'shared'`).

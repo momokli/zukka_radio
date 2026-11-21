@@ -429,8 +429,6 @@ async fn observation_hints(
 
     let relay_active_setting =
         get_setting(pool, "control.relay_active").await?.as_deref() == Some("true");
-    let fun_active_setting =
-        get_setting(pool, "control.fun_active").await?.as_deref() == Some("true");
 
     let running_kind: Option<String> = sqlx::query_scalar(
         "SELECT kind FROM broadcasts WHERE status = 'live' ORDER BY starts_at, id LIMIT 1",
@@ -449,7 +447,6 @@ async fn observation_hints(
         db_now_playing,
         live_active: live_is_active(pool).await?,
         relay_active_setting,
-        fun_active_setting,
         running_kind,
         shared_titles,
     })

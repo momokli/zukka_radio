@@ -316,7 +316,7 @@ fn observed_relay_and_silence_render() {
     });
     let view = ControlView::from_state(state, false);
     assert_eq!(view.active_layer.as_deref(), Some("relay"));
-    assert!(view.on_air);
+    assert_eq!(view.on_air_label, "relay");
     assert_eq!(view.layer_source.as_deref(), Some("beobachtet"));
     assert_eq!(view.now_title.as_deref(), Some("Deep Space"));
     assert_eq!(view.now_source.as_deref(), Some("Icecast"));
@@ -332,9 +332,9 @@ fn observed_relay_and_silence_render() {
     silent.now_playing = None;
     silent.observed_now_playing = None;
     let view = ControlView::from_state(silent, false);
-    assert!(!view.on_air);
+    assert_eq!(view.on_air_label, "Stille");
+    assert!(view.on_air_note.is_none());
     assert!(view.active_layer.is_none());
-    assert_eq!(view.observed_reason.as_deref(), Some("silent"));
     assert!(view.now_title.is_none());
 }
 
