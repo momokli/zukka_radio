@@ -32,6 +32,8 @@ pub struct StagedUpload {
     pub path: TempPath,
     pub size_bytes: i64,
     pub sha256: String,
+    /// Optional ISRC (Issue #134, US-2) sent as `X-ISRC` on upload.
+    pub isrc: Option<String>,
 }
 
 fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
@@ -40,9 +42,10 @@ fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
 
 /// Streams every file part of `multipart` to a temp file under `tmp_dir`.
 ///
-/// Only parts carrying a filename are staged (non-file form fields are
-/// skipped). The summed size is capped by `max_bytes`; exceeding it is a
-/// [`PortalError::PayloadTooLarge`] and all temp files are discarded.
+/// Only parts carrying a filename are staged; a non-file `isrc` field is read
+/// and applied to every staged file (Issue #134, US-2). Other non-file form
+/// fields are skipped. The summed size is capped by `max_bytes`; exceeding it
+/// is a [`PortalError::PayloadTooLarge`] and all temp files are discarded.
 pub async fn stage_multipart(
     multipart: &mut Multipart,
     tmp_dir: &Path,
@@ -54,6 +57,7 @@ pub async fn stage_multipart(
 
     let mut staged: Vec<StagedUpload> = Vec::new();
     let mut total: i64 = 0;
+    let mut isrc: Option<String> = None;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -62,6 +66,17 @@ pub async fn stage_multipart(
     {
         let field_name = field.name().unwrap_or("file").to_string();
         let Some(filename) = field.file_name().map(str::to_owned) else {
+            // A non-file `isrc` field applies to every file in the request.
+            if field_name == "isrc" {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| PortalError::BadRequest(format!("multipart read error: {e}")))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    isrc = Some(trimmed.to_string());
+                }
+            }
             continue; // not a file part
         };
         let content_type = field
@@ -113,7 +128,12 @@ pub async fn stage_multipart(
             path,
             size_bytes: size,
             sha256,
+            isrc: None,
         });
+    }
+
+    for item in &mut staged {
+        item.isrc = isrc.clone();
     }
 
     Ok(staged)

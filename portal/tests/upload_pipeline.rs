@@ -244,6 +244,7 @@ fn stage_bytes(dir: &Path, filename: &str, content_type: &str, bytes: &[u8]) -> 
         path,
         size_bytes: bytes.len() as i64,
         sha256: sha256_hex(bytes),
+        isrc: None,
     }
 }
 
@@ -403,8 +404,8 @@ async fn pipeline_master_only_for_accepted_codec() {
     .expect("pipeline");
     assert!(!outcome.deduped);
     assert!(!outcome.derivate);
-    assert_eq!(music.created_count(), 1);
-    assert_eq!(music.asset_count(), 1, "master only");
+    assert_eq!(music.stored_count(), 1);
+    assert_eq!(music.put_count(), 1, "master only");
     assert_eq!(jobs.state_of(&outcome.job_id).as_deref(), Some("done"));
     // US-8: a local library track was registered (private, owned by the uploader).
     assert_eq!(tracks.all().len(), 1, "one local track");
@@ -446,10 +447,10 @@ async fn pipeline_creates_derivate_for_unaccepted_codec() {
     .await
     .expect("pipeline");
     assert!(outcome.derivate, "derivate expected for ac3");
-    assert_eq!(music.created_count(), 1);
-    assert_eq!(music.asset_count(), 2, "master + derivate");
+    assert_eq!(music.stored_count(), 2);
+    assert_eq!(music.put_count(), 2, "master + derivate");
     // The derivate is a distinct temp file (random temp name).
-    let paths = music.asset_paths();
+    let paths = music.put_paths();
     assert_ne!(paths[0], paths[1]);
     assert_eq!(jobs.state_of(&outcome.job_id).as_deref(), Some("done"));
 }
@@ -475,7 +476,7 @@ async fn pipeline_dedupes_identical_bytes() {
     .await
     .expect("first");
     assert!(!first.deduped);
-    assert_eq!(music.created_count(), 1);
+    assert_eq!(music.stored_count(), 1);
     assert_eq!(waveforms.count(), 1);
 
     let second = run(
@@ -486,8 +487,8 @@ async fn pipeline_dedupes_identical_bytes() {
     .await
     .expect("second");
     assert!(second.deduped, "identical bytes must dedupe");
-    assert_eq!(music.created_count(), 1, "no second track");
-    assert_eq!(second.track_id, first.track_id);
+    assert_eq!(music.stored_count(), 1, "no second upload");
+    assert_eq!(second.music_object_hash, first.music_object_hash);
     assert_eq!(tracks.all().len(), 1, "no second local track");
     assert_eq!(jobs.state_of(&second.job_id).as_deref(), Some("done"));
     // The dedupe short-circuit skips waveform computation (track already has one).
@@ -523,7 +524,7 @@ async fn pipeline_ffprobe_error_marks_job_failed() {
     assert_eq!(jobs.state_of(&err.job_id).as_deref(), Some("failed"));
     let job = jobs.job_of(&err.job_id).unwrap();
     assert!(job.error.unwrap().contains("ffprobe"));
-    assert_eq!(music.created_count(), 0);
+    assert_eq!(music.stored_count(), 0);
     assert_eq!(waveforms.count(), 0);
 }
 
