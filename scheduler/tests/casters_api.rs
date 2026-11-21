@@ -38,6 +38,38 @@ fn service_token() -> &'static str {
     })
 }
 
+/// Liquidsoap token (§4.1). Since Issue #105 the `/internal/harbor/auth` route
+/// is guarded by this token, not by the portal service token.
+fn liquidsoap_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let token = "test-liquidsoap-token-casters".to_string();
+        // SAFETY: guarded by OnceLock; set exactly once.
+        unsafe { std::env::set_var(api_auth::TOKEN_ENV, &token) };
+        token
+    })
+}
+
+/// POSTs to the Liquidsoap-guarded harbor-auth route (Issue #105).
+async fn send_harbor(app: &Router, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/internal/harbor/auth")
+        .header("x-liquidsoap-token", liquidsoap_token())
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.expect("router response");
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
+}
+
 async fn setup() -> (TempDir, SqlitePool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let pool = zukka_scheduler::db::connect(dir.path().join("zukka.db"))
@@ -174,18 +206,15 @@ async fn create_caster_returns_one_time_stream_password() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Harbor credentials work with the generated stream password.
-    let (status, harbor) = send(
+    // Harbor credentials work with the generated stream password. The route is
+    // Liquidsoap-guarded (Issue #105), so it carries `X-Liquidsoap-Token`.
+    let (status, harbor) = send_harbor(
         &app,
-        Method::POST,
-        "/api/v1/internal/harbor/auth",
-        Some(json!({
+        json!({
             "mount": "/live/slot-01",
             "username": "alice",
             "password": stream_password
-        })),
-        true,
-        None,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {harbor}");

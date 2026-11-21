@@ -58,6 +58,11 @@ services:
       - recordings_staging:/recordings
       - rotation:/rotation:ro
     networks: [front, back, egress]
+    # Issue #105: Harbor auth calls the scheduler (back net) with the
+    # Liquidsoap token. `SCHEDULER_BASE_URL` defaults to the in-network name.
+    environment:
+      LIQUIDSOAP_TOKEN: ${ZUKKA_LIQUIDSOAP_TOKEN}
+      SCHEDULER_BASE_URL: ${ZUKKA_SCHEDULER_URL:-http://scheduler:8080}
     command: ["/etc/liquidsoap/radio.liq"]
 
   scheduler:
