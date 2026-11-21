@@ -137,6 +137,16 @@ jobs:
       - name: backup drill test
         run: ./scripts/zukka-backup-test.sh
 
+  rollback:
+    # Drill for the PROD rollback state machine (#47) against a LOCAL fake
+    # environment: no PROD access, no root, no real Docker needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rollback drill test
+        run: ./scripts/zukka-rollback-test.sh
+
   compose:
     runs-on: ubuntu-latest
     steps:
@@ -151,7 +161,7 @@ jobs:
 
   build:
     # Push-only: PRs never build or push images. Runs after every CI gate.
-    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose, backup, monitoring]
+    needs: [rust, liquidsoap, caddy, secrets, shellcheck, compose, backup, monitoring, rollback]
     if: github.event_name == 'push' && github.ref == 'refs/heads/v2'
     runs-on: ubuntu-latest
     permissions:

@@ -258,6 +258,9 @@ gegen einen Stub testbar ist, ohne PROD anzufassen.
 
 ## Rollback
 
+Vollständiger Rollback-Plan inkl. Ebenenmodell L1/L2/L3 und Datenrückweg:
+`docs/rollback.md`. Hier nur die Deploy-Mechanik.
+
 `.deployed.prev` ist der **letzte bekannt gute** Stand und wird durch einen
 Rollback **nicht** rotiert. Der Rollback deployt diesen SHA mit demselben
 Ablauf inklusive Smoke-Gate und **setzt nur `.deployed`** auf den alten SHA:
