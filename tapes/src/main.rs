@@ -95,6 +95,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         config.base_url.clone(),
         config.music_api_url.clone(),
         config.music_api_token.clone(),
+        config.scheduler_url.clone(),
+        config.scheduler_token.clone(),
     );
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

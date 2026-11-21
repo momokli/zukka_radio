@@ -2,6 +2,7 @@
 
 pub mod casters;
 pub mod media;
+pub mod nowplaying;
 pub mod shell;
 pub mod tapes;
 pub mod waveform;
@@ -17,6 +18,7 @@ use sqlx::SqlitePool;
 
 use crate::error::{ApiError, unavailable_body};
 use media::MediaProxy;
+use nowplaying::NowPlayingClient;
 
 /// Shared handler state.
 #[derive(Clone)]
@@ -27,19 +29,25 @@ pub struct AppState {
     pub base_url: String,
     /// Music API proxy (client + credentials) for `/media/{file}`.
     pub media: MediaProxy,
+    /// Scheduler client for the public now-playing projection (Issue #107).
+    pub nowplaying: NowPlayingClient,
 }
 
 /// Builds the full application router: `/healthz` + `/api/v1` + `/media`.
+#[allow(clippy::too_many_arguments)]
 pub fn router(
     pool: SqlitePool,
     base_url: String,
     music_api_url: String,
     music_api_token: String,
+    scheduler_url: String,
+    scheduler_token: String,
 ) -> Router {
     let state = AppState {
         pool,
         base_url,
         media: MediaProxy::new(music_api_url, music_api_token),
+        nowplaying: NowPlayingClient::new(scheduler_url, scheduler_token),
     };
 
     // Inner router: the API keeps its own JSON fallback, so an unknown
@@ -53,6 +61,10 @@ pub fn router(
             get(waveform::get_waveform).options(preflight),
         )
         .route("/casters", get(casters::get_casters).options(preflight))
+        .route(
+            "/public/nowplaying",
+            get(nowplaying::get_nowplaying).options(preflight),
+        )
         .fallback(not_found);
 
     Router::new()
