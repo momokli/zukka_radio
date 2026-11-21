@@ -54,3 +54,46 @@ server.register("live.status", description="Live-Auswahl als JSON",
     ignore(arg)
     live_status_json()
   end)
+
+# Layer availability (issue #106): toggle the show/queue pull layers at runtime
+# without a restart. `layer.available show false` makes the chain fall straight
+# to queue/rotation even if the scheduler endpoint would hand out an item.
+# The refs live in layers.liq; `layers_configured` in config.liq.
+
+def layer_status_json() =
+  json.stringify({
+    show_available = show_available(),
+    queue_available = queue_available(),
+    layers_configured = layers_configured
+  })
+end
+
+server.register("layer.available", description="Show/Queue-Ebene ein-/ausschalten",
+  usage="<show|queue> <true|false>", fun (arg) -> begin
+    parts = list.filter(
+      fun (s) -> s != "",
+      string.split(separator=" ", string.trim(arg))
+    )
+    if list.length(parts) != 2 then
+      "error: usage: layer.available <show|queue> <true|false>"
+    else
+      layer = list.nth(parts, 0)
+      raw = list.nth(parts, 1)
+      if layer != "show" and layer != "queue" then
+        "error: unknown layer '#{layer}' (expected show|queue)"
+      elsif raw != "true" and raw != "false" then
+        "error: value must be true or false"
+      else
+        value = raw == "true"
+        if layer == "show" then show_available := value else queue_available := value end
+        log("control layer.available layer=#{layer} value=#{value}")
+        layer_status_json()
+      end
+    end
+  end)
+
+server.register("layer.status", description="Show/Queue-Verfuegbarkeit als JSON",
+  usage="", fun (arg) -> begin
+    ignore(arg)
+    layer_status_json()
+  end)

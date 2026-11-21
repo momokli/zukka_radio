@@ -7,10 +7,14 @@
 
 settings.log.level := 3
 
-# Include order matters: harbor.liq creates the slots and the FCFS registry,
-# live.liq consumes `casters` to build `live`, master.liq wires `live` in.
+# Include order matters: config.liq reads the scheduler URL/token first,
+# harbor.liq creates the slots and the FCFS registry, live.liq consumes
+# `casters` to build `live`, playback.liq provides the pure parse helpers,
+# layers.liq builds show/queue, master.liq wires the chain.
+%include "lib/config.liq"
 %include "lib/harbor.liq"
 %include "lib/live.liq"
+%include "lib/playback.liq"
 %include "lib/layers.liq"
 %include "lib/master.liq"
 %include "lib/outputs.liq"
