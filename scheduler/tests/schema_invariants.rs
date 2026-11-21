@@ -221,8 +221,8 @@ async fn reapplying_migration_is_a_noop() {
         .await
         .expect("count migrations");
     assert_eq!(
-        applied, 2,
-        "migrations `0001` + `0002` are tracked exactly once"
+        applied, 3,
+        "migrations `0001` + `0002` + `0003` are tracked exactly once"
     );
 
     let marker: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'marker'")

@@ -72,6 +72,16 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("announcement delivery disabled (telegram not configured)");
     }
 
+    // #132: staged recordings → music API → tapes/tape_jobs. Fail-open: a
+    // missing token/base URL only disables ingest; the task ends with the
+    // process.
+    match zukka_scheduler::tape_ingest::IngestConfig::from_env() {
+        Some(config) => {
+            zukka_scheduler::tape_ingest::spawn(pool.clone(), config);
+        }
+        None => tracing::info!("tape ingest disabled (music api not configured)"),
+    }
+
     let addr = std::env::var("ZUKKA_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
 
     // #44: dedicated metrics listener (§3.8). A bind failure is logged only —

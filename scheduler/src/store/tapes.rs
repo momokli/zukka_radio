@@ -22,6 +22,7 @@ use sqlx::sqlite::SqliteTransaction;
 use crate::error::ApiResult;
 use crate::migrate::slug::slug_from_key;
 use crate::store::now_ts;
+use crate::store::tape_jobs::UPLOAD_KIND;
 use crate::time::fmt_storage_time;
 use crate::uuid::new_id;
 
@@ -67,8 +68,12 @@ pub async fn register_live_tape(
 ///
 /// Stamps `ended_at` and `updated_at`; `status` stays `pending` and
 /// `duration_ms` stays `NULL` (ffprobe is a later stage, out of scope for
-/// #108). Returns the tape `id`, or `None` when no pending tape exists (e.g.
-/// the start was never registered) — a warning, never an error.
+/// #108). In the same transaction it enqueues the `kind='upload'` ingest job
+/// (`state='pending'`, `attempts=0`) so the `tape_ingest` poll loop (§3.6) picks
+/// the finished recording up. The insert is idempotent
+/// (`ON CONFLICT (tape_id, kind) DO NOTHING`), so a repeated finalize cannot
+/// double-enqueue. Returns the tape `id`, or `None` when no pending tape exists
+/// (e.g. the start was never registered) — a warning, never an error.
 pub async fn finalize_live_tape(
     tx: &mut SqliteTransaction<'_>,
     broadcast_id: &str,
@@ -99,5 +104,22 @@ pub async fn finalize_live_tape(
         .bind(&id)
         .execute(&mut **tx)
         .await?;
+
+    // Enqueue the ingest job in the same transaction: without it the tape
+    // would never be uploaded (no other writer creates a `kind='upload'` row
+    // at broadcast end). `ON CONFLICT DO NOTHING` keeps a repeated finalize
+    // (or a pre-existing job) from duplicating the row.
+    sqlx::query(
+        "INSERT INTO tape_jobs (id, tape_id, kind, state, attempts, created_at, updated_at) \
+         VALUES (?, ?, ?, 'pending', 0, ?, ?) ON CONFLICT (tape_id, kind) DO NOTHING",
+    )
+    .bind(new_id())
+    .bind(&id)
+    .bind(UPLOAD_KIND)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+
     Ok(Some(id))
 }
