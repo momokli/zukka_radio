@@ -1,8 +1,10 @@
-//! HTTP-level tests for `POST /internal/harbor/auth` (Issue #33).
+//! HTTP-level tests for `POST /internal/harbor/auth` (Issues #33 + #105).
 //!
 //! Runs through `tower::ServiceExt::oneshot` against
-//! `zukka_scheduler::api::router` — no network sockets. The `/internal/*`
-//! routes require the portal/Liquidsoap service token (§4.1).
+//! `zukka_scheduler::api::router` — no network sockets. Since Issue #105 the
+//! route is Liquidsoap-facing and requires the Liquidsoap token
+//! (`X-Liquidsoap-Token` = `$LIQUIDSOAP_TOKEN`), **not** the portal service
+//! token (§4.1).
 
 use std::sync::OnceLock;
 
@@ -22,13 +24,16 @@ use zukka_scheduler::uuid::new_id;
 const ROLE_CASTER: &str = "0192f0a1-0001-7000-8000-000000000003";
 const TS: &str = "2026-11-18T12:00:00.000Z";
 
-fn service_token() -> &'static str {
+/// The Liquidsoap token header (§4.1) used by the route's token layer.
+const TOKEN_HEADER: &str = "x-liquidsoap-token";
+
+fn liquidsoap_token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();
     TOKEN.get_or_init(|| {
-        let token = "test-service-token".to_string();
+        let token = "test-liquidsoap-token".to_string();
         // SAFETY: single-threaded initialisation guarded by OnceLock; the value
         // is only ever set once and never removed.
-        unsafe { std::env::set_var(api_auth::SERVICE_TOKEN_ENV, &token) };
+        unsafe { std::env::set_var(api_auth::TOKEN_ENV, &token) };
         token
     })
 }
@@ -81,13 +86,14 @@ async fn caster(
     id
 }
 
-async fn send(app: &Router, body: Value, with_service_token: bool) -> (StatusCode, Value) {
+/// POSTs `body` to the route with an optional `X-Liquidsoap-Token` header.
+async fn send(app: &Router, body: Value, with_liquidsoap_token: bool) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method(Method::POST)
         .uri("/api/v1/internal/harbor/auth")
         .header("content-type", "application/json");
-    if with_service_token {
-        builder = builder.header("authorization", format!("Bearer {}", service_token()));
+    if with_liquidsoap_token {
+        builder = builder.header(TOKEN_HEADER, liquidsoap_token());
     }
     let request = builder
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -101,6 +107,25 @@ async fn send(app: &Router, body: Value, with_service_token: bool) -> (StatusCod
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+/// POSTs `body` with explicit headers, returning the status only.
+async fn send_raw(app: &Router, body: Value, headers: &[(&str, &str)]) -> StatusCode {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/internal/harbor/auth")
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("router response")
+        .status()
 }
 
 #[tokio::test]
@@ -203,8 +228,11 @@ async fn rejects_everything_else_fail_closed() {
     }
 }
 
+/// Issue #105: the route is guarded by the Liquidsoap token, not the portal
+/// service token. Missing/wrong Liquidsoap token or a valid service-token
+/// bearer must all fail with 401.
 #[tokio::test]
-async fn requires_service_token() {
+async fn requires_liquidsoap_token() {
     let (_dir, pool) = setup().await;
     caster(
         &pool,
@@ -215,14 +243,33 @@ async fn requires_service_token() {
         true,
     )
     .await;
+    let body = json!({ "mount": "/live/slot-01", "username": "mira-stream", "password": "s3cret" });
+    let app = app(pool);
 
-    let (status, body) = send(
-        &app(pool),
-        json!({ "mount": "/live/slot-01", "username": "mira-stream", "password": "s3cret" }),
-        false,
+    // No token at all.
+    let (status, _) = send(&app, body.clone(), false).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "missing token");
+
+    // Wrong Liquidsoap token.
+    let status = send_raw(&app, body.clone(), &[(TOKEN_HEADER, "wrong-token")]).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong liquidsoap token");
+
+    // The portal service token must NOT grant access here.
+    let status = send_raw(
+        &app,
+        body.clone(),
+        &[("authorization", "Bearer test-service-token")],
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "service token bearer must be rejected"
+    );
+
+    // Sanity: the correct Liquidsoap token still works.
+    let (status, _) = send(&app, body, true).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -231,7 +278,7 @@ async fn malformed_body_is_bad_request() {
     let request = Request::builder()
         .method(Method::POST)
         .uri("/api/v1/internal/harbor/auth")
-        .header("authorization", format!("Bearer {}", service_token()))
+        .header(TOKEN_HEADER, liquidsoap_token())
         .header("content-type", "application/json")
         .body(Body::from("{not json"))
         .unwrap();
