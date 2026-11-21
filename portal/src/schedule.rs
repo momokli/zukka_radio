@@ -159,6 +159,7 @@ pub async fn schedule_get(
         crate::queues::is_htmx(&headers) || q.fragment.as_deref() == Some("calendar-grid");
     if fragment {
         render(&CalendarGridFragment {
+            csrf_token: ctx.csrf_token.clone(),
             view: view.as_str().into(),
             anchor: anchor.to_string(),
             prev_anchor: view.shift(anchor, -1).to_string(),
@@ -299,6 +300,7 @@ async fn empty_form(state: &AppState, ctx: &AuthContext) -> Result<BroadcastForm
         title: String::new(),
         description: String::new(),
         kind: "live".into(),
+        status: String::new(),
         show_id: String::new(),
         starts_at: String::new(),
         ends_at: String::new(),
@@ -322,6 +324,7 @@ async fn form_from_broadcast(
         title: broadcast.title.clone(),
         description: broadcast.description.clone(),
         kind: broadcast.kind.clone(),
+        status: broadcast.status.clone(),
         show_id: broadcast.show_id.clone().unwrap_or_default(),
         starts_at: tz::parse_api(&broadcast.starts_at)
             .map(tz::fmt_input)
@@ -639,6 +642,138 @@ pub async fn broadcast_delete(
         }
         Err(err) => Err(schedule_error(err)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #119: broadcast lifecycle (start/end/cancel)
+// ---------------------------------------------------------------------------
+
+/// The lifecycle verb a handler performs (fixes the success/error wording).
+#[derive(Clone, Copy)]
+enum BroadcastVerb {
+    Start,
+    End,
+    Cancel,
+}
+
+impl BroadcastVerb {
+    /// Success toast (`"Broadcast gestartet."`).
+    fn done(self) -> &'static str {
+        match self {
+            BroadcastVerb::Start => "Broadcast gestartet.",
+            BroadcastVerb::End => "Broadcast beendet.",
+            BroadcastVerb::Cancel => "Broadcast abgebrochen.",
+        }
+    }
+
+    /// Error toast for an illegal transition.
+    fn failed(self) -> &'static str {
+        match self {
+            BroadcastVerb::Start => "Broadcast kann jetzt nicht gestartet werden.",
+            BroadcastVerb::End => "Broadcast kann jetzt nicht beendet werden.",
+            BroadcastVerb::Cancel => "Broadcast kann jetzt nicht abgebrochen werden.",
+        }
+    }
+}
+
+/// Non-htmx mapping for the lifecycle calls: `404` stays `404`, an illegal
+/// transition (`409 illegal_transition`) becomes a portal `409` (not `502`).
+fn transition_error(err: ScheduleError) -> PortalError {
+    match err {
+        ScheduleError::NotFound => PortalError::NotFound,
+        ScheduleError::Conflict { message, .. } => PortalError::Conflict(message),
+        ScheduleError::Validation { field, message } => PortalError::Validation { field, message },
+        ScheduleError::Upstream(message) => PortalError::Upstream(message),
+    }
+}
+
+/// Shared body of the three lifecycle handlers (RBAC + CSRF enforced by the
+/// layers): `viewer` comes from the session, never the client.
+async fn broadcast_transition(
+    state: &AppState,
+    ctx: &AuthContext,
+    headers: &HeaderMap,
+    id: &str,
+    verb: BroadcastVerb,
+) -> Result<Response, PortalError> {
+    rbac::check(ctx, "broadcast.write")?;
+    let result = match verb {
+        BroadcastVerb::Start => {
+            state
+                .broadcasts
+                .start_broadcast(Some(&ctx.caster_id), id)
+                .await
+        }
+        BroadcastVerb::End => {
+            state
+                .broadcasts
+                .end_broadcast(Some(&ctx.caster_id), id)
+                .await
+        }
+        BroadcastVerb::Cancel => {
+            state
+                .broadcasts
+                .cancel_broadcast(Some(&ctx.caster_id), id)
+                .await
+        }
+    };
+    match result {
+        Ok(_) => {
+            if crate::queues::is_htmx(headers) {
+                Ok(crate::queues::refresh_with_toast("success", verb.done()))
+            } else {
+                Ok(redirect("/schedule"))
+            }
+        }
+        Err(err) => {
+            if crate::queues::is_htmx(headers) {
+                let message = match &err {
+                    ScheduleError::NotFound => Some("Broadcast nicht gefunden.".to_string()),
+                    ScheduleError::Conflict { code, .. } if code == "illegal_transition" => {
+                        Some(verb.failed().to_string())
+                    }
+                    ScheduleError::Conflict { message, .. } => Some(message.clone()),
+                    _ => None,
+                };
+                match message {
+                    Some(message) => Ok(crate::queues::toast_only("error", &message)),
+                    None => Err(transition_error(err)),
+                }
+            } else {
+                Err(transition_error(err))
+            }
+        }
+    }
+}
+
+/// `POST /schedule/{id}/start` — `scheduled` → `live`.
+pub async fn broadcast_start(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, PortalError> {
+    broadcast_transition(&state, &ctx, &headers, &id, BroadcastVerb::Start).await
+}
+
+/// `POST /schedule/{id}/end` — `live` → `ended`.
+pub async fn broadcast_end(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, PortalError> {
+    broadcast_transition(&state, &ctx, &headers, &id, BroadcastVerb::End).await
+}
+
+/// `POST /schedule/{id}/cancel` — `scheduled|live` → `cancelled`.
+pub async fn broadcast_cancel(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, PortalError> {
+    broadcast_transition(&state, &ctx, &headers, &id, BroadcastVerb::Cancel).await
 }
 
 #[cfg(test)]

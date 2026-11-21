@@ -353,6 +353,7 @@ pub struct WarningView {
 #[derive(Template)]
 #[template(path = "partials/calendar_grid.html")]
 pub struct CalendarGridFragment {
+    pub csrf_token: String,
     pub view: String,
     pub anchor: String,
     pub prev_anchor: String,
@@ -533,6 +534,8 @@ pub struct BroadcastForm {
     pub title: String,
     pub description: String,
     pub kind: String,
+    /// Lifecycle status of the broadcast being edited (`""` for a new form).
+    pub status: String,
     pub show_id: String,
     /// Berlin wall-clock `datetime-local` values (`""` when unset).
     pub starts_at: String,

@@ -307,6 +307,25 @@ button.ghost {
   color: var(--ok);
 }
 
+/* Lifecycle actions on a calendar card (Issue #119). Narrow day columns, so
+   the buttons stack full-width and shrink instead of overflowing the cell. */
+.bc-actions {
+  display: block;
+  margin: 0.15rem 0 0;
+}
+
+.bc-actions button {
+  width: 100%;
+  padding: 0.15rem 0.25rem;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+.bc-actions:last-child {
+  margin-bottom: 0.2rem;
+}
+
 .conflict-warning {
   display: block;
   margin-top: 0.2rem;

@@ -31,6 +31,9 @@ pub enum PortalError {
     /// Validation failed → `422` (field-level).
     #[error("validation failed for {field}: {message}")]
     Validation { field: String, message: String },
+    /// Hard conflict (e.g. an illegal broadcast transition) → `409`.
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// Rate limit exceeded → `429`.
     #[error("too many requests")]
     TooManyRequests,
@@ -52,6 +55,7 @@ impl PortalError {
             PortalError::NotFound => StatusCode::NOT_FOUND,
             PortalError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             PortalError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            PortalError::Conflict(_) => StatusCode::CONFLICT,
             PortalError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             PortalError::Upstream(_) => StatusCode::BAD_GATEWAY,
             PortalError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -67,6 +71,7 @@ impl PortalError {
             PortalError::NotFound => "Nicht gefunden.".to_string(),
             PortalError::PayloadTooLarge => "Datei zu groß.".to_string(),
             PortalError::Validation { message, .. } => message.clone(),
+            PortalError::Conflict(message) => message.clone(),
             PortalError::TooManyRequests => {
                 "Zu viele Fehlversuche. Bitte später erneut versuchen.".to_string()
             }

@@ -314,6 +314,9 @@ Alle Pfade unter eigenem Host (`studio.<domain>`), damit das
 | GET     | `/schedule/new`                    | Broadcast-Formular                                       | `broadcast.write`        |
 | POST    | `/schedule`                        | Broadcast anlegen                                        | `broadcast.write`        |
 | POST    | `/schedule/{id}`                   | Broadcast bearbeiten                                     | `broadcast.write`        |
+| POST    | `/schedule/{id}/start`             | Broadcast starten (`scheduled`→`live`)                   | `broadcast.write`        |
+| POST    | `/schedule/{id}/end`               | Broadcast beenden (`live`→`ended`)                       | `broadcast.write`        |
+| POST    | `/schedule/{id}/cancel`            | Broadcast abbrechen (`scheduled`/`live`→`cancelled`)     | `broadcast.write`        |
 | POST    | `/schedule/{id}/delete`            | Broadcast löschen                                        | `broadcast.write`        |
 | GET     | `/control`                         | Control Panel                                            | `control.read`           |
 | POST    | `/control/source`                  | Quelle umschalten                                        | `control.write`          |
@@ -401,6 +404,7 @@ POST   /queues/{id}/skip
 GET    /shows            POST /shows            PATCH /shows/{id}
 GET    /schedule?from=&to=
 POST   /broadcasts       PATCH /broadcasts/{id} DELETE /broadcasts/{id}
+POST   /broadcasts/{id}/start  POST /broadcasts/{id}/end  POST /broadcasts/{id}/cancel
 GET    /announcements/templates
 PUT    /announcements/templates/{id}
 POST   /announcements/send             {template_id, context}

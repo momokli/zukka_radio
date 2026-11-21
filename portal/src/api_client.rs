@@ -2756,6 +2756,24 @@ pub trait BroadcastApi: Send + Sync {
         req: &UpdateBroadcast,
     ) -> Result<Broadcast, ScheduleError>;
     async fn delete(&self, viewer: Option<&str>, id: &str) -> Result<(), ScheduleError>;
+    /// `POST /broadcasts/{id}/start` (`scheduled` → `live`).
+    async fn start_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError>;
+    /// `POST /broadcasts/{id}/end` (`live` → `ended`, stamps `ends_at`).
+    async fn end_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError>;
+    /// `POST /broadcasts/{id}/cancel` (`scheduled|live` → `cancelled`).
+    async fn cancel_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError>;
 }
 
 /// Maps an error response to a [`ScheduleError`] (shared by the HTTP impls).
@@ -3162,6 +3180,75 @@ impl BroadcastApi for HttpBroadcastApi {
         } else {
             Err(schedule_error_from(response).await)
         }
+    }
+
+    async fn start_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/broadcasts/{id}/start"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(schedule_error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))
+    }
+
+    async fn end_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/broadcasts/{id}/end"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(schedule_error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))
+    }
+
+    async fn cancel_broadcast(
+        &self,
+        viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/broadcasts/{id}/cancel"),
+                viewer,
+            )
+            .send()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(schedule_error_from(response).await);
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| ScheduleError::Upstream(e.to_string()))
     }
 }
 
@@ -3743,13 +3830,88 @@ impl BroadcastApi for FakeBroadcastApi {
         }
         Ok(())
     }
+
+    async fn start_broadcast(
+        &self,
+        _viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        self.apply_transition(id, &["scheduled"], "live", false)
+    }
+
+    async fn end_broadcast(
+        &self,
+        _viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        self.apply_transition(id, &["live"], "ended", true)
+    }
+
+    async fn cancel_broadcast(
+        &self,
+        _viewer: Option<&str>,
+        id: &str,
+    ) -> Result<Broadcast, ScheduleError> {
+        self.apply_transition(id, &["scheduled", "live"], "cancelled", false)
+    }
 }
 
 impl FakeBroadcastApi {
+    /// Mirrors the scheduler's `transition`
+    /// (`scheduler/src/store/broadcasts.rs`): only `allowed` states may move to
+    /// `next_status`, otherwise `409 illegal_transition`; `end` stamps `ends_at`
+    /// (`FAKE_TS`, never at/before `starts_at`). Bumps `version`/`updated_at`.
+    fn apply_transition(
+        &self,
+        id: &str,
+        allowed: &[&str],
+        next_status: &str,
+        end_now: bool,
+    ) -> Result<Broadcast, ScheduleError> {
+        let mut broadcasts = self.store.broadcasts.lock().unwrap();
+        let current = broadcasts
+            .iter()
+            .find(|b| b.id == id)
+            .cloned()
+            .ok_or(ScheduleError::NotFound)?;
+        if !allowed.contains(&current.status.as_str()) {
+            return Err(ScheduleError::Conflict {
+                code: "illegal_transition".into(),
+                message: format!(
+                    "broadcast is {} and cannot become {next_status}",
+                    current.status
+                ),
+            });
+        }
+        let mut updated = current.clone();
+        updated.status = next_status.to_string();
+        if end_now {
+            updated.ends_at = Some(ended_at(&current.starts_at));
+        }
+        updated.version = current.version + 1;
+        updated.updated_at = FAKE_TS.into();
+        if let Some(slot) = broadcasts.iter_mut().find(|b| b.id == id) {
+            *slot = updated.clone();
+        }
+        drop(broadcasts);
+        Ok(self.decorate(updated))
+    }
+
     fn decorate(&self, mut broadcast: Broadcast) -> Broadcast {
         broadcast.warnings = self.store.warnings_for(&broadcast);
         broadcast
     }
+}
+
+/// `ends_at` stamped by `end`: `FAKE_TS`, but never at/before `starts_at`.
+fn ended_at(starts_at: &str) -> String {
+    let now = t(FAKE_TS).expect("FAKE_TS parses");
+    let end = match t(starts_at) {
+        Some(starts) if now > starts => now,
+        Some(starts) => starts + chrono::Duration::seconds(1),
+        None => now,
+    };
+    end.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -4042,5 +4204,151 @@ impl AnnouncementApi for FakeAnnouncementApi {
             .unwrap()
             .push(announcement.clone());
         Ok(announcement)
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn bc(id: &str, status: &str, starts: &str, ends: Option<&str>) -> Broadcast {
+        Broadcast {
+            id: id.into(),
+            show_id: None,
+            caster_id: "c-1".into(),
+            kind: "live".into(),
+            title: format!("Title {id}"),
+            description: String::new(),
+            starts_at: starts.into(),
+            ends_at: ends.map(str::to_string),
+            status: status.into(),
+            tape_id: None,
+            queue_id: None,
+            version: 1,
+            created_by: "c-1".into(),
+            created_at: FAKE_TS.into(),
+            updated_at: FAKE_TS.into(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// A1 — `scheduled` → `start` → `live`, `version` bumped.
+    #[tokio::test]
+    async fn start_scheduled_becomes_live() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "scheduled", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let out = api.start_broadcast(Some("c-1"), "bc-1").await.unwrap();
+        assert_eq!(out.status, "live");
+        assert_eq!(out.version, 2);
+    }
+
+    /// A2 — `start` on `live` → `409 illegal_transition`.
+    #[tokio::test]
+    async fn start_live_is_conflict() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "live", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let err = api.start_broadcast(Some("c-1"), "bc-1").await.unwrap_err();
+        match err {
+            ScheduleError::Conflict { code, .. } => assert_eq!(code, "illegal_transition"),
+            other => panic!("expected conflict, got {other:?}"),
+        }
+    }
+
+    /// A3 — `end` on `live` stamps `ends_at`.
+    #[tokio::test]
+    async fn end_live_stamps_ends_at() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "live", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let out = api.end_broadcast(Some("c-1"), "bc-1").await.unwrap();
+        assert_eq!(out.status, "ended");
+        assert!(out.ends_at.is_some());
+    }
+
+    /// A4 — `end` on `scheduled` → `409 illegal_transition`.
+    #[tokio::test]
+    async fn end_scheduled_is_conflict() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "scheduled", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let err = api.end_broadcast(Some("c-1"), "bc-1").await.unwrap_err();
+        assert!(
+            matches!(err, ScheduleError::Conflict { ref code, .. } if code == "illegal_transition")
+        );
+    }
+
+    /// A5 — `cancel` on `scheduled` → `cancelled`.
+    #[tokio::test]
+    async fn cancel_scheduled_becomes_cancelled() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "scheduled", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let out = api.cancel_broadcast(Some("c-1"), "bc-1").await.unwrap();
+        assert_eq!(out.status, "cancelled");
+    }
+
+    /// A6 — `cancel` on `live` → `cancelled`.
+    #[tokio::test]
+    async fn cancel_live_becomes_cancelled() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc("bc-1", "live", "2026-11-18T20:00:00Z", None));
+        let api = backend.broadcasts();
+        let out = api.cancel_broadcast(Some("c-1"), "bc-1").await.unwrap();
+        assert_eq!(out.status, "cancelled");
+    }
+
+    /// A7 — `cancel` on `ended` → `409 illegal_transition`.
+    #[tokio::test]
+    async fn cancel_ended_is_conflict() {
+        let backend = FakeScheduleBackend::new();
+        backend.seed_broadcast(bc(
+            "bc-1",
+            "ended",
+            "2026-11-18T20:00:00Z",
+            Some("2026-11-18T21:00:00Z"),
+        ));
+        let api = backend.broadcasts();
+        let err = api.cancel_broadcast(Some("c-1"), "bc-1").await.unwrap_err();
+        assert!(
+            matches!(err, ScheduleError::Conflict { ref code, .. } if code == "illegal_transition")
+        );
+    }
+
+    /// A8 — unknown id → `NotFound` for every verb.
+    #[tokio::test]
+    async fn unknown_id_is_not_found() {
+        let backend = FakeScheduleBackend::new();
+        let api = backend.broadcasts();
+        assert!(api.start_broadcast(Some("c-1"), "nope").await.is_err());
+        assert!(api.end_broadcast(Some("c-1"), "nope").await.is_err());
+        assert!(api.cancel_broadcast(Some("c-1"), "nope").await.is_err());
+        assert!(matches!(
+            api.start_broadcast(Some("c-1"), "nope").await,
+            Err(ScheduleError::NotFound)
+        ));
+    }
+
+    /// A9 — the returned broadcast carries `warnings` (decorated like `get`).
+    #[tokio::test]
+    async fn start_decorates_warnings() {
+        let backend = FakeScheduleBackend::new();
+        // Candidate + an overlapping foreign broadcast → soft warning.
+        backend.seed_broadcast(bc(
+            "bc-1",
+            "scheduled",
+            "2026-11-18T20:00:00Z",
+            Some("2026-11-18T22:00:00Z"),
+        ));
+        backend.seed_broadcast(bc(
+            "bc-2",
+            "scheduled",
+            "2026-11-18T21:00:00Z",
+            Some("2026-11-18T23:00:00Z"),
+        ));
+        let api = backend.broadcasts();
+        let out = api.start_broadcast(Some("c-1"), "bc-1").await.unwrap();
+        assert!(!out.warnings.is_empty(), "warnings decorated: {out:?}");
     }
 }
