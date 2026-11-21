@@ -22,7 +22,7 @@ jobs:
           script: |
             const run = context.payload.workflow_run;
             const sha = run.head_sha.slice(0, 7);
-            const title = `e2e: smoke failed on ${run.head_branch} (${sha})`;
+            const title = `e2e: smoke failed on ${run.head_branch}`;
             const body = [
               `The E2E smoke test failed for \`${run.head_branch}\` at \`${sha}\`.`,
               ``,
@@ -30,6 +30,8 @@ jobs:
               `- Logs: ${run.html_url}/attempts/${run.run_attempt}`,
               ``,
               `Created automatically. The pipeline triages and fixes it.`,
+              ``,
+              `Latest failure: \`${sha}\` at ${new Date().toISOString()}.`,
             ].join("\n");
 
             const { data: existing } = await github.rest.issues.listForRepo({
