@@ -573,6 +573,7 @@ Basis: `https://tapes.<domain>`. Strikt lesend, auth-frei.
 | Methode      | Pfad                                                   | Cache                            |
 | ------------ | ------------------------------------------------------ | -------------------------------- |
 | `GET`        | `/api/v1/healthz`                                      | `no-store`                       |
+| `GET`        | `/api/v1/public/nowplaying`                            | `no-store`                       |
 | `GET`        | `/api/v1/meta`                                         | `max-age=300`                    |
 | `GET`        | `/api/v1/casters`                                      | `max-age=60`                     |
 | `GET`        | `/api/v1/tapes?caster=&from=&to=&sort=&limit=&cursor=` | `max-age=60` + ETag              |
@@ -584,6 +585,13 @@ Basis: `https://tapes.<domain>`. Strikt lesend, auth-frei.
 
 Sichtbarkeit: nur `visible = 1 AND status = 'ready'`. Alles andere → `404`
 (nie `403`). Ein zentraler `public_tape(slug)`-Guard für **alle** Routen.
+
+`/api/v1/public/nowplaying` ist eine auth-freie, strikt lesende Projektion des
+Scheduler-Zustands (`{title, artist, show, caster, live, started_at, server_time}`);
+sie ruft serverseitig `GET /api/v1/now` (Service-Token) ab und **degradiert bei
+Scheduler-Ausfall zu `200`** (`live: false`, alle Felder `null`) — nie `5xx`. Der
+`radio.<dom>`-Host proxyt die Route per Caddy an `tapes:8080` (same-origin für
+den Player).
 
 ### 4.6 Fehler-Envelope
 
