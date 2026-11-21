@@ -33,7 +33,10 @@ jobs:
       - name: Sync DEV checkout
         run: |
           cd /srv/zukka-dev/repo
-          git fetch --prune origin
+          # The checkout's `origin` is SSH, but the runner user has no deploy
+          # key for this repo. The repo is public, so fetch over HTTPS.
+          git fetch https://github.com/momokli/zukka_radio.git \
+            "+refs/heads/v2:refs/remotes/origin/v2"
           git reset --hard "${{ github.event.workflow_run.head_sha }}"
 
       - name: Pull images from GHCR
