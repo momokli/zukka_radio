@@ -610,8 +610,8 @@ async fn upload_accepted_codec_end_to_end_via_router() {
     assert_eq!(status, StatusCode::OK, "upload accepted");
 
     // Music API: one track, master asset only (pcm_s16le is an accepted codec).
-    assert_eq!(svc.music.created_count(), 1, "one track created");
-    assert_eq!(svc.music.asset_count(), 1, "master only, no derivate");
+    assert_eq!(svc.music.stored_count(), 1, "one object stored");
+    assert_eq!(svc.music.put_count(), 1, "master only, no derivate");
     // Job reached `done` with the track id and the streamed SHA-256.
     let jobs = svc.jobs.all();
     assert_eq!(jobs.len(), 1);
@@ -650,9 +650,9 @@ async fn video_track_gets_derivate_master_kept() {
     assert_eq!(status, StatusCode::OK);
 
     // D7: a video stream forces a derivate → master + derivate, one track.
-    assert_eq!(svc.music.created_count(), 1);
-    assert_eq!(svc.music.asset_count(), 2, "master + MP3 derivate");
-    let paths = svc.music.asset_paths();
+    assert_eq!(svc.music.stored_count(), 2, "master + derivate stored");
+    assert_eq!(svc.music.put_count(), 2, "master + MP3 derivate");
+    let paths = svc.music.put_paths();
     assert_ne!(paths[0], paths[1], "master and derivate are distinct files");
     let job = &svc.jobs.all()[0];
     assert_eq!(job.state, "done");
@@ -684,7 +684,7 @@ async fn duplicate_upload_creates_no_second_track() {
     );
 
     // Hash-Dedupe: the second upload short-circuits to the existing track.
-    assert_eq!(svc.music.created_count(), 1, "no second track");
+    assert_eq!(svc.music.stored_count(), 1, "no second upload");
     assert_eq!(svc.waveforms.count(), 1, "no second waveform");
     assert_eq!(svc.tracks.all().len(), 1, "no second local track");
     let jobs = svc.jobs.all();
@@ -772,7 +772,7 @@ async fn over_max_bytes_is_413_and_cleans_temp() {
 
     // No job/track was created and the temp dir holds nothing.
     assert_eq!(svc.jobs.all().len(), 0);
-    assert_eq!(svc.music.created_count(), 0);
+    assert_eq!(svc.music.stored_count(), 0);
     let uploads = dir.path().join("uploads");
     let leftover = std::fs::read_dir(&uploads).map(|d| d.count()).unwrap_or(0);
     assert_eq!(leftover, 0, "oversized temp file was removed");
@@ -796,7 +796,7 @@ async fn upload_without_permission_is_403() {
 
     let status = upload(&app, &session, &csrf, "tone.wav", "audio/wav", b"data").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(svc.music.created_count(), 0, "nothing was created");
+    assert_eq!(svc.music.stored_count(), 0, "nothing was stored");
     assert_eq!(svc.jobs.all().len(), 0);
 }
 

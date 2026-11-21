@@ -373,6 +373,14 @@ Bandbreiten- und Speicherkosten. Siehe §3.7.
 **Regel:** Kein Output ist größer als der Input. 320k/FLAC lohnen nur bei
 Lossless-Input, der in v1 nicht vorgesehen ist.
 
+> **Reale Tier-Lage (verifiziert, #134):** Die Music API liefert Playback über
+> `GET /isrc/{isrc}/{format}` mit `format ∈ flac|320|128`. Der Worker leitet für
+> Library-Tracks **immer** `320` und `128` ab; der Scheduler fordert im
+> Playback-Default `320` an (`MUSIC_API_PLAYBACK_FORMAT`, Default `320`). Die
+> Spalte „192k" ist damit eine Input-/Master-Annahme, **nicht** das angeforderte
+> Playback-Tier. `flac` bleibt ungenutzt (Bandbreite, „kein Output größer als
+> Input").
+
 ---
 
 ## 4. Schnittstellen (API-Contracts)
@@ -546,8 +554,11 @@ Fragmente sind dieselben Routen mit `HX-Request`-Header. Kein separater
 `/fragments/`-Baum.
 
 **Upload:** Multipart → Temp-Datei (Streaming, `UPLOAD_MAX_BYTES`) → `ffprobe`
-→ ggf. MP3-320-Derivat (nur wenn Codec/Container ungeeignet) → Music API →
-`POST /internal/upload-jobs` + `POST /tracks` → Waveform-Job.
+→ ggf. MP3-320-Derivat (nur wenn Codec/Container ungeeignet) → Music API
+(`PUT /objects/{sha256}` je Master/Derivat, mit `X-ISRC`/`X-Name`/
+`X-Original-Path`; bei neuem Objekt `POST /work {"kind":"analyze"}`) →
+`POST /internal/upload-jobs` + lokale Track-Registrierung (`music_api_id` =
+Objekt-Hash, `isrc`) → Waveform-Job.
 
 ### 4.4 Scheduler → Liquidsoap (Control)
 

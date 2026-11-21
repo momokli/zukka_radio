@@ -244,6 +244,7 @@ fn stage_bytes(dir: &Path, filename: &str, content_type: &str, bytes: &[u8]) -> 
         path,
         size_bytes: bytes.len() as i64,
         sha256: sha256_hex(bytes),
+        isrc: None,
     }
 }
 
@@ -403,8 +404,8 @@ async fn pipeline_master_only_for_accepted_codec() {
     .expect("pipeline");
     assert!(!outcome.deduped);
     assert!(!outcome.derivate);
-    assert_eq!(music.created_count(), 1);
-    assert_eq!(music.asset_count(), 1, "master only");
+    assert_eq!(music.stored_count(), 1);
+    assert_eq!(music.put_count(), 1, "master only");
     assert_eq!(jobs.state_of(&outcome.job_id).as_deref(), Some("done"));
     // US-8: a local library track was registered (private, owned by the uploader).
     assert_eq!(tracks.all().len(), 1, "one local track");
@@ -446,10 +447,10 @@ async fn pipeline_creates_derivate_for_unaccepted_codec() {
     .await
     .expect("pipeline");
     assert!(outcome.derivate, "derivate expected for ac3");
-    assert_eq!(music.created_count(), 1);
-    assert_eq!(music.asset_count(), 2, "master + derivate");
+    assert_eq!(music.stored_count(), 2);
+    assert_eq!(music.put_count(), 2, "master + derivate");
     // The derivate is a distinct temp file (random temp name).
-    let paths = music.asset_paths();
+    let paths = music.put_paths();
     assert_ne!(paths[0], paths[1]);
     assert_eq!(jobs.state_of(&outcome.job_id).as_deref(), Some("done"));
 }
@@ -475,7 +476,7 @@ async fn pipeline_dedupes_identical_bytes() {
     .await
     .expect("first");
     assert!(!first.deduped);
-    assert_eq!(music.created_count(), 1);
+    assert_eq!(music.stored_count(), 1);
     assert_eq!(waveforms.count(), 1);
 
     let second = run(
@@ -486,12 +487,97 @@ async fn pipeline_dedupes_identical_bytes() {
     .await
     .expect("second");
     assert!(second.deduped, "identical bytes must dedupe");
-    assert_eq!(music.created_count(), 1, "no second track");
-    assert_eq!(second.track_id, first.track_id);
+    assert_eq!(music.stored_count(), 1, "no second upload");
+    assert_eq!(second.music_object_hash, first.music_object_hash);
     assert_eq!(tracks.all().len(), 1, "no second local track");
     assert_eq!(jobs.state_of(&second.job_id).as_deref(), Some("done"));
     // The dedupe short-circuit skips waveform computation (track already has one).
     assert_eq!(waveforms.count(), 1, "no second waveform on dedupe");
+}
+
+#[tokio::test]
+async fn pipeline_object_api_chain_head_put_work() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("skipping: ffmpeg/ffprobe missing");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let wav = make_audio(dir.path(), "tone.wav", &[]);
+
+    let jobs = FakeJobs::new();
+    let music = FakeMusicApi::new();
+    let waveforms = FakeWaveforms::new();
+    let tracks = FakeTrackApi::new();
+
+    let mut staged = stage_file(dir.path(), "tone.wav", "audio/wav", &wav);
+    staged.isrc = Some("DEZZ00000060".into());
+    let sha = staged.sha256.clone();
+
+    let outcome = run(
+        &deps(&jobs, &music, &waveforms, &tracks, dir.path()),
+        "c-1",
+        staged,
+    )
+    .await
+    .expect("pipeline");
+
+    // HEAD /objects/{sha256} is probed exactly once before the store.
+    assert_eq!(music.head_requests(), vec![sha.clone()], "one HEAD probe");
+    // A WAV master with an ISRC needs an MP3-320 derivate: `GET /isrc/{isrc}/320`
+    // resolves the newest `kind=mp3` object, so both the master and the derivate
+    // are stored with the same X-ISRC.
+    assert!(outcome.derivate, "ISRC master must get an MP3 derivate");
+    assert_eq!(music.stored_count(), 2, "master + ISRC derivate stored");
+    assert_eq!(music.put_count(), 2, "master + derivate");
+    assert_eq!(
+        music.put_isrcs(),
+        vec![
+            Some("DEZZ00000060".to_string()),
+            Some("DEZZ00000060".to_string()),
+        ],
+        "X-ISRC forwarded on both PUTs"
+    );
+    let records = music.put_records();
+    // The master keeps the original name/extension.
+    assert_eq!(records[0].original_path.as_deref(), Some("tone.wav"));
+    // The derivate is named `.mp3` so the Music API's `classify_kind` says mp3.
+    assert!(
+        records[1].name.as_deref().unwrap_or("").ends_with(".mp3"),
+        "derivate name must end in .mp3: {:?}",
+        records[1].name
+    );
+    assert_eq!(records[1].original_path.as_deref(), Some("tone.mp3"));
+    assert_eq!(records[1].isrc.as_deref(), Some("DEZZ00000060"));
+    // POST /work {"kind":"analyze"} enqueued for both freshly stored objects.
+    let work = music.work_items();
+    assert_eq!(work.len(), 2, "analyze work enqueued for master + derivate");
+    assert_eq!(work[0], ("analyze".to_string(), sha.clone()));
+    assert_eq!(work[1].0, "analyze");
+    assert_ne!(work[1].1, sha, "derivate has its own object hash");
+    // The local track carries the object hash as its music_api_id (US-8).
+    assert_eq!(tracks.all().len(), 1);
+    assert_eq!(tracks.all()[0].music_api_id, sha);
+    assert_eq!(outcome.music_object_hash, sha);
+
+    // Dedupe: an already-present object (HEAD 200) short-circuits the chain —
+    // no PUT, no second /work, no second local track.
+    let dedupe_music = FakeMusicApi::new();
+    dedupe_music.seed_object(&sha);
+    let dedupe_tracks = FakeTrackApi::new();
+    let mut again = stage_file(dir.path(), "tone.wav", "audio/wav", &wav);
+    again.isrc = Some("DEZZ00000060".into());
+    let second = run(
+        &deps(&jobs, &dedupe_music, &waveforms, &dedupe_tracks, dir.path()),
+        "c-1",
+        again,
+    )
+    .await
+    .expect("second");
+    assert!(second.deduped, "HEAD hit must dedupe");
+    assert_eq!(dedupe_music.head_requests(), vec![sha.clone()]);
+    assert_eq!(dedupe_music.put_count(), 0, "no PUT on dedupe");
+    assert!(dedupe_music.work_items().is_empty(), "no /work on dedupe");
+    assert_eq!(dedupe_tracks.all().len(), 1, "local track still registered");
 }
 
 #[tokio::test]
@@ -523,7 +609,7 @@ async fn pipeline_ffprobe_error_marks_job_failed() {
     assert_eq!(jobs.state_of(&err.job_id).as_deref(), Some("failed"));
     let job = jobs.job_of(&err.job_id).unwrap();
     assert!(job.error.unwrap().contains("ffprobe"));
-    assert_eq!(music.created_count(), 0);
+    assert_eq!(music.stored_count(), 0);
     assert_eq!(waveforms.count(), 0);
 }
 

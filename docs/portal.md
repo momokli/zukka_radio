@@ -415,21 +415,25 @@ POST   /control/skip
 GET    /control/events                 SSE
 ```
 
-**Music API** (Annahmen — zu verifizieren, siehe Q1):
+**Music API** (verifiziert gegen `music-api` — kein `/api/v1`-Präfix; gelöst, ehemals Q1):
 
 ```
-POST   /tracks                     Metadaten anlegen → {id}
-PUT    /tracks/{id}/asset          Binär-Upload (multipart oder presigned)
-GET    /tracks/{id}
-GET    /tracks?q=&limit=&offset=
-GET    /tracks/by-hash/{sha256}    Dedupe
-DELETE /tracks/{id}
-GET    /assets/{id}/stream         Abspiel-URL für Liquidsoap
+PUT    /objects/{sha256}           Binär-Body (streaming), idempotent
+HEAD   /objects/{sha256}           Dedupe (200 vorhanden / 404 neu)
+GET    /objects/{hash}             Objekt-Bytes (Range-fähig)
+GET    /isrc/{isrc}/{flac|320|128} Abspiel-URL für Liquidsoap (Track mit ISRC)
+GET    /tracks?isrcs=a,b,c         Batch-Lookup (nur ISRC-Liste)
+POST   /work                       {kind: "analyze"|"download", ref}
 ```
 
-Das Portal kapselt das in einem `MusicApi`-Trait (`create_track`,
-`upload_asset`, `get_track`, `search`, `find_by_hash`, `delete`), damit ein
-abweichender Contract nur eine Datei betrifft.
+`PUT /objects/{sha256}` streamt die Bytes von Platte und trägt optional
+`X-ISRC`, `X-Name`, `X-Original-Path`. Ein vorhandenes Objekt wird nicht
+überschrieben (`{"stored":false,"present":true}`). Es gibt **kein**
+`POST /tracks`, `PUT /tracks/{id}/asset`, `DELETE /tracks/{id}` oder
+`/tracks/by-hash/{sha256}`.
+
+Das Portal kapselt das in einem `MusicApi`-Trait (`has_object`, `put_object`,
+`enqueue_work`), damit ein abweichender Contract nur eine Datei betrifft.
 
 ### 3.6 Auth-Abläufe
 
@@ -578,7 +582,7 @@ SESSION_ABSOLUTE_DAYS=30
 
 | #   | Frage                                                                                            | Blockiert       | Vorschlag                                                                                              |
 | --- | ------------------------------------------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------ |
-| Q1  | Exakter Music-API-Contract (Upload-Mechanismus, Suche, Hash-Lookup, Delete, Abspiel-URL)         | Upload, Library | Gegen `music-api` verifizieren, dann `MusicApi`-Trait finalisieren                                     |
+| Q1  | Exakter Music-API-Contract (Upload-Mechanismus, Suche, Hash-Lookup, Delete, Abspiel-URL)         | Upload, Library | **gelöst**: `PUT/HEAD/GET /objects/{hash}`, `GET /isrc/{isrc}/{format}`, `GET /tracks?isrcs=`, `POST /work`; kein `/api/v1` (#134) |
 | Q2  | Semantik „shared vs. private": darf ein privater Track on air laufen?                            | Library, Queue  | Vorschlag: privat = nur sichtbar für Owner/Operator; Abspielbarkeit unabhängig (Sichtbarkeit ≠ Lizenz) |
 | Q3  | Mount-Vergabe: statischer Pool vs. dynamische Harbor-Mounts                                      | Auth, Live      | Portal geht von statischem Pool aus; Verfahren gehört in `liquidsoap.md`                               |
 | Q4  | Wo leben Waveform-Peaks langfristig (Portal vs. Music-API-Metadaten)? `tapes` braucht sie auch   | Library, tapes  | Vorschlag: Portal ist Peak-Store, `tapes` liest den Endpunkt                                           |

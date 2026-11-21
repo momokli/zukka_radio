@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use sqlx::SqlitePool;
 
 use crate::error::{ApiError, ApiResult};
-use crate::store::playback::music_api_base;
+use crate::store::playback::{music_api_base, playback_uri};
 
 /// Target path of the rotation file.
 ///
@@ -55,14 +55,16 @@ pub async fn render(pool: &SqlitePool) -> ApiResult<String> {
     #[derive(Debug, sqlx::FromRow)]
     struct Row {
         music_api_id: String,
+        isrc: Option<String>,
         title: String,
         artist: String,
         duration_ms: i64,
     }
 
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT music_api_id, title, artist, duration_ms FROM tracks \
-         WHERE visibility = 'shared' AND music_api_id <> '' ORDER BY id",
+        "SELECT music_api_id, isrc, title, artist, duration_ms FROM tracks \
+         WHERE visibility = 'shared' \
+           AND (COALESCE(isrc, '') <> '' OR music_api_id <> '') ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -78,7 +80,10 @@ pub async fn render(pool: &SqlitePool) -> ApiResult<String> {
         } else {
             out.push_str(&format!("#EXTINF:{secs},{artist} - {title}\n"));
         }
-        out.push_str(&format!("{base}/stream/tracks/{}\n", row.music_api_id));
+        out.push_str(&format!(
+            "{}\n",
+            playback_uri(&base, row.isrc.as_deref(), &row.music_api_id)
+        ));
     }
     Ok(out)
 }
@@ -151,7 +156,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_skips_empty_music_api_id() {
+    async fn render_skips_rows_without_playable_key() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pool = crate::db::connect(&dir.path().join("rot.db"))
             .await
@@ -180,8 +185,8 @@ mod tests {
 
         let m3u = render(&pool).await.expect("render");
         assert!(m3u.contains("215,Artist - Kept"));
-        assert!(!m3u.contains("Skipped"), "empty music_api_id leaked: {m3u}");
-        assert!(!m3u.contains("/stream/tracks/\n"));
+        assert!(!m3u.contains("Skipped"), "unplayable row leaked: {m3u}");
+        assert!(!m3u.contains("/objects/\n"));
     }
 
     #[test]

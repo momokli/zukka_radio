@@ -446,7 +446,8 @@ pub(crate) async fn active_layer(
     // (5) rotation: satisfied once the shared library has playable content.
     if enabled(SourceLayer::Rotation) {
         let shared: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tracks WHERE visibility = 'shared' AND music_api_id <> ''",
+            "SELECT COUNT(*) FROM tracks WHERE visibility = 'shared' \
+               AND (COALESCE(isrc, '') <> '' OR music_api_id <> '')",
         )
         .fetch_one(pool)
         .await?;

@@ -25,7 +25,7 @@ use zukka_portal::api_client::{
     BroadcastApi, HttpBroadcastApi, HttpQueueApi, HttpTrackApi, NewBroadcast, NewQueue,
     NewQueueItem, NewTrackRequest, QueueApi, TrackApi,
 };
-use zukka_portal::music_api::{FakeMusicApi, MusicApi, NewTrack};
+use zukka_portal::music_api::{FakeMusicApi, MusicApi};
 
 use zukka_scheduler::api::auth as sched_auth;
 use zukka_scheduler::uuid::new_id;
@@ -146,28 +146,22 @@ async fn e2e_queue_progress_ingest_to_played() {
     let caster = s.seed_caster().await;
 
     // 1) Ingest: the Music API is the file authority; the portal registers the
-    //    served track locally afterwards (terminal step of the upload pipeline).
+    //    stored object locally afterwards (terminal step of the upload pipeline).
     let music = FakeMusicApi::new();
-    let created = music
-        .create_track(&NewTrack {
-            title: "Ingested Song".into(),
-            artist: Some("Artist A".into()),
-            sha256: Some("abc123".into()),
-        })
-        .await
-        .expect("fake music api create_track");
-    assert_eq!(music.created_count(), 1);
+    let object_hash = "abc123def456";
+    music.seed_object(object_hash);
+    assert!(music.has_object(object_hash).await.expect("head object"));
 
     let track = s
         .tracks()
         .create(
             Some(&caster),
             &NewTrackRequest {
-                music_api_id: created.id.clone(),
-                title: created.title.clone(),
-                storage_key: "s3/ingested-song.flac".into(),
+                music_api_id: object_hash.to_string(),
+                title: "Ingested Song".into(),
+                storage_key: object_hash.to_string(),
                 duration_ms: 215_000,
-                artist: created.artist.clone(),
+                artist: Some("Artist A".into()),
                 visibility: Some("shared".into()),
                 caster_id: Some(caster.clone()),
                 ..Default::default()
@@ -175,7 +169,7 @@ async fn e2e_queue_progress_ingest_to_played() {
         )
         .await
         .expect("register track");
-    assert_eq!(track.music_api_id, created.id);
+    assert_eq!(track.music_api_id, object_hash);
     assert_eq!(track.title, "Ingested Song");
 
     // 2) Queue (kind `slot`) with two ingested track items.

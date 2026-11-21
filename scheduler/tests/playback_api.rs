@@ -132,6 +132,16 @@ async fn seed_track(
     .expect("insert track");
 }
 
+/// Sets `tracks.isrc` for an already-seeded track (Issue #134, US-4).
+async fn set_isrc(pool: &SqlitePool, id: &str, isrc: &str) {
+    sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
+        .bind(isrc)
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("set isrc");
+}
+
 async fn seed_tape(
     pool: &SqlitePool,
     id: &str,
@@ -409,7 +419,7 @@ async fn next_layer_queue_via_live_playlist_broadcast() {
     assert_eq!(body["artist"], "Artist A");
     assert_eq!(body["duration_ms"], 215000);
     assert!(
-        body["uri"].as_str().unwrap().ends_with("/stream/tracks/m1"),
+        body["uri"].as_str().unwrap().ends_with("/objects/m1"),
         "uri: {body}"
     );
 }
@@ -547,10 +557,7 @@ async fn next_layer_show() {
     assert_eq!(body["tape_id"], "70000000-0000-7000-8000-000000000001");
     assert_eq!(body["artist"], Value::Null);
     assert!(
-        body["uri"]
-            .as_str()
-            .unwrap()
-            .ends_with("/stream/tapes/t-m1"),
+        body["uri"].as_str().unwrap().ends_with("/objects/t-m1"),
         "uri: {body}"
     );
     sqlx::query("UPDATE broadcasts SET status = 'ended' WHERE id = ?")
@@ -696,10 +703,7 @@ async fn projection_track_tape_and_title_override() {
     assert_eq!(body["artist"], "Orig Artist");
     assert_eq!(body["duration_ms"], 1234);
     assert!(
-        body["uri"]
-            .as_str()
-            .unwrap()
-            .ends_with("/stream/tracks/m20"),
+        body["uri"].as_str().unwrap().ends_with("/objects/m20"),
         "uri: {body}"
     );
 
@@ -733,10 +737,7 @@ async fn projection_track_tape_and_title_override() {
     assert_eq!(body["tape_id"], "70000000-0000-7000-8000-000000000020");
     assert_eq!(body["duration_ms"], 2222);
     assert!(
-        body["uri"]
-            .as_str()
-            .unwrap()
-            .ends_with("/stream/tapes/t-m20"),
+        body["uri"].as_str().unwrap().ends_with("/objects/t-m20"),
         "uri: {body}"
     );
 }
@@ -1055,5 +1056,70 @@ async fn current_resolution() {
     assert_eq!(
         body["queue_item_id"],
         "b0000000-0000-7000-8000-000000000051"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. track with ISRC plays from the /isrc/{isrc}/{format} route (#134, US-4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn track_with_isrc_uses_isrc_route() {
+    let (_dir, pool, app) = setup().await;
+    let caster = "c0000000-0000-7000-8000-000000000001";
+    seed_caster(&pool, caster).await;
+    seed_track(
+        &pool,
+        "d0000000-0000-7000-8000-000000000060",
+        "m60",
+        "Song 60",
+        "Artist 60",
+        60_000,
+    )
+    .await;
+    set_isrc(
+        &pool,
+        "d0000000-0000-7000-8000-000000000060",
+        "DEZZ00000060",
+    )
+    .await;
+    seed_queue(
+        &pool,
+        "a0000000-0000-7000-8000-000000000060",
+        caster,
+        "isrcq",
+        "slot",
+    )
+    .await;
+    sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('queue.active_id', ?, ?)")
+        .bind("a0000000-0000-7000-8000-000000000060")
+        .bind(TS)
+        .execute(&pool)
+        .await
+        .expect("set active queue");
+    seed_item(
+        &pool,
+        "b0000000-0000-7000-8000-000000000060",
+        "a0000000-0000-7000-8000-000000000060",
+        0,
+        "track",
+        Some("d0000000-0000-7000-8000-000000000060"),
+        None,
+        None,
+        None,
+        "pending",
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        send_auth(&app, Method::GET, "/api/v1/playback/next?layer=queue", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with("/isrc/DEZZ00000060/320"),
+        "uri: {body}"
     );
 }

@@ -877,6 +877,8 @@ pub struct TrackQuery {
 #[derive(Debug, Clone, Default)]
 pub struct NewTrackRequest {
     pub music_api_id: String,
+    /// Optional ISRC (Issue #134, US-2); sent through to the scheduler row.
+    pub isrc: Option<String>,
     pub title: String,
     pub storage_key: String,
     pub duration_ms: i64,
@@ -1075,6 +1077,7 @@ impl TrackApi for HttpTrackApi {
             .request(reqwest::Method::POST, "/tracks", viewer)
             .json(&serde_json::json!({
                 "music_api_id": req.music_api_id,
+                "isrc": req.isrc,
                 "title": req.title,
                 "storage_key": req.storage_key,
                 "duration_ms": req.duration_ms,

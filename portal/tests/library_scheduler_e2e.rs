@@ -80,6 +80,7 @@ fn new_track(
 ) -> NewTrackRequest {
     NewTrackRequest {
         music_api_id: music_api_id.to_string(),
+        isrc: None,
         title: title.to_string(),
         storage_key: format!("key/{music_api_id}"),
         duration_ms: 1000,
