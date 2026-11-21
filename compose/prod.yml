@@ -18,6 +18,12 @@ services:
   icecast:
     <<: *common
     image: ${ZUKKA_IMAGE_REGISTRY:-ghcr.io/momokli}/zukka-icecast:${ZUKKA_TAG}
+    # #109: the entrypoint renders icecast.xml from a template at start; these
+    # are the secrets it needs (env_file forwards all ZUKKA_* as well).
+    environment:
+      ZUKKA_ICECAST_SOURCE_PASSWORD: ${ZUKKA_ICECAST_SOURCE_PASSWORD}
+      ZUKKA_ICECAST_RELAY_PASSWORD: ${ZUKKA_ICECAST_RELAY_PASSWORD}
+      ZUKKA_ICECAST_ADMIN_PASSWORD: ${ZUKKA_ICECAST_ADMIN_PASSWORD}
     ports:
       - "127.0.0.1:${ZUKKA_PORT_ICECAST:-12000}:8000"
     volumes:
@@ -40,6 +46,10 @@ services:
     depends_on:
       scheduler:
         condition: service_healthy
+    # #109: output.icecast reads the source password from the environment and
+    # fails fast when unset. Must match the icecast service value.
+    environment:
+      ZUKKA_ICECAST_SOURCE_PASSWORD: ${ZUKKA_ICECAST_SOURCE_PASSWORD}
     ports:
       - "0.0.0.0:${ZUKKA_PORT_HARBOR:-12001}:8001"
     volumes:

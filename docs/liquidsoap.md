@@ -285,6 +285,13 @@ liquidsoap/
 zusammengesteckt werden. Alles andere ist in `lib/`. Grund: Die Datei, die man
 bei einem Vorfall liest, soll kurz sein.
 
+Das Icecast-Source-Passwort ist **kein** Skript-Literal: `lib/outputs.liq` liest
+es aus `ZUKKA_ICECAST_SOURCE_PASSWORD` (`environment.get`) und bricht mit
+`log.critical` + `shutdown()` ab, wenn die Variable fehlt oder leer ist (#109).
+Derselbe Wert wird beim Start des Icecast-Containers per Template in dessen
+`icecast.xml` gerendert (siehe `infrastructure.md`); beide Seiten müssen also
+aus derselben Env-Variable gespeist werden. Es gibt keinen Default.
+
 ### 3.2 Prioritätenkette — Code-Skizze
 
 ```liquidsoap

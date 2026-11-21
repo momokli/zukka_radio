@@ -354,11 +354,14 @@ ZUKKA_PORT_CADDY=12180
 ZUKKA_PORT_METRICS=12191
 
 # ── Icecast ────────────────────────────────────────────────────────────
+# Die icecast-Config wird beim Container-Start aus einem Template gerendert
+# (#109, envsubst); diese Secrets braucht sie. SOURCE muss zu Liquidsoap passen.
+ZUKKA_ICECAST_SOURCE_PASSWORD=<secret>
+ZUKKA_ICECAST_RELAY_PASSWORD=<secret>
+ZUKKA_ICECAST_ADMIN_PASSWORD=<secret>
+ZUKKA_ICECAST_ADMIN_USER=admin          # optional, Default admin
 ICECAST_HOSTNAME=cast.dev
 ICECAST_PORT=8000
-ICECAST_SOURCE_PASSWORD=<secret>
-ICECAST_ADMIN_USER=admin
-ICECAST_ADMIN_PASSWORD=<secret>
 ICECAST_MAX_LISTENERS=200
 ICECAST_LOG_LEVEL=3
 
@@ -468,8 +471,9 @@ ZUKKA_IMAGE_REGISTRY=ghcr.io/<owner>
 ZUKKA_IMAGE_LIQUIDSOAP=savonet/liquidsoap@sha256:<digest>
 ```
 
-**Secret-Liste (vollständig):** `CLOUDFLARE_API_TOKEN`, `ICECAST_SOURCE_PASSWORD`,
-`ICECAST_ADMIN_PASSWORD`, `HARBOR_INTERNAL_PASSWORD`, `SCHEDULER_SERVICE_TOKEN`,
+**Secret-Liste (vollständig):** `CLOUDFLARE_API_TOKEN`, `ZUKKA_ICECAST_SOURCE_PASSWORD`,
+`ZUKKA_ICECAST_RELAY_PASSWORD`, `ZUKKA_ICECAST_ADMIN_PASSWORD`, `HARBOR_INTERNAL_PASSWORD`,
+`SCHEDULER_SERVICE_TOKEN`,
 `LIQUIDSOAP_TOKEN`, `MUSIC_API_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`,
 `TELEGRAM_OPS_CHANNEL_ID`, `ZUKKA_ACME_EMAIL`, plus host-seitig `RESTIC_PASSWORD`
 (in `restic.pw`) und `GHCR_READ_TOKEN` (nur Host-Docker-Login, nie App-Env).

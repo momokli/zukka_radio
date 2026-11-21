@@ -62,6 +62,19 @@ jobs:
             savonet/liquidsoap:v2.4.5 \
             liquidsoap /etc/liquidsoap/tests/live_fcfs_test.liq
 
+  icecast-config:
+    # #109: hermetic test of the icecast config template render path
+    # (envsubst). No Docker, no root, no real secret.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install gettext (envsubst)
+        run: sudo apt-get update && sudo apt-get install -y gettext-base
+
+      - name: render test
+        run: ./deploy/icecast/test-render.sh
+
   caddy:
     runs-on: ubuntu-latest
     steps:
@@ -110,6 +123,7 @@ jobs:
         run: |
           shellcheck -S warning \
             deploy/announce/*.sh \
+            deploy/icecast/*.sh \
             scripts/*.sh \
             deploy/systemd/zukka-deploy \
             deploy/systemd/zukka-backup
