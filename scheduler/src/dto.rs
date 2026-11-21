@@ -804,6 +804,44 @@ pub struct CasterDto {
     pub permissions: BTreeMap<String, bool>,
 }
 
+/// Body of `POST /internal/casters` (Issue #101).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateCasterRequest {
+    pub username: String,
+    pub display_name: String,
+    pub password: String,
+    pub role: String,
+    #[serde(default)]
+    pub harbor_mount: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub stream_username: Option<String>,
+}
+
+/// Response of `POST /internal/casters`: the caster plus the generated stream
+/// password, which is transported exactly once (never stored in clear).
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedCasterResponse {
+    pub caster: CasterDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_password: Option<String>,
+}
+
+/// Body of `PATCH /internal/casters/{id}` (Issue #101). Only mutable fields;
+/// username and harbor mount are fixed after creation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateCasterRequest {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub is_active: Option<bool>,
+}
+
 /// Body of `POST /internal/auth/verify` (§4.2).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VerifyRequest {

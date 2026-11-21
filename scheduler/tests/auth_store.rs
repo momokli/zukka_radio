@@ -400,3 +400,107 @@ async fn generated_stream_password_is_24_chars_and_hashed() {
     assert_ne!(stored, generated, "clear text is never stored");
     assert!(auth::verify_password(&stored, &generated));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #101: bootstrap admin
+// ---------------------------------------------------------------------------
+
+use std::sync::OnceLock;
+
+/// Serialises bootstrap tests: the bootstrap credentials are process-global.
+fn bootstrap_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Sets (or clears) the bootstrap env pair and restores it on drop.
+struct BootstrapEnv;
+
+impl BootstrapEnv {
+    fn set(user: Option<&str>, password: Option<&str>) -> Self {
+        // SAFETY: serialised by `bootstrap_lock`.
+        unsafe {
+            match user {
+                Some(value) => std::env::set_var(auth::BOOTSTRAP_USER_ENV, value),
+                None => std::env::remove_var(auth::BOOTSTRAP_USER_ENV),
+            }
+            match password {
+                Some(value) => std::env::set_var(auth::BOOTSTRAP_PASSWORD_ENV, value),
+                None => std::env::remove_var(auth::BOOTSTRAP_PASSWORD_ENV),
+            }
+        }
+        Self
+    }
+}
+
+impl Drop for BootstrapEnv {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var(auth::BOOTSTRAP_USER_ENV);
+            std::env::remove_var(auth::BOOTSTRAP_PASSWORD_ENV);
+        }
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_creates_admin_once() {
+    let _guard = bootstrap_lock().lock().await;
+    let _env = BootstrapEnv::set(Some("admin"), Some("bootstrap-secret"));
+    let (_dir, pool) = setup().await;
+
+    let outcome = auth::bootstrap_admin(&pool).await.expect("bootstrap");
+    assert_eq!(
+        outcome,
+        auth::BootstrapOutcome::Created {
+            username: "admin".to_string(),
+            mount: "/live/slot-01".to_string(),
+        }
+    );
+    assert_eq!(auth::count_casters(&pool).await.unwrap(), 1);
+
+    let admin = auth::verify_login(&pool, "admin", "bootstrap-secret")
+        .await
+        .expect("admin login");
+    assert_eq!(admin.role, "admin");
+    assert_eq!(admin.permissions.get("caster.manage"), Some(&true));
+
+    // Idempotent: a second start never creates a second admin.
+    let second = auth::bootstrap_admin(&pool).await.expect("second call");
+    assert_eq!(second, auth::BootstrapOutcome::SkippedNotEmpty);
+    assert_eq!(auth::count_casters(&pool).await.unwrap(), 1);
+
+    // The password never lands in the audit trail.
+    let details: String = sqlx::query_scalar("SELECT details FROM event_log LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!details.contains("bootstrap-secret"), "details: {details}");
+}
+
+#[tokio::test]
+async fn bootstrap_skipped_without_env() {
+    let _guard = bootstrap_lock().lock().await;
+    let _env = BootstrapEnv::set(Some("admin"), None);
+    let (_dir, pool) = setup().await;
+
+    let outcome = auth::bootstrap_admin(&pool).await.expect("bootstrap");
+    assert_eq!(outcome, auth::BootstrapOutcome::SkippedNoEnv);
+    assert_eq!(auth::count_casters(&pool).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn bootstrap_skipped_when_casters_exist() {
+    let _guard = bootstrap_lock().lock().await;
+    let _env = BootstrapEnv::set(Some("admin"), Some("bootstrap-secret"));
+    let (_dir, pool) = setup().await;
+    caster(&pool, "mira", "pw", true).await;
+
+    let outcome = auth::bootstrap_admin(&pool).await.expect("bootstrap");
+    assert_eq!(outcome, auth::BootstrapOutcome::SkippedNotEmpty);
+    assert_eq!(auth::count_casters(&pool).await.unwrap(), 1);
+    assert!(
+        auth::verify_login(&pool, "admin", "bootstrap-secret")
+            .await
+            .is_err()
+    );
+}

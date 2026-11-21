@@ -20,8 +20,9 @@ use sqlx::SqlitePool;
 
 use crate::api::ApiJson;
 use crate::dto::{
-    CasterDto, ChangePasswordRequest, CreateSessionRequest, CreatedSessionDto, HarborAuthRequest,
-    HarborAuthResponse, SessionValidationDto, StreamPasswordRequest, StreamPasswordResponse,
+    CasterDto, ChangePasswordRequest, CreateCasterRequest, CreateSessionRequest,
+    CreatedCasterResponse, CreatedSessionDto, HarborAuthRequest, HarborAuthResponse,
+    SessionValidationDto, StreamPasswordRequest, StreamPasswordResponse, UpdateCasterRequest,
     VerifyRequest, VerifyResponse,
 };
 use crate::error::{ApiError, ApiResult};
@@ -222,6 +223,63 @@ pub async fn get_caster(
     Path(id): Path<String>,
 ) -> ApiResult<Json<CasterDto>> {
     Ok(Json(store::auth::get_caster(&pool, &id).await?))
+}
+
+/// `GET /internal/casters` — caster list for the admin page (Issue #101).
+pub async fn list_casters(State(pool): State<SqlitePool>) -> ApiResult<Json<Vec<CasterDto>>> {
+    Ok(Json(store::auth::list_casters(&pool).await?))
+}
+
+/// `POST /internal/casters` — create a caster (Issue #101). The generated
+/// stream password is returned exactly once.
+pub async fn create_caster(
+    State(pool): State<SqlitePool>,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<CreateCasterRequest>,
+) -> ApiResult<(StatusCode, Json<CreatedCasterResponse>)> {
+    let new_caster = store::auth::NewCaster {
+        username: &req.username,
+        display_name: &req.display_name,
+        password: &req.password,
+        role: &req.role,
+        harbor_mount: non_empty(req.harbor_mount.as_deref()),
+        email: non_empty(req.email.as_deref()),
+        stream_username: non_empty(req.stream_username.as_deref()),
+    };
+    let actor = crate::api::viewer_caster_id(&headers);
+    let created = store::auth::create_caster(&pool, &new_caster, actor.as_deref()).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedCasterResponse {
+            caster: created.caster,
+            stream_password: created.stream_password,
+        }),
+    ))
+}
+
+/// `PATCH /internal/casters/{id}` — update display name, email, role or
+/// active flag (Issue #101).
+pub async fn update_caster(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<UpdateCasterRequest>,
+) -> ApiResult<Json<CasterDto>> {
+    let patch = store::auth::CasterPatch {
+        display_name: req.display_name.as_deref(),
+        email: req.email.as_deref(),
+        role: req.role.as_deref().filter(|value| !value.trim().is_empty()),
+        is_active: req.is_active,
+    };
+    let actor = crate::api::viewer_caster_id(&headers);
+    Ok(Json(
+        store::auth::update_caster(&pool, &id, &patch, actor.as_deref()).await?,
+    ))
+}
+
+/// `None` for absent or blank optional strings.
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// `POST /internal/casters/{id}/password` — set the login password (rotation).

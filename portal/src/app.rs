@@ -376,6 +376,19 @@ pub fn build_router(state: AppState) -> Router {
             "/announcements/post",
             axum::routing::post(crate::announcements::announcement_post),
         )
+        // Issue #101: admin user management (RBAC `caster.manage`).
+        .route(
+            "/admin/users",
+            get(crate::admin::admin_users_get).post(crate::admin::admin_user_create),
+        )
+        .route(
+            "/admin/users/{id}",
+            axum::routing::post(crate::admin::admin_user_update),
+        )
+        .route(
+            "/admin/users/{id}/stream-password",
+            axum::routing::post(crate::admin::admin_user_stream_password),
+        )
         // CSRF first, then session resolution (auth runs outermost).
         .route_layer(from_fn_with_state(state.clone(), middleware::require_csrf))
         .route_layer(from_fn_with_state(
