@@ -25,7 +25,10 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, zukka]
     environment: dev
-    timeout-minutes: 45
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Sync DEV checkout
         run: |
@@ -33,14 +36,17 @@ jobs:
           git fetch --prune origin
           git reset --hard "${{ github.event.workflow_run.head_sha }}"
 
-      - name: Build images
+      - name: Pull images from GHCR
         run: |
-          cd /srv/zukka-dev/repo
+          # The `ci` workflow's build job already pushed these tags; rebuilding
+          # them here would double the pipeline time.
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           SHA="${{ github.event.workflow_run.head_sha }}"
-          docker build -f scheduler/Dockerfile      -t "ghcr.io/momokli/zukka-scheduler:$SHA" .
-          docker build -f portal/Dockerfile         -t "ghcr.io/momokli/zukka-portal:$SHA" .
-          docker build -f tapes/Dockerfile          -t "ghcr.io/momokli/zukka-tapes:$SHA" .
-          docker build -f deploy/icecast/Dockerfile -t "ghcr.io/momokli/zukka-icecast:$SHA" .
+          docker pull "ghcr.io/momokli/zukka-scheduler:$SHA"
+          docker pull "ghcr.io/momokli/zukka-portal:$SHA"
+          docker pull "ghcr.io/momokli/zukka-tapes:$SHA"
+          docker pull "ghcr.io/momokli/zukka-icecast:$SHA"
 
       - name: Deploy (dev)
         run: |
