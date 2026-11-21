@@ -5,7 +5,10 @@
 //! 2. (stream → temp + SHA-256 happens in [`crate::upload`] before this runs).
 //! 3. `has_object` (`HEAD /objects/{sha256}`) — a hit marks the job `done`
 //!    with the existing object and registers the local row.
-//! 4. `ffprobe` → D7 decision → optional MP3 derivate.
+//! 4. `ffprobe` → D7 decision → optional MP3 derivate. An upload with an ISRC
+//!    always needs an MP3 derivate when the master is not MP3, because the
+//!    playback route `GET /isrc/{isrc}/320` resolves the newest `kind=mp3`
+//!    object (Issue #134).
 //! 5. `put_object` (`PUT /objects/{sha256}`, master then derivate); on a new
 //!    store `enqueue_work("analyze", sha256)` (best-effort).
 //! 6. Waveform: compute peaks from the staged master and `put_waveform` (D8).
@@ -178,6 +181,41 @@ fn basename(filename: &str) -> String {
     filename.rsplit('/').next().unwrap_or(filename).to_string()
 }
 
+/// Makes a value safe for an HTTP header (`X-Name`/`X-Original-Path`).
+///
+/// The Music API reads these headers with `HeaderValue::to_str()`, which only
+/// accepts visible ASCII; anything else makes it drop the header, so
+/// `classify_kind` never sees the `.mp3` extension and `GET /isrc/{isrc}/320`
+/// 404s. Replace every non-ASCII/control character while keeping the
+/// (ASCII) filename extension intact.
+fn ascii_header_value(value: &str) -> String {
+    let mut out: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() && !ch.is_ascii_control() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.trim_matches('_').is_empty() {
+        out = "upload".to_string();
+    }
+    out
+}
+
+/// `true` when an `ffprobe` codec name denotes MP3 (the codec `320` resolves to).
+fn codec_is_mp3(codec: Option<&str>) -> bool {
+    match codec {
+        Some(codec) => {
+            let codec = codec.trim().to_ascii_lowercase();
+            codec == "mp3" || codec.starts_with("mp3")
+        }
+        None => false,
+    }
+}
+
 /// Registers the local library track; a `409` (duplicate `music_api_id`) is
 /// tolerated as "already present" and yields `None`.
 async fn register_local(
@@ -246,7 +284,14 @@ async fn run_inner(
     let probe = ffprobe::probe(deps.ffprobe_bin, &staged.path)
         .await
         .map_err(|e| format!("ffprobe failed: {e}"))?;
-    let needs = transcode::needs_derivate(probe.primary_audio_codec(), probe.has_video());
+    let codec = probe.primary_audio_codec();
+    // D7 plus the ISRC contract: `GET /isrc/{isrc}/320` resolves the newest
+    // object whose `kind` is `mp3` (from the `.mp3` name extension). A
+    // lossless or WAV master is an accepted codec, so D7 alone would skip the
+    // derivate and the ISRC playback route would 404. With an ISRC set, always
+    // produce an MP3 320 derivate unless the master itself is MP3.
+    let needs = transcode::needs_derivate(codec, probe.has_video())
+        || (staged.isrc.is_some() && !codec_is_mp3(codec));
 
     let derivate_path = if needs {
         let out = tempfile::Builder::new()
@@ -262,14 +307,16 @@ async fn run_inner(
         None
     };
 
-    // 5. upload the master object.
+    // 5. upload the master object (ASCII-safe header values, see above).
+    let title_header = ascii_header_value(&title);
+    let original_path_header = ascii_header_value(&staged.filename);
     let master = ObjectUpload {
         sha256: &staged.sha256,
         path: &staged.path,
         content_type: &staged.content_type,
         isrc: staged.isrc.as_deref(),
-        name: Some(&title),
-        original_path: Some(&staged.filename),
+        name: Some(&title_header),
+        original_path: Some(&original_path_header),
     };
     let master_outcome = deps
         .music
@@ -288,7 +335,7 @@ async fn run_inner(
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| staged.filename.clone());
-        let derivate_name = format!("{stem}.mp3");
+        let derivate_name = ascii_header_value(&format!("{stem}.mp3"));
         let derivate = ObjectUpload {
             sha256: &derivate_hash,
             path,
@@ -357,5 +404,29 @@ async fn run_inner(
 async fn enqueue_analyze(deps: &PipelineDeps<'_>, sha256: &str) {
     if let Err(err) = deps.music.enqueue_work("analyze", sha256).await {
         tracing::warn!(sha256, %err, "analyze work enqueue failed (ignored)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_header_value_keeps_extensions_and_drops_non_ascii() {
+        assert_eq!(ascii_header_value("tone.mp3"), "tone.mp3");
+        assert_eq!(ascii_header_value("Lied – ä.mp3"), "Lied _ _.mp3");
+        assert!(ascii_header_value("日本語.flac").is_ascii());
+        assert!(ascii_header_value("日本語.flac").ends_with(".flac"));
+        assert_eq!(ascii_header_value("日本語"), "upload");
+        assert_eq!(ascii_header_value("\u{1}"), "upload");
+    }
+
+    #[test]
+    fn codec_is_mp3_normalizes_case_and_whitespace() {
+        assert!(codec_is_mp3(Some("mp3")));
+        assert!(codec_is_mp3(Some(" MP3 ")));
+        assert!(!codec_is_mp3(Some("flac")));
+        assert!(!codec_is_mp3(Some("pcm_s16le")));
+        assert!(!codec_is_mp3(None));
     }
 }

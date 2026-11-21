@@ -271,6 +271,11 @@ impl FakeMusicApi {
             .collect()
     }
 
+    /// Every recorded `put_object` call (sha256, path and headers), in order.
+    pub fn put_records(&self) -> Vec<PutRecord> {
+        self.inner.lock().unwrap().puts.clone()
+    }
+
     /// Number of `put_object` calls that stored a *new* object.
     pub fn stored_count(&self) -> usize {
         self.inner.lock().unwrap().stored

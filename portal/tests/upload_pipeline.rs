@@ -523,20 +523,37 @@ async fn pipeline_object_api_chain_head_put_work() {
 
     // HEAD /objects/{sha256} is probed exactly once before the store.
     assert_eq!(music.head_requests(), vec![sha.clone()], "one HEAD probe");
-    // PUT /objects/{sha256} stored the master exactly once and carried X-ISRC.
-    assert_eq!(music.stored_count(), 1, "master stored");
-    assert_eq!(music.put_count(), 1, "master only");
+    // A WAV master with an ISRC needs an MP3-320 derivate: `GET /isrc/{isrc}/320`
+    // resolves the newest `kind=mp3` object, so both the master and the derivate
+    // are stored with the same X-ISRC.
+    assert!(outcome.derivate, "ISRC master must get an MP3 derivate");
+    assert_eq!(music.stored_count(), 2, "master + ISRC derivate stored");
+    assert_eq!(music.put_count(), 2, "master + derivate");
     assert_eq!(
         music.put_isrcs(),
-        vec![Some("DEZZ00000060".to_string())],
-        "X-ISRC forwarded on the PUT"
+        vec![
+            Some("DEZZ00000060".to_string()),
+            Some("DEZZ00000060".to_string()),
+        ],
+        "X-ISRC forwarded on both PUTs"
     );
-    // POST /work {"kind":"analyze"} enqueued for the freshly stored object.
-    assert_eq!(
-        music.work_items(),
-        vec![("analyze".to_string(), sha.clone())],
-        "analyze work enqueued once"
+    let records = music.put_records();
+    // The master keeps the original name/extension.
+    assert_eq!(records[0].original_path.as_deref(), Some("tone.wav"));
+    // The derivate is named `.mp3` so the Music API's `classify_kind` says mp3.
+    assert!(
+        records[1].name.as_deref().unwrap_or("").ends_with(".mp3"),
+        "derivate name must end in .mp3: {:?}",
+        records[1].name
     );
+    assert_eq!(records[1].original_path.as_deref(), Some("tone.mp3"));
+    assert_eq!(records[1].isrc.as_deref(), Some("DEZZ00000060"));
+    // POST /work {"kind":"analyze"} enqueued for both freshly stored objects.
+    let work = music.work_items();
+    assert_eq!(work.len(), 2, "analyze work enqueued for master + derivate");
+    assert_eq!(work[0], ("analyze".to_string(), sha.clone()));
+    assert_eq!(work[1].0, "analyze");
+    assert_ne!(work[1].1, sha, "derivate has its own object hash");
     // The local track carries the object hash as its music_api_id (US-8).
     assert_eq!(tracks.all().len(), 1);
     assert_eq!(tracks.all()[0].music_api_id, sha);
