@@ -689,6 +689,56 @@ pub struct PlaybackErrorRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #107: public-safe now-playing (scheduler `/now`)
+// ---------------------------------------------------------------------------
+
+/// The show of the running broadcast, public-safe (§4.2, Issue #107).
+///
+/// Only `id` + `name` — never an email, artwork or any internal field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NowShowDto {
+    pub id: String,
+    pub name: String,
+}
+
+/// The caster of the running broadcast, public-safe (§4.2, Issue #107).
+///
+/// `name` is `casters.display_name`; no username, email or stream hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NowCasterDto {
+    pub id: String,
+    pub name: String,
+}
+
+/// Public-safe now-playing snapshot (`GET /now`, §4.2, Issue #107).
+///
+/// Deliberately a *projection*, not the raw control state: no `uri`, no
+/// `music_api_id`, no stream/credential hashes, no email. `layer`/`source`
+/// carry the same active layer (§2.4) — `source` is the plain wire duplicate
+/// the tapes projection consumes. Every optional field is `null` when nothing
+/// is on air.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NowPlayingDto {
+    /// Active output layer (K3 approximation), or `null` when none is active.
+    pub layer: Option<SourceLayer>,
+    /// Same active layer as `layer` (wire duplicate for consumers).
+    pub source: Option<SourceLayer>,
+    /// Title of the running item, or `null`.
+    pub title: Option<String>,
+    /// Artist of the running item, or `null`.
+    pub artist: Option<String>,
+    /// Show of the running broadcast, or `null`.
+    pub show: Option<NowShowDto>,
+    /// Caster of the running broadcast, or `null`.
+    pub caster: Option<NowCasterDto>,
+    /// Start of the running item (`queue_items.played_at`, fallback
+    /// `broadcasts.starts_at`), ISO-8601 UTC, or `null`.
+    pub started_at: Option<String>,
+    /// `true` when the live layer is active (§2.5).
+    pub live: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Issue #15: control API
 // ---------------------------------------------------------------------------
 
