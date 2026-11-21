@@ -56,7 +56,7 @@
     <h2>Now Playing</h2>
     {% match view.now_title %}
     {% when Some with (title) %}
-    <p><strong>{{ title }}</strong>{% match view.now_artist %}{% when Some with (artist) %} — {{ artist }}{% when None %}{% endmatch %} <span class="muted">{{ view.now_duration }}</span></p>
+    <p><strong>{{ title }}</strong>{% match view.now_artist %}{% when Some with (artist) %} — {{ artist }}{% when None %}{% endmatch %} <span class="muted">{{ view.now_duration }}</span>{% match view.now_source %}{% when Some with (source) %} <span class="badge badge-muted">{{ source }}</span>{% when None %}{% endmatch %}</p>
     {% when None %}
     <p class="muted">Nichts läuft.</p>
     {% endmatch %}
@@ -64,6 +64,12 @@
 
   <section class="control-section">
     <h2>Status</h2>
+    <p>On Air: <strong>{{ view.on_air_label }}</strong>{% match view.layer_source %}{% when Some with (src) %} <span class="muted">({{ src }})</span>{% when None %}{% endmatch %}{% match view.on_air_note %}{% when Some with (note) %} <span class="muted">— {{ note }}</span>{% when None %}{% endmatch %}</p>
+    {% match view.derived_layer %}
+    {% when Some with (derived) %}
+    <p class="muted">Geplant (abgeleitet): <code>{{ derived }}</code></p>
+    {% when None %}
+    {% endmatch %}
     <p>Pause: <strong>{% if view.paused %}an{% else %}aus{% endif %}</strong>{% if view.derived %} <span class="muted">(Quelle abgeleitet)</span>{% endif %}</p>
     {% if view.can_write %}
     <form method="post" action="/control/pause" class="inline">

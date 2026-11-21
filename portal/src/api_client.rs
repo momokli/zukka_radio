@@ -2228,6 +2228,17 @@ pub struct NowPlaying {
     pub duration_ms: i64,
 }
 
+/// ICY now-playing observed on the Icecast output (Issue #140).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ObservedNowPlaying {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
 /// Full control-panel state (`GET /control/state`), mirroring the scheduler's
 /// `ControlStateDto` (serde-compatible).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2246,6 +2257,24 @@ pub struct ControlState {
     pub live: LiveState,
     #[serde(default)]
     pub now_playing: Option<NowPlaying>,
+    /// Icecast-observed layer (#140).
+    #[serde(default)]
+    pub observed_layer: Option<String>,
+    /// K3-derived layer from the scheduler DB (#140).
+    #[serde(default)]
+    pub derived_layer: Option<String>,
+    /// `"observed"` / `"derived"` / absent.
+    #[serde(default)]
+    pub active_layer_source: Option<String>,
+    #[serde(default)]
+    pub observed: bool,
+    /// Machine-readable observation reason (#140).
+    #[serde(default)]
+    pub observed_reason: Option<String>,
+    #[serde(default)]
+    pub on_air: bool,
+    #[serde(default)]
+    pub observed_now_playing: Option<ObservedNowPlaying>,
 }
 
 /// Control operations the portal needs. Implemented by [`HttpControlApi`] in

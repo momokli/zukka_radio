@@ -70,6 +70,7 @@ async fn metrics_returns_prometheus_text() {
         "zukka_icecast_listeners",
         "zukka_live_sources",
         "zukka_source_state",
+        "zukka_source_observed",
         "zukka_queue_fill_seconds",
         "zukka_music_api_errors_total",
         "zukka_scheduler_db_locked_total",
@@ -90,6 +91,10 @@ async fn metrics_returns_prometheus_text() {
         assert!(
             body.contains(&format!("zukka_source_state{{layer=\"{layer}\"}}")),
             "layer missing: {layer}"
+        );
+        assert!(
+            body.contains(&format!("zukka_source_observed{{layer=\"{layer}\"}}")),
+            "observed layer missing: {layer}"
         );
     }
     assert!(

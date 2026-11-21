@@ -447,6 +447,29 @@ Basis: `http://scheduler:8080/api/v1`. Intern, nicht öffentlich.
 | `GET`   | `/now`           | `NowPlayingDto` (Layer, Broadcast, Caster, Item, `started_at`) |
 | `GET`   | `/control/state` | Vollzustand für das Control Panel                              |
 
+`GET /control/state` trägt seit Issue #140 zusätzlich die **beobachtete**
+Ebene aus dem Icecast-Output:
+
+- `observed_layer` — heuristisch aus ICY-Metadaten + DB-/Settings-Signalen
+  abgeleitete Ebene (`live`, `show`, `queue`, `rotation`, `relay`) oder `null`.
+- `derived_layer` — die bisherige K3-Ableitung aus der Scheduler-DB.
+- `active_layer` — effektive Ebene (`observed_layer` **oder** `derived_layer`).
+- `active_layer_source` — `"observed"` oder `"derived"` (Herkunft).
+- `observed` / `on_air` — beobachtete Ebene ist wirksam / Icecast meldet eine
+  hörbare Source.
+- `observed_now_playing {title, artist, source}` — ICY-Titel/Artist, wenn der
+  DB-Pfad `now_playing` `null` liefert (Relay/Rotation).
+
+Der Poll ist **fail-open** (`ICECAST_STATUS_URL`, 1 s Timeout): ein
+unerreichbarer Icecast lässt `/control/state` bei `200`, `on_air=false` und
+die effektive Ebene auf `derived` zurückfallen. `derived: true` bleibt aus
+Kompatibilitätsgründen gesetzt; die DB-Felder sind unverändert.
+
+Hinweis zur Aussagekraft: Es gibt genau **einen** `output.icecast`-Mount
+(`/stream.mp3`); alle Ebenen werden dorthin gemischt. Die beobachtete Ebene
+ist deshalb eine Heuristik über Titel-Matching und wird nie als autoritativ
+ausgegeben (§4.4).
+
 **Shows / Broadcasts / Schedule**
 
 | Methode      | Pfad                                                  |
@@ -590,6 +613,13 @@ nicht verfügbar; verifiziert in Issue #32.
 | `tape.stop`                             | Recorder stoppen                                |
 | `status`                                | JSON: Ebenen, Track, Buffer, Uptime             |
 | `health`                                | JSON: Einzelchecks                              |
+
+**Follow-up (beobachtete Ebene):** `status`/`health` sind heute die einzigen
+Kandidaten für eine *autoritative* Layer-Quelle (Ebene, Mount,
+`relay_connected`). Issue #140 nutzt stattdessen die Heuristik aus
+Icecast-ICY-Metadaten (§4.2, `observed_layer`) und markiert sie als
+`observed`; eine Auswertung von `status`/`health` im Scheduler bleibt ein
+separates Follow-up (berührt `liquidsoap/*`).
 
 ### 4.5 Tapes (öffentlich)
 

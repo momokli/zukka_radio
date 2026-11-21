@@ -653,6 +653,18 @@ SSE-Stream, State-Fragmente, Umschalten/Pause/Skip, Undo-Toast, Audit,
 Live-Badge auf dem Dashboard.
 _DoD:_ Umschalten < 1 s sichtbar, Panel aktualisiert < 3 s, jede Aktion im Audit.
 
+**Beobachteter Zustand (Issue #140):** Die Status-Sektion zeigt zusätzlich
+„On Air: `<layer>` (beobachtet|abgeleitet)“: Die Ebene bzw. „Stille“/„unbekannt“
+stammt aus dem beobachteten Signal, das Herkunfts-Kürzel in Klammern nennt die
+Herkunft der wirksamen Ebene — `beobachtet` aus dem Icecast-Status
+(ICY-Metadaten), `abgeleitet` aus der Scheduler-DB. Meldet
+Icecast keine Source, steht dort „Stille“; ist on air, aber keine Ebene
+benennbar, „unbekannt“. Die Sektion „Now Playing“ nutzt weiter den DB-Pfad und
+fällt nur bei `now_playing = null` auf die Icecast-Metadaten zurück (z. B.
+Relay/Rotation) — mit Herkunftslabel „Datenbank“ bzw. „Icecast“. Der Poll ist
+fail-open: ein toter Icecast degradiert nie zu einem `500`, sondern auf die
+abgeleitete Ebene.
+
 **P7 — Announcements**
 Template-Editor mit Platzhalter-Validierung, Vorschau mit Beispieldaten,
 Timings-Anzeige, manuelles Posten, Versand-Log.

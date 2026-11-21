@@ -19,6 +19,54 @@ const ROLE_CASTER: &str = "0192f0a1-0001-7000-8000-000000000003";
 const CASTER: &str = "c0000000-0000-7000-8000-000000000001";
 const TS: &str = "2026-11-19T12:00:00.000Z";
 
+/// Serializes tests: `ICECAST_STATUS_URL` is process-global.
+fn state_env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Serializes state tests and points the observation at a dead port so results
+/// are deterministic (no real Icecast on the test host).
+async fn lock_state_env() -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = state_env_lock().lock().await;
+    // Rust 2024: process-env mutation is unsafe; `STATE_ENV_LOCK` serializes it.
+    unsafe {
+        std::env::set_var(
+            zukka_scheduler::icecast::ICECAST_STATUS_URL_ENV,
+            "http://127.0.0.1:1/status-json.xsl",
+        );
+    }
+    guard
+}
+
+/// Minimal one-shot HTTP server serving a fixed JSON body; returns its URL.
+async fn spawn_icecast_fixture(body: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fixture server");
+    let addr = listener.local_addr().expect("fixture addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/status-json.xsl")
+}
+
 async fn setup() -> (TempDir, SqlitePool, Router) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("zukka.db");
@@ -541,6 +589,7 @@ async fn get(app: &Router, uri: &str) -> (StatusCode, Value) {
 /// t20 (adjusted): `GET /control/state` now answers `200` with the state DTO.
 #[tokio::test]
 async fn t22_state_is_200() {
+    let _env = lock_state_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = get(&app, "/api/v1/control/state").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -569,6 +618,7 @@ async fn t22_state_is_200() {
 /// Settings drive `paused` / `forced_layer`; `forced_layer` is the active layer.
 #[tokio::test]
 async fn t23_state_reflects_settings() {
+    let _env = lock_state_env().await;
     let (_dir, pool, app) = setup().await;
     seed_setting(&pool, "control.paused", "true").await;
     seed_setting(&pool, "control.forced_layer", "queue").await;
@@ -582,6 +632,7 @@ async fn t23_state_reflects_settings() {
 /// A live override sets `active_caster_id` and makes `live` the active layer.
 #[tokio::test]
 async fn t24_state_live_override() {
+    let _env = lock_state_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_setting(&pool, "live.override_caster_id", CASTER).await;
@@ -596,6 +647,7 @@ async fn t24_state_live_override() {
 /// without a later `live_disconnected`; a disconnect removes the caster.
 #[tokio::test]
 async fn t25_state_connected_from_event_log() {
+    let _env = lock_state_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     sqlx::query(
@@ -645,6 +697,7 @@ async fn t25_state_connected_from_event_log() {
 /// An active queue with a pending item derives the `queue` layer.
 #[tokio::test]
 async fn t26_state_active_queue_layer() {
+    let _env = lock_state_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     let queue_id = "a0000000-0000-7000-8000-000000000009";
@@ -691,4 +744,130 @@ async fn t21_control_does_not_collide_with_playback() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+// ---------------------------------------------------------------------------
+// T27–T28: observed layer from Icecast (Issue #140)
+// ---------------------------------------------------------------------------
+
+/// T27: a reachable Icecast fixture with external ICY metadata makes the
+/// observed `relay` layer effective and exposes the observed now-playing.
+#[tokio::test]
+async fn t27_state_observed_relay_from_icecast() {
+    let _env = lock_state_env().await;
+    let url = spawn_icecast_fixture(
+        r#"{"icestats":{"source":{"server_name":"zukka","listenurl":"http://icecast:8000/stream.mp3",
+        "title":"SomaFM - Deep Space","artist":"SomaFM","listeners":9,
+        "stream_start":"2026-11-20T10:00:00Z"}}}"#,
+    )
+    .await;
+    // Rust 2024: process-env mutation is unsafe; `STATE_ENV_LOCK` serializes it.
+    unsafe {
+        std::env::set_var(zukka_scheduler::icecast::ICECAST_STATUS_URL_ENV, &url);
+    }
+
+    let (_dir, _pool, app) = setup().await;
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["observed_layer"], "relay");
+    assert_eq!(body["derived_layer"], Value::Null);
+    assert_eq!(body["active_layer"], "relay");
+    assert_eq!(body["active_layer_source"], "observed");
+    assert_eq!(body["observed"], true);
+    assert_eq!(body["observed_reason"], "external");
+    assert_eq!(body["on_air"], true);
+    assert_eq!(body["observed_now_playing"]["title"], "SomaFM - Deep Space");
+    assert_eq!(body["observed_now_playing"]["artist"], "SomaFM");
+    assert_eq!(body["derived"], true, "compat marker unchanged");
+}
+
+/// T28: an unreachable Icecast keeps `/control/state` a `200`, marks
+/// `observed=false` and falls back to the DB-derived layer.
+#[tokio::test]
+async fn t28_state_unreachable_icecast_falls_back_to_derived() {
+    let _env = lock_state_env().await;
+    let (_dir, pool, app) = setup().await;
+    seed_setting(&pool, "control.forced_layer", "queue").await;
+
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "never 5xx: {body}");
+    assert_eq!(body["observed_layer"], Value::Null);
+    assert_eq!(body["derived_layer"], "queue");
+    assert_eq!(body["active_layer"], "queue");
+    assert_eq!(body["active_layer_source"], "derived");
+    assert_eq!(body["observed"], false);
+    assert_eq!(body["observed_reason"], "icecast_unreachable");
+    assert_eq!(body["on_air"], false);
+    assert!(body["observed_now_playing"].is_null());
+}
+
+/// T27b: a silent Icecast (no source) is `on_air=false` and never invents a
+/// layer; the DB derivation still applies.
+#[tokio::test]
+async fn t27_silent_icecast_keeps_derived_layer() {
+    let _env = lock_state_env().await;
+    let url = spawn_icecast_fixture(r#"{"icestats":{"admin":"zukka"}}"#).await;
+    // Rust 2024: process-env mutation is unsafe; `STATE_ENV_LOCK` serializes it.
+    unsafe {
+        std::env::set_var(zukka_scheduler::icecast::ICECAST_STATUS_URL_ENV, &url);
+    }
+
+    let (_dir, pool, app) = setup().await;
+    seed_setting(&pool, "control.relay_active", "true").await;
+    let (status, body) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["on_air"], false);
+    assert_eq!(body["observed_reason"], "silent");
+    assert_eq!(body["observed_layer"], Value::Null);
+    // relay setting still derives `relay` on the DB path.
+    assert_eq!(body["active_layer"], "relay");
+    assert_eq!(body["active_layer_source"], "derived");
+}
+
+/// DD7 (#140): `zukka_source_state` stays on the derived K3 layer even when
+/// Icecast observes an external relay; the observed layer is reported only via
+/// `zukka_source_observed`.
+#[tokio::test]
+async fn t27_metrics_source_state_stays_derived() {
+    let _env = lock_state_env().await;
+    let url = spawn_icecast_fixture(
+        r#"{"icestats":{"source":{"server_name":"zukka","listenurl":"http://icecast:8000/stream.mp3",
+        "title":"SomaFM - Deep Space","artist":"SomaFM","listeners":9}}}"#,
+    )
+    .await;
+    // Rust 2024: process-env mutation is unsafe; `STATE_ENV_LOCK` serializes it.
+    unsafe {
+        std::env::set_var(zukka_scheduler::icecast::ICECAST_STATUS_URL_ENV, &url);
+    }
+
+    let (_dir, pool, app) = setup().await;
+    seed_setting(&pool, "control.forced_layer", "queue").await;
+
+    let request = Request::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .expect("request");
+    let response = app.oneshot(request).await.expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes);
+
+    // Derived (K3) layer stays authoritative for the monitoring contract...
+    assert!(
+        body.contains(r#"zukka_source_state{layer="queue"} 1"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"zukka_source_state{layer="relay"} 0"#),
+        "{body}"
+    );
+    // ...while the observed relay is exposed separately.
+    assert!(
+        body.contains(r#"zukka_source_observed{layer="relay"} 1"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"zukka_source_observed{layer="queue"} 0"#),
+        "{body}"
+    );
 }
