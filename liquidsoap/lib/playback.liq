@@ -26,7 +26,7 @@ def parse_playback_item(body) =
     else
       {uri=uri, cue_in_ms=cue_in_ms, cue_out_ms=cue_out_ms, queue_item_id=queue_item_id}
     end
-  catch err do
+  catch _ do
     null
   end
 end
@@ -41,12 +41,14 @@ def build_annotated_uri(x) =
   parts := null.case(
     x.cue_in_ms,
     fun () -> parts(),
-    fun (v) -> list.append(parts(), ["liq_cue_in=#{v}"])
+    # Liquidsoap 2.4.5 reads `liq_cue_in`/`liq_cue_out` in SECONDS, while the
+    # scheduler DTO carries milliseconds (`*_ms`). Convert ms -> s here.
+    fun (v) -> list.append(parts(), ["liq_cue_in=#{float(v) / 1000.}"])
   )
   parts := null.case(
     x.cue_out_ms,
     fun () -> parts(),
-    fun (v) -> list.append(parts(), ["liq_cue_out=#{v}"])
+    fun (v) -> list.append(parts(), ["liq_cue_out=#{float(v) / 1000.}"])
   )
   parts := null.case(
     x.queue_item_id,

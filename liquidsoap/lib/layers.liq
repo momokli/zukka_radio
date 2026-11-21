@@ -37,7 +37,7 @@ def next_for(layer) =
         "#{scheduler_base_url}/api/v1/playback/next?layer=#{layer}"
       )
       request_for_body(body, layers_configured)
-    catch err do
+    catch _ do
       null
     end
   end
