@@ -39,6 +39,22 @@ jobs:
             "+refs/heads/v2:refs/remotes/origin/v2"
           git reset --hard "${{ github.event.workflow_run.head_sha }}"
 
+      - name: Sync DEV env keys
+        run: |
+          cd /srv/zukka-dev/repo
+          # env/dev.env is gitignored and survives deploys, so a key added by a
+          # PR is missing until someone edits the file — which crashloops the
+          # service that requires it (real: ZUKKA_ICECAST_* in #109). Append any
+          # key from the example the real file lacks; never overwrite a value.
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            if ! grep -q "^${key}=" env/dev.env; then
+              printf '%s\n' "$line" >> env/dev.env
+              echo "::warning::added missing env key ${key} from the example"
+            fi
+          done < env/dev.env.example
+
       - name: Pull images from GHCR
         run: |
           # The `ci` workflow's build job already pushed these tags; rebuilding
