@@ -34,6 +34,17 @@ pub const LIVE_CLEAR: &str = "live.clear";
 /// `live.status` — JSON with `live_order`, `override`, `current` (§4.4).
 pub const LIVE_STATUS: &str = "live.status";
 
+/// `tape.start <tape_id>` — open the per-broadcast recorder (§4.4, issue #108).
+pub fn tape_start(tape_id: &str) -> String {
+    format!("tape.start {}", tape_id.trim())
+}
+
+/// `tape.stop` — close the per-broadcast recorder (§4.4, issue #108).
+pub const TAPE_STOP: &str = "tape.stop";
+
+/// `tape.status` — JSON `{active, tape_id, path}` (§4.4, issue #108).
+pub const TAPE_STATUS: &str = "tape.status";
+
 fn client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -86,4 +97,35 @@ pub async fn push(command: &str) -> Result<Option<String>, String> {
 /// Reads back the current Liquidsoap live selection (`live.status`).
 pub async fn status() -> Result<Option<String>, String> {
     push(LIVE_STATUS).await
+}
+
+/// Best-effort push with logging; failures are never fatal.
+///
+/// Shared by the control store and the broadcast transition wiring: a push
+/// never loses persisted state, so an unreachable Liquidsoap is only a warning.
+pub async fn push_best_effort(command: &str) {
+    match push(command).await {
+        Ok(Some(body)) => tracing::debug!(command, body = body.trim(), "liquidsoap control ok"),
+        Ok(None) => tracing::debug!(command, "liquidsoap control push disabled (no URL)"),
+        Err(err) => tracing::warn!(command, "liquidsoap control push failed: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tape_start_trims_and_prefixes() {
+        assert_eq!(
+            tape_start("  0192f0a1-0001-7000-8000-000000000003 "),
+            "tape.start 0192f0a1-0001-7000-8000-000000000003"
+        );
+    }
+
+    #[test]
+    fn tape_command_constants_are_exact() {
+        assert_eq!(TAPE_STOP, "tape.stop");
+        assert_eq!(TAPE_STATUS, "tape.status");
+    }
 }

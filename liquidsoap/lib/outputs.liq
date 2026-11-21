@@ -51,5 +51,22 @@ output.file.hls(
   safe_radio
 )
 
-# TODO(M1): start/stop per broadcast via control tape.start / tape.stop
-# output.file(%mp3(bitrate=192), "/recordings/current.mp3", safe_radio)
+# Recording (D12, issue #108): one MP3 192k file per broadcast, tapped on
+# `safe_radio` (PCM, before the encoders) so a source dropout records silence
+# instead of aborting. `start=false`: the scheduler opens/closes it at the
+# broadcast boundaries via control `tape.start` / `tape.stop`. The filename
+# getter re-reads `tape_current` on every (re-)open (see lib/tape.liq).
+#
+# Out of scope for #108 (see docs/liquidsoap.md §3.4): uploading the staging
+# file to the music API and enqueuing the probe/peaks tape_jobs.
+def tape_on_close(closed_path) =
+  log("tape closed #{closed_path}")
+end
+
+recorder = output.file(
+  %mp3(bitrate=192),
+  fun () -> tape_path(),
+  safe_radio,
+  start=false,
+  on_close = tape_on_close
+)

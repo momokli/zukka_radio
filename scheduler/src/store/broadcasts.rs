@@ -15,6 +15,7 @@ use crate::store::announcement_timings;
 use crate::store::announcements::{self, ShowReminderInput};
 use crate::store::now_ts;
 use crate::store::schedule::{Slot, detect_conflicts};
+use crate::store::tapes;
 use crate::time::{fmt_api_time, fmt_storage_time, parse_api_time, parse_storage_time};
 use crate::uuid::new_id;
 
@@ -74,6 +75,7 @@ struct CurrentRow {
     kind: BroadcastKind,
     show_id: Option<String>,
     caster_id: String,
+    title: String,
 }
 
 const SELECT: &str = "SELECT id, show_id, caster_id, kind, title, description, starts_at, ends_at, \
@@ -466,7 +468,7 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
     let mut tx = pool.begin().await?;
 
     let current: Option<CurrentRow> = sqlx::query_as(
-        "SELECT id, status, starts_at, kind, show_id, caster_id FROM broadcasts WHERE id = ?",
+        "SELECT id, status, starts_at, kind, show_id, caster_id, title FROM broadcasts WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -529,7 +531,59 @@ async fn transition(pool: &SqlitePool, id: &str, action: Action) -> ApiResult<Br
     // not roll back the broadcast transition (only warn).
     emit_live_announcement(&mut tx, action, &current, new_end.as_deref()).await;
 
+    // Tape lifecycle (#108): registration on start, finalization on end, both
+    // inside the transaction (consolidated §3.6). The Liquidsoap recorder
+    // push happens after commit, best-effort.
+    let mut tape_to_start: Option<String> = None;
+    let mut tape_to_stop = false;
+    if matches!(current.kind, BroadcastKind::Live) {
+        match action {
+            Action::Start => {
+                match tapes::register_live_tape(
+                    &mut tx,
+                    id,
+                    &current.caster_id,
+                    current.show_id.as_deref(),
+                    &current.title,
+                    Utc::now(),
+                )
+                .await
+                {
+                    Ok(tape_id) => tape_to_start = Some(tape_id),
+                    Err(err) => {
+                        tracing::warn!(broadcast_id = id, "tape registration failed: {err:#}")
+                    }
+                }
+            }
+            Action::End => {
+                if let Some(end) = new_end
+                    .as_deref()
+                    .and_then(|raw| parse_storage_time(raw).ok())
+                {
+                    match tapes::finalize_live_tape(&mut tx, id, end).await {
+                        Ok(Some(_)) => tape_to_stop = true,
+                        Ok(None) => {
+                            tracing::warn!(broadcast_id = id, "no pending live tape to finalize")
+                        }
+                        Err(err) => {
+                            tracing::warn!(broadcast_id = id, "tape finalize failed: {err:#}")
+                        }
+                    }
+                }
+            }
+            Action::Cancel => {}
+        }
+    }
+
     tx.commit().await?;
+
+    // Recorder control is best-effort, after the DB decision is durable.
+    if let Some(tape_id) = tape_to_start {
+        crate::liquidsoap::push_best_effort(&crate::liquidsoap::tape_start(&tape_id)).await;
+    }
+    if tape_to_stop {
+        crate::liquidsoap::push_best_effort(crate::liquidsoap::TAPE_STOP).await;
+    }
 
     get_with_warnings(pool, id).await
 }

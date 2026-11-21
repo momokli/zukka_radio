@@ -45,8 +45,8 @@ Zwei Konsequenzen daraus, die den Rest des Dokuments prägen:
 1. **HLS heißt `output.file.hls`.** Es gibt keinen `output.hls`-Operator. Wer
    nach `output.hls` sucht, findet nichts und schließt fälschlich auf fehlende
    HLS-Unterstützung.
-2. **Es gibt keinen `record`-Operator.** Verlustfreies Mitschneiden ist
-   `output.file` mit `%flac` auf dem Master vor dem Encoding.
+2. **Es gibt keinen `record`-Operator.** Mitschneiden ist `output.file`
+   (`%mp3(bitrate=192)`) auf dem `mksafe`-Master vor dem Encoding.
 
 `input.harbor` hat einen `transport`-Parameter. Damit ist die in
 `infrastructure.md` offene Frage „terminiert `input.harbor` TLS?" beantwortbar:
@@ -204,15 +204,18 @@ die Crossfade-Qualität gefährdet. Ein 12-s-Buffer bedeutet aber ~12 s Latenz
 vom Caster zum Hörer — unvereinbar mit „Kein Delay". Wir wählen den Buffer
 klein und verzichten auf den langen Crossfade im Live-Pfad.
 
-### D12 — Recording: verlustfrei vor dem Encoding, pro Broadcast eine Datei
+### D12 — Recording: vor dem Encoding, pro Broadcast eine Datei
 
-Der Tape-Tap sitzt auf dem **Master** (PCM), nicht auf dem encodierten Stream.
-Damit ist die Aufnahme unabhängig von der Stream-Bitrate.
+Der Tape-Tap sitzt auf `safe_radio` (`mksafe(radio)`, PCM) — vor den
+Encodern und damit unabhängig von der Stream-Bitrate. Bei Quellen-Ausfall
+nimmt der Recorder Stille auf statt abzubrechen.
 
-`output.file(%flac, ...)` mit `start=false`; der Scheduler startet und stoppt
-die Aufnahme an Broadcast-Grenzen. Der Dateiname kommt aus der Tape-ID.
-Ziel ist `recordings_staging:/recordings` (Volume laut
-`infrastructure.md` §4.1), von wo der Upload in die Music API erfolgt.
+`output.file(%mp3(bitrate=192), ...)` mit `start=false` (issue #108); der
+Scheduler startet und stoppt die Aufnahme an Broadcast-Grenzen. Der
+Dateiname wird über einen `{string}`-Getter aus der Tape-ID gebildet und bei
+jedem (Re-)Open neu gelesen. Ziel ist `recordings_staging:/recordings`
+(`/recordings/<uuidv7>.mp3`, Volume laut `infrastructure.md` §4.1), von wo der
+Upload in die Music API erfolgt (Folge-Issue, out of scope für #108).
 
 ### D13 — HLS als Latenz-Fallback, nicht als Primärweg
 
@@ -277,6 +280,7 @@ liquidsoap/
   lib/live.liq           # Live-Switch + Override
   lib/layers.liq         # show, queue, rotation, relay, fun
   lib/master.liq         # fallback-Kette + Transitions
+  lib/tape.liq           # Tape-State + pure Helfer (issue #108)
   lib/outputs.liq        # icecast, hls, tape
   lib/control.liq        # server.harbor + Commands + Status
 ```
@@ -512,37 +516,53 @@ Der Handoff ist nahtlos im Sinne von „kein Stille-Loch", nicht im Sinne von
 ### 3.4 Recording
 
 ```liquidsoap
-# lib/outputs.liq
-tape_id = ref("")
+# lib/tape.liq (purer State + Helfer)
+tape_current = ref("")
+def tape_filename(tape_id) = "/recordings/" ^ tape_id ^ ".mp3" end
+def tape_path() = tape_filename(tape_current()) end
 
-tape_out = output.file(
-  %flac(samplerate=44100, channels=2),
-  "/recordings/$(tape_id).flac",
-  master,
-  start = false
+# lib/outputs.liq (Output, getappt auf safe_radio)
+recorder = output.file(
+  %mp3(bitrate=192),
+  fun () -> tape_path(),
+  safe_radio,
+  start = false,
+  on_close = tape_on_close
 )
 ```
 
 Ablauf:
 
-1. Scheduler setzt `tape_id` und ruft `tape.start`.
-2. `output.file` öffnet `/recordings/<tape_id>.flac` und schreibt PCM als FLAC.
-3. Scheduler ruft `tape.stop` am Broadcast-Ende.
-4. Ein Uploader schiebt die Datei in die Music API und löscht sie lokal
-   (`recordings_staging` ist laut `infrastructure.md` §4.1 genau dafür da).
+1. Scheduler legt beim Broadcast-Start eine `tapes`-Row an (`source='live'`,
+   `status='pending'`, `tapes.broadcast_id` gesetzt) und ruft `tape.start <uuidv7>`.
+2. `output.file` öffnet `/recordings/<uuidv7>.mp3` (den Pfad liefert der
+   `{string}`-Getter `tape_path`, bei jedem Re-Open neu gelesen) und schreibt
+den Mix als MP3 192k.
+3. Scheduler ruft `tape.stop` am Broadcast-Ende und stempelt `tapes.ended_at`.
+
+Format und Pfad (consolidated §3.6/§3.7): **MP3 192k**, `/recordings/<uuidv7>.mp3`.
+Der Tap sitzt auf `safe_radio` (`mksafe(radio)`, PCM) — wie die Icecast-/HLS-Kette
+und damit vor dem Encoding; ein Quellen-Ausfall nimmt Stille auf, statt den
+Recorder abzubrechen.
 
 Warum `start=false` und nicht `reopen_on_metadata`: `reopen_on_metadata` würde
 bei jedem Trackwechsel eine neue Datei öffnen. Wir wollen eine Datei pro
 Broadcast. Der Start/Stop-Zyklus ist die Broadcast-Grenze.
 
-Warum FLAC und nicht MP3: Die Aufnahme ist das Archiv. Sie wird nie
-transkodiert, nur beim Ausliefern. Ein Tape, das aus einem 192-kbit-Stream
-entsteht, ist kein Tape.
+> **Nicht Teil von #108 (Folge-Issue, §3.6):** Upload der Staging-Datei in die
+> Music API, `tape_jobs` (probe/peaks), `status='processing'`, Löschen der
+> Datei und der `tapes-worker`. Der Pfad bleibt hier beschrieben, wird aber
+> erst in einem Folge-Issue verdrahtet.
 
-> **Typ-Konflikt (nicht von hier lösbar):** `data-model.md` führt
-> `tapes.id` als `INTEGER`, `tapes.md` als `TEXT PRIMARY KEY` (Slug). Der
-> Dateiname braucht einen stabilen, dateisystemtauglichen Wert. Vorschlag:
-> Slug verwenden, ID nur intern. Siehe §4, O2.
+> **Restart-Robustheit:** Die `tapes`-Row überlebt einen Scheduler-Neustart,
+> ein Re-Assert von `tape.start` (analog `reassert_live`) ist bewusst **nicht**
+> in #108. Nach einem Liquidsoap-Neustart während eines laufenden Broadcasts
+> muss der Recorder neu angestossen werden.
+
+> **Hinweis:** `data-model.md` (Übersicht) und die deployte
+> `scheduler/migrations/0001_init.sql` sind maßgeblich; letztere führt
+> `tapes.id` als `TEXT PRIMARY KEY` (UUIDv7) und `slug` als eindeutigen
+> 8-Zeichen-Crockford-Slug.
 
 ### 3.5 Relay
 
@@ -605,8 +625,9 @@ Commands via `server.register`:
 | `live.status`     | —                           | JSON: `live_order`, `override`, aktueller Mount    |
 | `layer.available` | `<source_id> <true\|false>` | Verfügbarkeit einer Content-Ebene                  |
 | `layer.source_id` | `<layer> <id>`              | löst die Seed-`source_id` zur Laufzeit auf         |
-| `tape.start`      | `<tape_id>`                 | setzt `tape_id`, startet FLAC-Recorder             |
+| `tape.start`      | `<tape_id>`                 | setzt Tape-ID, startet MP3-192k-Recorder           |
 | `tape.stop`       | —                           | stoppt Recorder                                    |
+| `tape.status`     | —                           | JSON: `{active, tape_id, path}`                    |
 | `status`          | —                           | JSON: alle Ebenen, aktueller Track, Buffer, Uptime |
 | `health`          | —                           | JSON: Checks (§3.7.1)                              |
 
@@ -618,10 +639,22 @@ server.register("live.clear", description = "Override aufheben",
   fun (_) -> live_override := null(); "ok" end)
 
 server.register("tape.start", description = "Tape starten",
-  usage = "<tape_id>", fun (arg) -> tape_id := arg; tape_out.start(); "ok" end)
+  usage = "<tape_id>", fun (arg) -> begin
+    tape_id = string.trim(arg)
+    guard = tape_start_guard(tape_id, recorder.is_started())
+    if guard == "" then begin
+      tape_current := tape_id
+      recorder.start()
+      tape_status_json(true)
+    end else guard end
+  end)
 
 server.register("tape.stop", description = "Tape stoppen",
-  fun (_) -> tape_out.stop(); "ok" end)
+  fun (arg) -> begin
+    ignore(arg)
+    recorder.stop()
+    tape_status_json(false)
+  end)
 ```
 
 Verifiziert gegen `savonet/liquidsoap:v2.4.5` (Issue #32): `server.harbor`
@@ -883,11 +916,10 @@ Wenn der Scheduler 5xx liefert und die Rotation ebenfalls leer ist, fällt die
 Kette auf Relay und Fun. Das funktioniert nur, solange D10 gilt. Wird der
 Fun-Layer jemals entfernt, ist die Kette nicht mehr garantiert geschlossen.
 
-**R8 — FLAC-Platzbedarf.**
-44,1 kHz / 16 Bit / Stereo sind ~635 MB/h unkomprimiert; FLAC landet
-erfahrungsgemäß bei ~50–60 % davon, also ~0,3–0,4 GB/h. Bei mehreren
-gleichzeitigen Broadcasts und verzögertem Upload ist das ein Kapazitätsthema.
-Schätzung, keine Messung.
+**R8 — Aufnahme-Platzbedarf.**
+MP3 192k belegt ~86 MB/h pro Broadcast (MPEG-1 Layer III, 192 kbit/s). Bei
+mehreren gleichzeitigen Broadcasts und verzögertem Upload ist das ein
+Kapazitätsthema. Schätzung, keine Messung.
 
 **R9 — Ein Prozess ist ein Single Point of Failure.**
 Stürzt Liquidsoap ab, ist der Stream weg, bis der Container neu startet. Ein
@@ -953,10 +985,10 @@ Relay verbinden; ohne Egress-Regel muss `on_error` sauber retryen, ohne den
 Master zu blockieren.
 
 **8 — Recording.**
-`output.file(%flac)` mit `start=false` nach `/recordings`. Test:
-`tape.start`, 30 s laufen, `tape.stop`, Datei mit `flac -t` prüfen. Danach
-`ffprobe` gegen den Icecast-Stream: Sample-Rate und Kanäle müssen identisch
-sein.
+`output.file(%mp3(bitrate=192))` mit `start=false` nach `/recordings`
+(issue #108). Test: `tape.start`, 30 s laufen, `tape.stop`, Datei mit `ffprobe`
+prüfen (MP3, 192 kbit/s). Der Upload/`tape_jobs`-Pfad folgt in einem
+Folge-Issue.
 
 **9 — HLS.**
 `output.file.hls` nach `/hls` aktivieren, Segmente zählen, Playlist mit
@@ -1000,10 +1032,11 @@ Pre-Deploy-Gate, Neustart nur im leeren Fenster (R1).
 
 **Recording**
 
-- [ ] `tape.start` erzeugt genau eine FLAC-Datei pro Broadcast.
-- [ ] Die Aufnahme ist bit-identisch zum Master (Sample-Rate, Kanäle,
-      keine Encoder-Artefakte) — geprüft per `ffprobe`/`flac -t`.
-- [ ] `tape.stop` schließt die Datei sauber (kein abgeschnittenes FLAC-Header).
+- [ ] `tape.start` erzeugt genau eine **MP3-192k**-Datei pro Broadcast unter
+      `/recordings/<uuidv7>.mp3`.
+- [ ] `tape.stop` schließt die Datei sauber (kein abgeschnittener MP3-Header).
+- [ ] Der Tap liegt auf `safe_radio` (PCM, vor dem Encoding); ein
+      Quellen-Ausfall nimmt Stille auf, statt den Recorder abzubrechen.
 
 **HLS**
 

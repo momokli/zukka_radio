@@ -34,6 +34,7 @@ use crate::dto::{
     ControlStateDto, ControlSwitchRequest, LiveStateDto, SourceDto, SourceLayer,
 };
 use crate::error::{ApiError, ApiResult};
+use crate::liquidsoap::push_best_effort;
 use crate::store::now_ts;
 use crate::uuid::new_id;
 
@@ -212,17 +213,8 @@ async fn harbor_mount(pool: &SqlitePool, id: &str) -> ApiResult<Option<String>> 
     Ok(mount.filter(|value| !value.trim().is_empty()))
 }
 
-/// Pushes one command to Liquidsoap; failures are logged, never fatal.
-///
-/// State is persisted before this runs, so an unreachable Liquidsoap cannot
-/// lose the operator decision — [`reassert_live`] replays it at boot.
-async fn push_liquidsoap(command: &str) {
-    match crate::liquidsoap::push(command).await {
-        Ok(Some(body)) => tracing::debug!(command, body = body.trim(), "liquidsoap control ok"),
-        Ok(None) => tracing::debug!(command, "liquidsoap control push disabled (no URL)"),
-        Err(err) => tracing::warn!(command, "liquidsoap control push failed: {err}"),
-    }
-}
+// (removed) local `push_liquidsoap` — moved to `liquidsoap::push_best_effort`
+// so the broadcast transition wiring can reuse it (issue #108, US7).
 
 /// Re-asserts a persisted live override after a scheduler restart (§2.5/C43).
 ///
@@ -233,7 +225,9 @@ pub async fn reassert_live(pool: &SqlitePool) -> ApiResult<()> {
         return Ok(());
     };
     match harbor_mount(pool, &caster_id).await? {
-        Some(mount) => push_liquidsoap(&crate::liquidsoap::live_set(&mount)).await,
+        Some(mount) => {
+            crate::liquidsoap::push_best_effort(&crate::liquidsoap::live_set(&mount)).await
+        }
         None => tracing::warn!(
             caster_id,
             "live override persisted but caster has no harbor mount"
@@ -260,7 +254,7 @@ pub async fn live(pool: &SqlitePool, req: &ControlLiveRequest) -> ApiResult<()> 
                 json!({ "reason": reason }),
             )
             .await?;
-            push_liquidsoap(crate::liquidsoap::LIVE_CLEAR).await;
+            push_best_effort(crate::liquidsoap::LIVE_CLEAR).await;
         }
         // a caster id ⇒ set the override via upsert and force its mount now.
         Some(raw) => {
@@ -277,7 +271,7 @@ pub async fn live(pool: &SqlitePool, req: &ControlLiveRequest) -> ApiResult<()> 
             // The DB decision stands even when the push fails; `reassert_live`
             // replays it at the next scheduler start (§2.5/C43).
             match harbor_mount(pool, raw).await? {
-                Some(mount) => push_liquidsoap(&crate::liquidsoap::live_set(&mount)).await,
+                Some(mount) => push_best_effort(&crate::liquidsoap::live_set(&mount)).await,
                 None => {
                     tracing::warn!(caster_id = raw, "live override: caster has no harbor mount")
                 }

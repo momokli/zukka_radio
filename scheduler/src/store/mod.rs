@@ -16,6 +16,7 @@ pub mod schedule;
 pub mod shows;
 pub mod sources;
 pub mod tape_jobs;
+pub mod tapes;
 pub mod tracks;
 pub mod upload_jobs;
 pub mod waveforms;
