@@ -48,6 +48,15 @@ Zwei Konsequenzen daraus, die den Rest des Dokuments prägen:
 2. **Es gibt keinen `record`-Operator.** Mitschneiden ist `output.file`
    (`%mp3(bitrate=192)`) auf dem `mksafe`-Master vor dem Encoding.
 
+**Single-Output-Mount.** Der Stack hat genau **einen** `output.icecast`
+(`mount="stream.mp3"`, `liquidsoap/lib/outputs.liq`); alle Ebenen
+(live/show/queue/rotation/relay/fun) werden über `fallback` dorthin gemischt.
+Ein Mount trägt daher **keine** Layer-Information. Der Scheduler beobachtet
+deshalb die ICY-Metadaten dieses einen Mounts (`title`/`artist`) und leitet
+daraus die Ebene heuristisch ab (`observed_layer`, Issue #140). Ein
+per-Layer-Mount oder eine Auswertung von `status`/`health` als autoritative
+Quelle wäre ein separates Follow-up (berührt dieses Verzeichnis).
+
 `input.harbor` hat einen `transport`-Parameter. Damit ist die in
 `infrastructure.md` offene Frage „terminiert `input.harbor` TLS?" beantwortbar:
 Der Operator kann einen `http.transport.ssl`/`secure_transport` verwenden, sofern
