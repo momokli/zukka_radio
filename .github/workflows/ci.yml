@@ -69,6 +69,13 @@ jobs:
             savonet/liquidsoap:v2.4.5 \
             liquidsoap /etc/liquidsoap/tests/playback_parse_test.liq
 
+      - name: playback events test
+        run: |
+          docker run --rm -e ZUKKA_HARBOR_SLOTS=0 \
+            -v "$PWD/liquidsoap:/etc/liquidsoap:ro" \
+            savonet/liquidsoap:v2.4.5 \
+            liquidsoap /etc/liquidsoap/tests/playback_events_test.liq
+
       - name: tape helper test
         run: |
           docker run --rm -e ZUKKA_HARBOR_SLOTS=0 \
