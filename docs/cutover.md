@@ -266,4 +266,5 @@ Rück-Wert in der Ausführungs-Checkliste dokumentiert; kein Skript rollt DNS
 zurück.
 
 **Abgrenzung #47:** #47 beschreibt den vollständigen Rollback-Plan inkl.
-Daten-/Migrations-Rückweg; hier nur Fenster, Trigger und operative Reihenfolge.
+Daten-/Migrations-Rückweg (`docs/rollback.md`); hier nur Fenster, Trigger und
+operative Reihenfolge.
