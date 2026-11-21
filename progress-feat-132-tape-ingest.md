@@ -402,3 +402,99 @@ weder claim- noch patchbar (400/409).
 - `cargo clippy --workspace --all-targets -- -D warnings` → exit 0
 - `cargo test --workspace` → exit 0, alle Binaries grün; `tape_ingest` 5/5
   (happy path, dedupe, requeue, unreachable, attempt cap)
+
+## Verifier-Report-2 (Stage 5, Re-Verifikation nach Fix 4f48b2e)
+
+Verifier: `feature-dev-verifier` · Diff `2881892..HEAD` (`HEAD`=`7ff064a`) · Host planet
+
+### Teststatus — GRÜN
+
+- `cargo clippy --workspace --all-targets -- -D warnings` → exit 0, keine Warnungen
+- `cargo test --workspace` → exit 0, alle Binaries grün; `tape_ingest` 5/5,
+  `tape_jobs_api` 13/13, `schema_invariants` 21/21, `migration_smoke` 5/5
+- Fix-Diff begrenzt auf `scheduler/**` + `docs/**` + Progress-Datei
+
+### Ergebnis: **PASS** (alle 4 Punkte)
+
+#### Punkt 1 — Requeue — PASS
+`fail_upload` nimmt jetzt `terminal: bool` und setzt `target_state = if terminal
+{ "failed" } else { "pending" }` (`store/tape_jobs.rs:411-460`); Retry-Fehler →
+Job zurück auf `state='pending'` mit `error`+`updated_at`. `claim` liest
+weiterhin nur `state='pending'` (`tape_jobs.rs:167`) und wendet `is_due(attempts,
+updated_at)` an → Backoff greift, Requeue automatisch. Cap-Pfad: `terminal =
+job.attempts >= MAX_UPLOAD_ATTEMPTS` (`tape_ingest.rs:276`); bei terminal bleibt
+Job `failed` + `tapes.status='failed'` (Tape nur wenn `pending`). T3
+(`put_failure_…succeeds`) setzt **kein** `state='pending'` mehr — nur `attempts=0`
++ `updated_at` altern, der echte Claim retried; T4 erwartet `pending`; T5 prüft
+Cap terminal (`failed`, attempts=8, tape `failed`, Datei bleibt). Alle grün.
+
+#### Punkt 2 — PUT Content-Length — PASS
+`.header(reqwest::header::CONTENT_LENGTH, size_bytes)` vor `.body(body)`
+(`tape_ingest.rs:224`), `size_bytes` aus `metadata().len()` (`:189-194`). T1
+(`happy_path_uploads_and_completes`) assertet den Header und die Abwesenheit von
+`Transfer-Encoding:` → grün; damit kein chunked.
+
+#### Punkt 3 — reqwest-Timeout — PASS
+`Client::builder().connect_timeout(10s).timeout(300s)` (`tape_ingest.rs:117-118`).
+
+#### Punkt 4 — Keine Regression — PASS
+- Worker-Guard: claim lehnt `kind='upload'` mit 400 ab, PATCH → 409;
+  `ingest_jobs_are_not_worker_claimable_or_patchable` grün.
+- `complete_upload`-Idempotenz unverändert (eine Tx, `ON CONFLICT DO NOTHING`,
+  Job `done` terminal); `done_job_is_terminal` grün.
+- Migration unverändert (Fix-Diff fasst `migrations/**` nicht an);
+  `migration_smoke` 5/5 (`foreign_key_check` leer, `integrity_check=ok`,
+  18 Tabellen), `schema_invariants` 21/21.
+
+### Restbefunde (nicht blockierend, aus Vorlauf)
+- `music_api_id` UNIQUE: byte-identische Tapes kollidieren in `complete_upload`.
+- ETag-Header der Music API unverifiziert (Fallback `etag=sha256`).
+- Kein Deploy.
+
+**Entscheidung: PASS — weiter zu Testing.**
+
+## Developer-Fix-2-Report
+
+Fix: Live-Tape-Finalisierung reiht jetzt den `kind='upload'`-Job ein.
+
+### Problem
+
+Der Ingest-Task claimt ausschliesslich `tape_jobs.kind='upload'`, aber **niemand**
+legte beim Broadcast-Ende einen solchen Job an: `finalize_live_tape`
+(`store/tapes.rs`) setzte nur `ended_at`. Ein `INSERT … kind='upload'` existierte
+nur in `complete_upload` (fuer `probe`/`peaks`). Damit war das Feature im Betrieb
+unerreichbar — Live-Tapes wurden nie hochgeladen.
+
+### Fix
+
+`store::tapes::finalize_live_tape` legt in **derselben Transaktion** wie das
+`UPDATE tapes SET ended_at` fuer die finalisierte Tape-ID einen
+`tape_jobs`-Row `kind='upload'`, `state='pending'`, `attempts=0` an — idempotent via
+`INSERT … ON CONFLICT (tape_id, kind) DO NOTHING` (Konstante `UPLOAD_KIND` aus
+`store/tape_jobs.rs`; kein Zyklus, `tape_jobs` importiert `tapes` nicht). Nur bei
+erfolgreich finalisiertem Tape (`Some(id)`).
+
+Der Fall "Staging-Datei fehlt" bleibt nicht ewig pending: `tape_ingest::fail`
+setzt `terminal = attempts >= MAX_UPLOAD_ATTEMPTS` (8) und markiert dann Job
+`failed` + `tapes.status='failed'`. Abgedeckt durch `tape_ingest::T5`.
+
+### Test
+
+Neu: `scheduler/tests/tape_lifecycle_ingest.rs` — broadcast start (live) →
+`register_live_tape` → broadcast end → `finalize_live_tape` hinterlaesst genau einen
+pending upload-Job fuer diese Tape-ID; `tape_ingest::run_once` gegen den Mock
+laedt die Datei hoch → `tapes.status='processing'`, `probe`+`peaks` pending,
+upload-Job `done`, Staging-Datei geloescht; erneutes `finalize_live_tape`
+(noch `pending`) erzeugt **keinen** Doppel-Enqueue.
+
+### Doku
+
+`docs/consolidated-architecture.md` §3.6: Broadcast-Ende beschreibt jetzt explizit,
+dass der Scheduler den upload-Job in derselben Tx wie das Finalisieren
+(`ON CONFLICT DO NOTHING`) einreiht.
+
+### Verifikation
+
+- `cargo fmt --all` → sauber
+- `cargo clippy --workspace --all-targets -- -D warnings` → exit 0
+- `cargo test --workspace` → alle Binaries gruen; `tape_lifecycle_ingest` 1/1

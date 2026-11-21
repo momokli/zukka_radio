@@ -333,8 +333,10 @@ live-Broadcast startet
   → liquidsoap: output.file(%mp3, "/recordings/<uuidv7>.mp3", master)
 
 Broadcast endet
+  → scheduler: in DERSELBEN Tx wie das Finalisieren (UPDATE tapes SET ended_at)
+               INSERT tape_jobs (kind='upload', state='pending', attempts=0)
+               ON CONFLICT (tape_id, kind) DO NOTHING  -- idempotent
   → scheduler: control tape.stop
-  → scheduler: INSERT tape_jobs (kind='upload', state='pending')
   → scheduler-Ingest-Task (Poll-Loop, §2.1):
   → scheduler: Upload MP3 192k → music-api (streaming, kein RAM-Puffer)
                HEAD /objects/{sha256} (Dedupe) → sonst PUT /objects/{sha256}
