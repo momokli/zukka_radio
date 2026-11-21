@@ -10,8 +10,9 @@
 # password in the image or the repository.
 set -eu
 
-template="/etc/icecast2/icecast.xml.template"
-rendered="/etc/icecast2/icecast.xml"
+# Paths are overridable so the render test can run hermetically without root.
+template="${ICECAST_TEMPLATE:-/etc/icecast2/icecast.xml.template}"
+rendered="${ICECAST_RENDERED:-/etc/icecast2/icecast.xml}"
 
 # Admin user is not a secret; default to "admin" when unset/empty.
 # envsubst cannot express a default, so apply it here.
