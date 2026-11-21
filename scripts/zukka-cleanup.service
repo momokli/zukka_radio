@@ -1,0 +1,6 @@
+[Unit]
+Description=radio zukka — clean old OpenClaw checkouts
+
+[Service]
+Type=oneshot
+ExecStart=/home/momo/.local/bin/zukka-cleanup-checkouts.sh

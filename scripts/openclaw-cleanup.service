@@ -1,0 +1,6 @@
+[Unit]
+Description=OpenClaw old checkout cleanup
+
+[Service]
+Type=oneshot
+ExecStart=/home/momo/bin/openclaw-cleanup-checkouts.sh 2
