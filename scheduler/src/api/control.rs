@@ -13,8 +13,9 @@ use sqlx::SqlitePool;
 
 use crate::api::ApiJson;
 use crate::dto::{
-    ControlLiveRequest, ControlPauseRequest, ControlSkipRequest, ControlStateDto,
-    ControlSwitchRequest,
+    ControlCommandRequest, ControlCommandResponse, ControlLiveRequest, ControlPauseRequest,
+    ControlPlanPutRequest, ControlPlanPutResponse, ControlSkipRequest, ControlStateDto,
+    ControlSwitchRequest, PlanDto,
 };
 use crate::error::ApiResult;
 use crate::store;
@@ -24,6 +25,8 @@ pub fn router() -> Router<SqlitePool> {
     // TODO(auth): portal service token + `control.write` permission (§4.1/§6.10.1).
     Router::new()
         .route("/state", get(state))
+        .route("/plan", get(get_plan).put(put_plan))
+        .route("/command", post(command))
         .route("/live", post(live))
         .route("/switch", post(switch))
         .route("/skip", post(skip))
@@ -34,6 +37,34 @@ pub fn router() -> Router<SqlitePool> {
 pub async fn state(State(pool): State<SqlitePool>) -> ApiResult<axum::Json<ControlStateDto>> {
     // TODO(auth): require permission `control.read`.
     Ok(axum::Json(store::control::state(&pool).await?))
+}
+
+/// `GET /control/plan` — the persisted control plan (Issue #147, US-3).
+pub async fn get_plan(State(pool): State<SqlitePool>) -> ApiResult<axum::Json<PlanDto>> {
+    // TODO(auth): require permission `control.read`.
+    Ok(axum::Json(store::control::get_plan(&pool).await?))
+}
+
+/// `PUT /control/plan` — merge the control plan + best-effort engine push.
+pub async fn put_plan(
+    State(pool): State<SqlitePool>,
+    ApiJson(req): ApiJson<ControlPlanPutRequest>,
+) -> ApiResult<axum::Json<ControlPlanPutResponse>> {
+    // TODO(auth): require permission `control.write`.
+    let (plan, engine) = store::control::put_plan(&pool, &req).await?;
+    Ok(axum::Json(ControlPlanPutResponse {
+        plan,
+        engine: Some(engine),
+    }))
+}
+
+/// `POST /control/command` — the engine command proxy (Issue #147, US-5).
+pub async fn command(
+    State(pool): State<SqlitePool>,
+    ApiJson(req): ApiJson<ControlCommandRequest>,
+) -> ApiResult<axum::Json<ControlCommandResponse>> {
+    // TODO(auth): require permission `control.write`.
+    Ok(axum::Json(store::control::command(&pool, &req).await?))
 }
 
 /// `POST /control/live` — set/clear the live override.

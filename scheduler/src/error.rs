@@ -57,6 +57,18 @@ pub enum ApiError {
     #[error("too many requests")]
     TooManyRequests,
 
+    /// A command-proxy error carrying an explicit §6.4 contract code + status
+    /// (Issue #147): `unknown_command` (400), `channel_not_found` (404),
+    /// `invalid_args`/`bad_gain`/`bad_source` (422), `command_failed` (502),
+    /// `engine_unavailable` (503).
+    #[error("{message}")]
+    Contract {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+        details: Option<Value>,
+    },
+
     /// Unexpected server failure → `500 internal_error` (details never leak).
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -92,6 +104,78 @@ impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         ApiError::BadRequest {
             message: message.into(),
+        }
+    }
+
+    // --- Issue #147: command-proxy contract errors (§6.4) ------------------
+
+    /// `400 unknown_command` — `cmd` not in the proxy whitelist.
+    pub fn unknown_command(cmd: &str) -> Self {
+        ApiError::Contract {
+            status: StatusCode::BAD_REQUEST,
+            code: "unknown_command",
+            message: format!("unknown command '{cmd}'"),
+            details: None,
+        }
+    }
+
+    /// `422 invalid_args` — missing/malformed `args` (`details.field`).
+    pub fn invalid_args(field: &'static str, message: impl Into<String>) -> Self {
+        ApiError::Contract {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: "invalid_args",
+            message: message.into(),
+            details: Some(json!({ "field": field })),
+        }
+    }
+
+    /// `404 channel_not_found` — an unknown channel/layer id.
+    pub fn channel_not_found(id: &str) -> Self {
+        ApiError::Contract {
+            status: StatusCode::NOT_FOUND,
+            code: "channel_not_found",
+            message: format!("channel '{id}' not found"),
+            details: None,
+        }
+    }
+
+    /// `422 bad_gain` — gain outside `[-60,+12]` dB / linear outside `[0,1]`.
+    pub fn bad_gain(field: &'static str, message: impl Into<String>) -> Self {
+        ApiError::Contract {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: "bad_gain",
+            message: message.into(),
+            details: Some(json!({ "field": field })),
+        }
+    }
+
+    /// `422 bad_source` — an invalid `source` prefix.
+    pub fn bad_source(message: impl Into<String>) -> Self {
+        ApiError::Contract {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: "bad_source",
+            message: message.into(),
+            details: Some(json!({ "field": "source" })),
+        }
+    }
+
+    /// `502 command_failed` — the engine reported an unmapped `ERROR …`.
+    pub fn command_failed(message: impl Into<String>) -> Self {
+        ApiError::Contract {
+            status: StatusCode::BAD_GATEWAY,
+            code: "command_failed",
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// `503 engine_unavailable` — no URL configured or a transport failure.
+    pub fn engine_unavailable(message: impl Into<String>) -> Self {
+        ApiError::Contract {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "engine_unavailable",
+            message: message.into(),
+            details: None,
         }
     }
 }
@@ -153,6 +237,12 @@ impl IntoResponse for ApiError {
                 "too many requests".to_string(),
                 None,
             ),
+            ApiError::Contract {
+                status,
+                code,
+                message,
+                details,
+            } => (status, code, message, details),
             ApiError::Internal(err) => {
                 tracing::error!("internal error: {err:#}");
                 (

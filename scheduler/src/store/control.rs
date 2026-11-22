@@ -23,16 +23,18 @@
 //! at boot. `switch`/`skip`/`pause` have no matching §4.4 command and are
 //! enforced downstream.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnection;
 
 use crate::dto::{
-    ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlPlanPutRequest,
-    ControlSkipRequest, ControlStateDto, ControlSwitchRequest, LayerSource, LiveStateDto,
-    ObservedNowPlaying, PlanDto, PlanEngineStatus, SourceDto, SourceLayer,
+    AutomationOverrideDto, AutomationViewDto, ChannelViewDto, ConnectedCasterDto,
+    ControlCommandRequest, ControlCommandResponse, ControlLiveRequest, ControlPauseRequest,
+    ControlPlanPutRequest, ControlSkipRequest, ControlStateDto, ControlSwitchRequest, LayerSource,
+    LiveStateDto, MasterOutputsDto, MasterViewDto, ObservedNowPlaying, PlanDto, PlanEngineStatus,
+    SourceDto, SourceLayer,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::liquidsoap::push_best_effort;
@@ -373,6 +375,16 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
         .await?
         .and_then(|raw| SourceLayer::parse("control.forced_layer", &raw).ok());
 
+    // Issue #147: plan projection for the additive channels/master/automation.
+    let preset = get_setting(pool, PRESET_KEY)
+        .await?
+        .filter(|raw| is_valid_preset(raw));
+    let forced_since: Option<String> =
+        sqlx::query_scalar("SELECT updated_at FROM settings WHERE key = ?")
+            .bind(FORCED_LAYER_KEY)
+            .fetch_optional(pool)
+            .await?;
+
     let override_caster_id = get_setting(pool, LIVE_OVERRIDE_KEY).await?;
     let active_caster_id = match override_caster_id.clone() {
         Some(id) => Some(id),
@@ -425,7 +437,129 @@ pub async fn state(pool: &SqlitePool) -> ApiResult<ControlStateDto> {
         observed_reason: Some(observed.reason.to_string()),
         on_air: observed.on_air,
         observed_now_playing: observed.now_playing,
+        channels: project_channels(preset.as_deref(), &read_meters().await),
+        master: MasterViewDto {
+            gain_db: None,
+            limiter_active: false,
+            outputs: MasterOutputsDto {
+                icecast: true,
+                hls: true,
+                tape: false,
+            },
+        },
+        automation: AutomationViewDto {
+            mode: if forced_layer.is_some() {
+                "manual".to_string()
+            } else {
+                "auto".to_string()
+            },
+            preset,
+            next_event_at: None,
+            next_source: None,
+            override_: forced_layer.map(|layer| AutomationOverrideDto {
+                channel: layer.as_str().to_string(),
+                since: forced_since,
+            }),
+        },
     })
+}
+
+/// One channel's levels read from `mixer.meters` (§4.5).
+struct MeterView {
+    rms_l: Option<f64>,
+    rms_r: Option<f64>,
+    peak: Option<f64>,
+    limiter_active: bool,
+}
+
+/// Reads `mixer.meters` fail-open: engine gone/unparsable ⇒ empty map (the
+/// `state()` response stays `200`, Q1/S1).
+async fn read_meters() -> HashMap<String, MeterView> {
+    match crate::liquidsoap::read(crate::liquidsoap::MIXER_METERS).await {
+        Ok(Some(body)) => parse_meters(&body),
+        _ => HashMap::new(),
+    }
+}
+
+/// Parses the `mixer.meters` JSON array into a by-id map (order-independent).
+fn parse_meters(body: &str) -> HashMap<String, MeterView> {
+    let mut map = HashMap::new();
+    if let Ok(serde_json::Value::Array(rows)) = serde_json::from_str(body.trim()) {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            map.insert(
+                id.to_string(),
+                MeterView {
+                    rms_l: row.get("rms_l").and_then(|v| v.as_f64()),
+                    rms_r: row.get("rms_r").and_then(|v| v.as_f64()),
+                    peak: row.get("peak").and_then(|v| v.as_f64()),
+                    limiter_active: row
+                        .get("limiter_active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                },
+            );
+        }
+    }
+    map
+}
+
+/// The plan projection of one channel's fader intent (Q1). `(gain_db, mute)`.
+fn preset_channel_intent(preset: Option<&str>, id: &str) -> (Option<f64>, bool) {
+    let open = match preset {
+        Some("live") => "live",
+        Some("relay-only") => "relay",
+        Some("default") => "rotation",
+        // No preset ⇒ the fader intent is unknown (no authoritative read-back).
+        _ => return (None, false),
+    };
+    if id == open {
+        (Some(0.0), false)
+    } else {
+        (None, true)
+    }
+}
+
+/// Capitalizes the first character of a channel id for the display `label`.
+fn channel_label(id: &str) -> String {
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Builds the six program channels in §5.5 order (plan projection + meters).
+fn project_channels(
+    preset: Option<&str>,
+    meters: &HashMap<String, MeterView>,
+) -> Vec<ChannelViewDto> {
+    PROGRAM_CHANNELS
+        .iter()
+        .map(|id| {
+            let meter = meters.get(*id);
+            let (gain_db, mute) = preset_channel_intent(preset, id);
+            ChannelViewDto {
+                id: (*id).to_string(),
+                label: channel_label(id),
+                kind: (*id).to_string(),
+                source: None,
+                connected: false,
+                gain_db,
+                trim_db: 0.0,
+                mute,
+                solo: false,
+                exclusive: false,
+                rms_l: meter.and_then(|m| m.rms_l),
+                rms_r: meter.and_then(|m| m.rms_r),
+                peak: meter.and_then(|m| m.peak),
+                limiter_active: meter.map(|m| m.limiter_active).unwrap_or(false),
+                metadata: None,
+            }
+        })
+        .collect()
 }
 
 /// Gathers the local signals [`crate::icecast::derive_observed_layer`] may use.
@@ -835,4 +969,387 @@ pub async fn reconcile(pool: &SqlitePool) -> ApiResult<()> {
         tracing::info!("control plan pause persisted (advisory, no engine command)");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Issue #147: HTTP command proxy (US-5)
+// ---------------------------------------------------------------------------
+
+/// Commands the HTTP proxy accepts (↔ §6.1.1, without read/`state.get`/`ping`).
+const PROXY_COMMANDS: [&str; 15] = [
+    "mixer.set",
+    "mixer.trim",
+    "mixer.mute",
+    "mixer.solo",
+    "mixer.exclusive",
+    "mixer.patch",
+    "mixer.master",
+    "layer.preset",
+    "layer.force",
+    "layer.enable",
+    "monitor.enable",
+    "live.set",
+    "live.clear",
+    "tape.start",
+    "tape.stop",
+];
+
+/// The six program-channel ids (always considered existing).
+const PROGRAM_CHANNELS: [&str; 6] = ["live", "show", "queue", "rotation", "relay", "fun"];
+
+/// True for a two-digit slot suffix (`harbor.slot-NN` / `relay.slot-NN`).
+fn is_two_digit(s: &str) -> bool {
+    s.len() == 2 && s.chars().all(|c| c.is_ascii_digit())
+}
+
+/// #152 channel grammar: the six program channels or a slot id
+/// (`harbor.slot-NN` / `relay.slot-NN` / `adhoc-N`). Slot existence is deferred
+/// to the engine (Q6).
+fn valid_channel_syntax(id: &str) -> bool {
+    if PROGRAM_CHANNELS.contains(&id) {
+        return true;
+    }
+    if let Some(rest) = id.strip_prefix("harbor.slot-") {
+        return is_two_digit(rest);
+    }
+    if let Some(rest) = id.strip_prefix("relay.slot-") {
+        return is_two_digit(rest);
+    }
+    if let Some(rest) = id.strip_prefix("adhoc-") {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}
+
+/// A valid `mixer.patch` source prefix (§4.1).
+fn valid_source(spec: &str) -> bool {
+    if let Some(rest) = spec.strip_prefix("file:") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = spec.strip_prefix("https:") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = spec.strip_prefix("relay:") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = spec.strip_prefix("harbor:/live/slot-") {
+        return is_two_digit(rest);
+    }
+    false
+}
+
+fn obj_str<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    key: &'static str,
+) -> ApiResult<&'a str> {
+    match obj.get(key).and_then(|v| v.as_str()) {
+        Some(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(ApiError::invalid_args(key, format!("'{key}' is required"))),
+    }
+}
+
+fn obj_bool(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &'static str,
+) -> ApiResult<bool> {
+    match obj.get(key).and_then(|v| v.as_bool()) {
+        Some(value) => Ok(value),
+        None => Err(ApiError::invalid_args(
+            key,
+            format!("'{key}' must be a boolean"),
+        )),
+    }
+}
+
+fn obj_channel(obj: &serde_json::Map<String, serde_json::Value>) -> ApiResult<&str> {
+    let channel = obj_str(obj, "channel")?;
+    if !valid_channel_syntax(channel) {
+        return Err(ApiError::invalid_args(
+            "channel",
+            format!("invalid channel '{channel}'"),
+        ));
+    }
+    Ok(channel)
+}
+
+/// Formats an `f64` as the shortest decimal the engine's parser accepts.
+fn fmt_num(value: f64) -> String {
+    let text = format!("{value}");
+    if text.is_empty() {
+        "0".to_string()
+    } else {
+        text
+    }
+}
+
+/// Range-checks a dB gain (Q7: the engine does not enforce `[-60,+12]`).
+fn check_gain_db(value: f64, field: &'static str) -> ApiResult<f64> {
+    if !(-60.0..=12.0).contains(&value) {
+        return Err(ApiError::bad_gain(
+            field,
+            format!("{field} {value} out of range [-60, 12]"),
+        ));
+    }
+    Ok(value)
+}
+
+fn check_linear(value: f64) -> ApiResult<f64> {
+    if !(0.0..=1.0).contains(&value) {
+        return Err(ApiError::bad_gain(
+            "linear",
+            format!("linear {value} out of range [0, 1]"),
+        ));
+    }
+    Ok(value)
+}
+
+/// Builds the positional engine command line for a validated proxy request.
+fn build_command(cmd: &str, args: &serde_json::Value) -> ApiResult<String> {
+    if !PROXY_COMMANDS.contains(&cmd) {
+        return Err(ApiError::unknown_command(cmd));
+    }
+    let obj = args
+        .as_object()
+        .ok_or_else(|| ApiError::invalid_args("args", "args must be an object"))?;
+    match cmd {
+        "mixer.set" => {
+            let channel = obj_channel(obj)?;
+            match (obj.get("gain_db"), obj.get("linear")) {
+                (Some(_), Some(_)) => Err(ApiError::invalid_args(
+                    "gain_db",
+                    "gain_db and linear are mutually exclusive",
+                )),
+                (Some(value), None) => {
+                    let gain = value
+                        .as_f64()
+                        .ok_or_else(|| ApiError::bad_gain("gain_db", "gain_db must be a number"))?;
+                    Ok(crate::liquidsoap::mixer_set(
+                        channel,
+                        &fmt_num(check_gain_db(gain, "gain_db")?),
+                    ))
+                }
+                (None, Some(value)) => {
+                    let linear = value
+                        .as_f64()
+                        .ok_or_else(|| ApiError::bad_gain("linear", "linear must be a number"))?;
+                    Ok(crate::liquidsoap::mixer_set(
+                        channel,
+                        &fmt_num(check_linear(linear)?),
+                    ))
+                }
+                (None, None) => Err(ApiError::invalid_args(
+                    "gain_db",
+                    "mixer.set requires exactly one of gain_db or linear",
+                )),
+            }
+        }
+        "mixer.trim" => {
+            let channel = obj_channel(obj)?;
+            let value = obj
+                .get("gain_db")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| ApiError::bad_gain("gain_db", "gain_db must be a number"))?;
+            Ok(crate::liquidsoap::mixer_trim(
+                channel,
+                &fmt_num(check_gain_db(value, "gain_db")?),
+            ))
+        }
+        "mixer.mute" => {
+            let channel = obj_channel(obj)?;
+            Ok(crate::liquidsoap::mixer_mute(
+                channel,
+                obj_bool(obj, "mute")?,
+            ))
+        }
+        "mixer.solo" => {
+            let channel = obj_channel(obj)?;
+            Ok(crate::liquidsoap::mixer_solo(
+                channel,
+                obj_bool(obj, "solo")?,
+            ))
+        }
+        "mixer.exclusive" => {
+            let channel = obj_channel(obj)?;
+            Ok(crate::liquidsoap::mixer_exclusive(channel))
+        }
+        "mixer.patch" => {
+            let channel = obj_channel(obj)?;
+            let source = obj_str(obj, "source")?;
+            if !valid_source(source) {
+                return Err(ApiError::bad_source(format!(
+                    "invalid source prefix in '{source}'"
+                )));
+            }
+            Ok(crate::liquidsoap::mixer_patch(channel, source))
+        }
+        "mixer.master" => {
+            let value = obj
+                .get("gain_db")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| ApiError::bad_gain("gain_db", "gain_db must be a number"))?;
+            Ok(crate::liquidsoap::mixer_master(&fmt_num(check_gain_db(
+                value, "gain_db",
+            )?)))
+        }
+        "layer.preset" => {
+            let preset = obj_str(obj, "preset")?;
+            if !is_valid_preset(preset) {
+                return Err(ApiError::invalid_args(
+                    "preset",
+                    format!("unknown preset '{preset}'"),
+                ));
+            }
+            Ok(crate::liquidsoap::layer_preset(preset))
+        }
+        "layer.force" => {
+            let layer = obj_str(obj, "layer")?;
+            if layer != "none" && !PROGRAM_CHANNELS.contains(&layer) {
+                return Err(ApiError::invalid_args(
+                    "layer",
+                    format!("unknown layer '{layer}'"),
+                ));
+            }
+            Ok(crate::liquidsoap::layer_force(layer))
+        }
+        "layer.enable" => {
+            let layer = obj_str(obj, "layer")?;
+            if !PROGRAM_CHANNELS.contains(&layer) {
+                return Err(ApiError::invalid_args(
+                    "layer",
+                    format!("unknown layer '{layer}'"),
+                ));
+            }
+            Ok(crate::liquidsoap::layer_enable(
+                layer,
+                obj_bool(obj, "enabled")?,
+            ))
+        }
+        "monitor.enable" => Ok(crate::liquidsoap::monitor_enable(obj_bool(obj, "enabled")?)),
+        "live.set" => Ok(crate::liquidsoap::live_set(obj_str(obj, "mount")?)),
+        "live.clear" => Ok(crate::liquidsoap::LIVE_CLEAR.to_string()),
+        "tape.start" => Ok(crate::liquidsoap::tape_start(obj_str(obj, "tape_id")?)),
+        "tape.stop" => Ok(crate::liquidsoap::TAPE_STOP.to_string()),
+        other => Err(ApiError::unknown_command(other)),
+    }
+}
+
+/// Maps a parsed engine error to the §6.4 contract error (status + code).
+fn engine_error_to_api(code: crate::liquidsoap::EngineErrorCode, body: &str) -> ApiError {
+    let message = body.trim().to_string();
+    match code {
+        crate::liquidsoap::EngineErrorCode::ChannelNotFound => {
+            ApiError::channel_not_found(&message)
+        }
+        crate::liquidsoap::EngineErrorCode::BadGain => ApiError::bad_gain("gain_db", message),
+        crate::liquidsoap::EngineErrorCode::BadSource => ApiError::bad_source(message),
+        crate::liquidsoap::EngineErrorCode::InvalidArgs => ApiError::invalid_args("args", message),
+        crate::liquidsoap::EngineErrorCode::CommandFailed => ApiError::command_failed(message),
+    }
+}
+
+/// Bounds the raw engine body echoed back to the client.
+fn bound_raw(body: &str) -> String {
+    const MAX: usize = 512;
+    let trimmed = body.trim();
+    if trimmed.len() <= MAX {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(MAX).collect()
+    }
+}
+
+/// Parses the engine body into the WS-analog `result` object.
+fn parse_result(body: &str) -> serde_json::Value {
+    let trimmed = body.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return value;
+        }
+    }
+    json!({ "applied": true })
+}
+
+/// Appends the proxy audit row (exactly one per call, success **and** failure).
+async fn audit_command(
+    pool: &SqlitePool,
+    cmd: &str,
+    args: &serde_json::Value,
+    outcome: &str,
+    engine: &str,
+) {
+    if let Err(err) = log_control_event(
+        pool,
+        "control_action",
+        None,
+        json!({
+            "action": "command",
+            "cmd": cmd,
+            "args": args,
+            "outcome": outcome,
+            "engine": engine,
+        }),
+    )
+    .await
+    {
+        tracing::warn!("failed to audit control command: {err}");
+    }
+}
+
+/// `POST /control/command` — the engine command proxy (Issue #147, US-5).
+///
+/// Validates the command against §4/§6.1.1 **before** the push, maps engine and
+/// transport failures to the §6.4 contract codes and audits every call.
+pub async fn command(
+    pool: &SqlitePool,
+    req: &ControlCommandRequest,
+) -> ApiResult<ControlCommandResponse> {
+    let cmd = req.cmd.trim().to_string();
+    let args = req.args.clone().unwrap_or_else(|| json!({}));
+
+    // Fail fast: whitelist + per-command validation, before touching the engine.
+    let command_line = match build_command(&cmd, &args) {
+        Ok(line) => line,
+        Err(err) => {
+            let outcome = contract_code(&err);
+            audit_command(pool, &cmd, &args, &outcome, "rejected").await;
+            return Err(err);
+        }
+    };
+
+    match crate::liquidsoap::push(&command_line).await {
+        // No endpoint configured or transport failure ⇒ 503 (Q3/C11).
+        Ok(None) => {
+            audit_command(pool, &cmd, &args, "engine_unavailable", "unavailable").await;
+            Err(ApiError::engine_unavailable(
+                "liquidsoap control endpoint is not configured",
+            ))
+        }
+        Err(err) => {
+            audit_command(pool, &cmd, &args, "engine_unavailable", "unavailable").await;
+            Err(ApiError::engine_unavailable(err))
+        }
+        Ok(Some(body)) => match crate::liquidsoap::parse_engine_error(&body) {
+            Some(code) => {
+                audit_command(pool, &cmd, &args, code.as_str(), "failed").await;
+                Err(engine_error_to_api(code, &body))
+            }
+            None => {
+                audit_command(pool, &cmd, &args, "ok", "applied").await;
+                Ok(ControlCommandResponse {
+                    cmd,
+                    result: parse_result(&body),
+                    raw: bound_raw(&body),
+                })
+            }
+        },
+    }
+}
+
+/// The contract `code` of an [`ApiError`] (for the audit `outcome` field).
+fn contract_code(err: &ApiError) -> String {
+    match err {
+        ApiError::Contract { code, .. } => (*code).to_string(),
+        ApiError::Validation { .. } => "invalid_args".to_string(),
+        _ => "command_failed".to_string(),
+    }
 }

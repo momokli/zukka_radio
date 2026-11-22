@@ -933,6 +933,15 @@ pub struct ControlStateDto {
     /// ICY title/artist from Icecast (relay/rotation), or `null`.
     #[serde(default)]
     pub observed_now_playing: Option<ObservedNowPlaying>,
+    /// Mixer channels in §5.5 order (additive, Issue #147).
+    #[serde(default)]
+    pub channels: Vec<ChannelViewDto>,
+    /// Master view (additive, Issue #147).
+    #[serde(default)]
+    pub master: MasterViewDto,
+    /// Automation view (additive, Issue #147).
+    #[serde(default)]
+    pub automation: AutomationViewDto,
 }
 
 /// Origin of the effective control-state layer (Issue #140).
@@ -963,6 +972,71 @@ pub struct ObservedNowPlaying {
     pub artist: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #147: addititive state projection (channels / master / automation)
+// ---------------------------------------------------------------------------
+
+/// One mixer channel view (§5.1, Issue #147).
+///
+/// `gain_db`/`mute`/`solo`/`exclusive` are a **plan projection** (no
+/// `mixer.state` read-back exists, Q1); `rms_*`/`peak`/`limiter_active` come
+/// from `mixer.meters` (fail-open → `null`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelViewDto {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub source: Option<String>,
+    pub connected: bool,
+    pub gain_db: Option<f64>,
+    pub trim_db: f64,
+    pub mute: bool,
+    pub solo: bool,
+    pub exclusive: bool,
+    pub rms_l: Option<f64>,
+    pub rms_r: Option<f64>,
+    pub peak: Option<f64>,
+    pub limiter_active: bool,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Master output flags (§5.2, Issue #147).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MasterOutputsDto {
+    pub icecast: bool,
+    pub hls: bool,
+    pub tape: bool,
+}
+
+/// Master view (§5.2, Issue #147). Without a read-back these are conservative
+/// (Q11): `gain_db` `null`, `limiter_active` `false`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MasterViewDto {
+    pub gain_db: Option<f64>,
+    pub limiter_active: bool,
+    #[serde(default)]
+    pub outputs: MasterOutputsDto,
+}
+
+/// Automation override (§5.3, Issue #147): `{channel, since}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationOverrideDto {
+    pub channel: String,
+    pub since: Option<String>,
+}
+
+/// Automation view (§5.3, Issue #147).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AutomationViewDto {
+    pub mode: String,
+    pub preset: Option<String>,
+    pub next_event_at: Option<String>,
+    pub next_source: Option<String>,
+    /// `override` is a Rust keyword, so the field is renamed on the wire.
+    #[serde(rename = "override")]
+    pub override_: Option<AutomationOverrideDto>,
 }
 
 // ---------------------------------------------------------------------------

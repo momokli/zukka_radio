@@ -38,6 +38,12 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("failed to re-assert live override: {err}");
     }
 
+    // Issue #147: replay the persisted control plan (preset + forced layer) to
+    // the engine. Fail-open — an unreachable engine is only a warning.
+    if let Err(err) = zukka_scheduler::store::control::reconcile(&pool).await {
+        tracing::warn!("failed to reconcile control plan: {err}");
+    }
+
     // Boot guarantee: the rotation file exists as soon as the process starts,
     // so Liquidsoap's `watch` reload always sees a valid playlist (§3c).
     if let Err(err) = zukka_scheduler::store::rotation::sync(&pool).await {
