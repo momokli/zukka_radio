@@ -39,6 +39,7 @@ Regeln:
 
 | Datum      | Issue | Änderung | Versionswirkung |
 | ---------- | ----- | -------- | --------------- |
+| 2026-11-22 | #147  | Control-Plan-Ressource `GET`/`PUT /api/v1/control/plan` (200 + Body statt 204, §2.1-Ausnahme/§4.7) + HTTP Command-Proxy §4.6; `paused` advisory | **`schema_version` bleibt `1`** |
 | 2026-11-22 | #152  | Multi-Channel-Modell: `ChannelView.kind` um `harbor`/`adhoc` erweitert (Enum-Widening auf 8 Werte), `id`-Grammatik für Slot-Kanäle dokumentiert, `CockpitState.channels`-Reihenfolge normativ als Gruppenordnung, N-generische Formulierung für `mixer.patch`/`mixer.meters`/Binär-Meter-Frame | **`schema_version` bleibt `1`** |
 
 **Begründung „kein Versionssprung“ (Issue #152):** Das Erweitern eines `enum` um
@@ -60,6 +61,9 @@ geändert und keine Semantik invertiert → **keine** Erhöhung von `schema_vers
 - Basis: `http://<host>:<port>/api/v1`.
 - Content-Type: `application/json; charset=utf-8`.
 - Schreibende Endpunkte liefern `204 No Content` bei Erfolg; lesende `200 OK` mit JSON.
+  **Ausnahme:** `PUT /api/v1/control/plan` antwortet mit `200 OK` und einem Body
+  (`PlanDto` + `engine`, §4.7) — der Plan ist eine Ressource und der Client braucht
+  den resultierenden Zustand inklusive Engine-Push-Status.
 - Auth: Portal-Service-Token (§4.1 consolidated-architecture) + Permission
   `control.read` / `control.write` (§6.10.1). Fehlt der Token → `401`, fehlt die
   Berechtigung → `403`.
@@ -200,6 +204,95 @@ N = Länge von `CockpitState.channels`) in exakt der Reihenfolge von
 - `limiter_active` = `true`, wenn der Gain-Control/Limiter des Kanals eingreift.
 - Das Array hat immer genau N Einträge in `channels[]`-Ordnung; `id` identifiziert
   den Kanal (nicht die Position).
+
+### 4.6 HTTP Command-Proxy (Scheduler)
+
+Der Scheduler exponiert einen **HTTP-Command-Proxy** (`POST /api/v1/control/command`),
+der einen einzelnen Engine-Command validiert, an den Liquidsoap-Command-Server
+pusht und Engine-/Transport-Fehler auf die Vertrags-Codes aus §6.4 mappt. Der
+Proxy spiegelt §4.1–§4.4, akzeptiert aber nur schreibende Commands
+(`mixer.set|trim|mute|solo|exclusive|patch|master`, `layer.preset|force|enable`,
+`live.set|clear`, `tape.start|stop`). Read-Commands
+(`mixer.meters`, `live.status`, `layer.status`, `monitor.status`) sind **nicht**
+über den Proxy erreichbar; sie dienen intern der State-Projektion.
+
+> **`monitor.*` ist bis dato nicht proxy-fähig:** `monitor.enable` ist in der
+> Engine noch nicht per `server.register` registriert; der Command folgt mit dem
+> Monitor-Service-Issue. Bis dahin liefert der Proxy `monitor.enable` als
+> `unknown_command` (`400`).
+
+Die Fehlercodes aus §6.4 werden auf HTTP-Status abgebildet; `error.code` ist der
+Vertrags-Code:
+
+| `code`               | HTTP | Auslöser                                                     |
+| -------------------- | ---- | ----------------------------------------------------------- |
+| `unknown_command`    | 400  | `cmd` nicht in der Proxy-Whitelist                          |
+| `channel_not_found`  | 404  | Engine `unknown_channel` (grammatik-gültige, unbekannte ID) |
+| `invalid_args`       | 422  | fehlende/ungültige `args`                                   |
+| `bad_gain`           | 422  | Gain außerhalb `[-60,+12]` dB bzw. linear außerhalb `[0,1]` |
+| `bad_source`         | 422  | ungültiges `source`-Präfix                                  |
+| `command_failed`     | 502  | Engine-Body `ERROR …` ohne bekanntes Sub-Code               |
+| `engine_unavailable` | 503  | kein Endpoint konfiguriert **oder** Transportfehler/Timeout |
+
+`bad_gain`/`invalid_args` prüft der Scheduler **vor** dem Push (die Engine
+prüft die dB-Range nicht, `#145`-Finding); die Range-Checks sind damit
+fail-fast. `gain_db` und `linear` schließen sich aus.
+
+Der Scheduler liest den Kanalzustand nicht zurück (kein `mixer.state`); die
+`channels[]`-Felder `gain_db`/`mute`/`solo`/`exclusive` in §5.1 sind daher eine
+**Plan-Projektion** (persistierte Absicht) und die Pegel (`rms_*`/`peak`)
+stammen aus `mixer.meters` (fail-open).
+
+### 4.7 HTTP Control-Plan (`GET`/`PUT /api/v1/control/plan`)
+
+Der Scheduler exponiert den persistierten **Control-Plan** als Ressource.
+
+**`GET /api/v1/control/plan`** → `200 OK` mit `PlanDto`:
+
+```json
+{
+  "preset": "live",
+  "forced_layer": "queue",
+  "paused": false,
+  "updated_at": "2026-11-22T03:00:00Z"
+}
+```
+
+| Feld           | Typ            | Bedeutung |
+| -------------- | -------------- | --------- |
+| `preset`       | string \| null | aktives Mixer-Preset (`default` \| `live` \| `relay-only`); `null` = keins |
+| `forced_layer` | string \| null | manueller Layer-Override (einer der sechs Program-Layer); `null` = Automatik |
+| `paused`       | bool           | Pause-Flag (**advisory**, s. u.) |
+| `updated_at`   | string \| null | neuester `settings.updated_at` der Plan-Keys (additiv) |
+
+**`PUT /api/v1/control/plan`** → `200 OK` mit `PlanDto` **plus** `engine`
+(siehe §2.1-Ausnahme). Body (Merge-Semantik):
+`{ "preset"?, "forced_layer"?, "paused"?, "reason" }`; `reason` ist **Pflicht**
+(D5). `preset`/`forced_layer` nutzen `double_option`: Feld **fehlt** = unverändert,
+**JSON `null`** = Key löschen (Reset), Wert = setzen. `paused` muss ein bool sein,
+sonst `422` (`details.field=paused`).
+
+```json
+{
+  "preset": "default",
+  "forced_layer": null,
+  "paused": false,
+  "updated_at": "2026-11-22T03:05:00Z",
+  "engine": { "preset": "applied", "forced_layer": "applied", "paused": "advisory" }
+}
+```
+
+- `engine.preset` / `engine.forced_layer` ∈ `applied` \| `skipped` \| `failed` —
+  Status des Best-Effort-Pushes. Der Plan ist **DB-autoritativ**; ein Push-Fehler
+  ist nicht fatal (Boot-Reconcile replays ihn, §4.7 unten).
+- **Reset-Pfad:** `preset: null` löscht den Key **und** pusht `layer.preset default`
+  (dokumentierte Start-Distribution — `default` *ist* der Reset); `forced_layer: null`
+  löscht und pusht `layer.force none`. Ist kein `control.preset` gesetzt, pusht
+  `reconcile()` beim Boot ebenfalls `layer.preset default`, damit kein stale
+  Preset-Gain (z. B. offenes `live`) einen Neustart überlebt.
+- **`paused` ist advisory:** es gibt **keinen** Engine-Command für Pause; das Flag
+  wird nur persistiert und auditiert (`engine.paused` bleibt `"advisory"`).
+  Pausieren bei laufendem Live-Broadcast wird mit `409 live_active` abgelehnt.
 
 ---
 
@@ -567,6 +660,8 @@ for i in 0..n:
 
 ## 9. Referenzen
 
+- §4.6/§4.7 (dieses Dokument): HTTP Command-Proxy bzw. Control-Plan-Ressource
+  (`GET`/`PUT /api/v1/control/plan`, inkl. Reset-Pfad und advisory `paused`).
 - `docs/consolidated-architecture.md` §4.4/§4.6/§6.10.1 (Commands, Fehler, RBAC).
 - `docs/product-v2-cockpit.md` §7/§8 (Mixer-Graph, UI-Datenmodell).
 - `scheduler/src/liquidsoap.rs` (Command-Server-Client, bestehende Commands).

@@ -525,6 +525,8 @@ ausschließlich über Control-Commands (§4.4).
 
 | Methode | Pfad              | Body                                                           |
 | ------- | ----------------- | -------------------------------------------------------------- |
+| `GET`/`PUT` | `/control/plan`   | `{preset?, forced_layer?, paused?, reason}` — Plan-Snapshot/-Merge (§4.7) |
+| `POST`  | `/control/command` | `{cmd, args?, reason?}` — Engine-Command-Proxy (§6.4) |
 | `POST`  | `/control/live`   | `{caster_id: UUID\|null, reason}` — `null` = Override aufheben |
 | `POST`  | `/control/switch` | `{layer, reason}`                                              |
 | `POST`  | `/control/skip`   | `{reason}`                                                     |
