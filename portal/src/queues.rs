@@ -21,14 +21,16 @@ use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::api_client::{
-    ControlError, NewQueue, NewQueueItem, Queue, QueueError, QueueItem, QueueQuery,
+    ControlError, NewQueue, NewQueueItem, Queue, QueueError, QueueItem, QueueQuery, Track,
+    TrackQuery,
 };
 use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::{PortalError, redirect};
 use crate::rbac;
 use crate::templates::{
-    QueueEditorPage, QueueFormFragment, QueueItemRow, QueueListFragment, QueueRow, QueuesPage,
+    QueueEditorPage, QueueFormFragment, QueueItemRow, QueueListFragment, QueueRow,
+    QueueSelectorOption, QueuesPage, format_total_duration,
 };
 
 fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
@@ -279,7 +281,52 @@ pub async fn queues_post(
 // US-3: editor
 // ---------------------------------------------------------------------------
 
-/// `GET /queues/{id}` — items in position order + add/rename/skip/clear forms.
+/// Loads the visible queues for the toolbar selector, own-first then by name.
+async fn load_selector_options(
+    state: &AppState,
+    ctx: &AuthContext,
+    selected_id: &str,
+) -> Result<Vec<QueueSelectorOption>, PortalError> {
+    let mut queues = state
+        .queues
+        .list(Some(&ctx.caster_id), &QueueQuery::default())
+        .await
+        .map_err(queue_error)?;
+    queues.sort_by(|a, b| {
+        let own_a = a.caster_id == ctx.caster_id;
+        let own_b = b.caster_id == ctx.caster_id;
+        own_b.cmp(&own_a).then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(queues
+        .into_iter()
+        .map(|queue| QueueSelectorOption {
+            selected: queue.id == selected_id,
+            id: queue.id,
+            name: queue.name,
+        })
+        .collect())
+}
+
+/// Sums the durations of the queue's track items (links/unknown → 0 ms).
+pub fn compute_total_ms(items: &[QueueItem], tracks: &[Track]) -> i64 {
+    let durations: std::collections::HashMap<&str, i64> = tracks
+        .iter()
+        .map(|track| (track.id.as_str(), track.duration_ms))
+        .collect();
+    items
+        .iter()
+        .map(|item| match item.kind.as_str() {
+            "track" => item
+                .track_id
+                .as_deref()
+                .and_then(|id| durations.get(id).copied())
+                .unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// `GET /queues/{id}` — items in position order + the queue-screen editor.
 pub async fn queue_editor(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -295,7 +342,24 @@ pub async fn queue_editor(
         .items(Some(&ctx.caster_id), &id)
         .await
         .map_err(queue_error)?;
+    let tracks = state
+        .tracks
+        .list(
+            Some(&ctx.caster_id),
+            &TrackQuery {
+                q: None,
+                visibility: None,
+                owner_caster_id: None,
+                limit: Some(200),
+                offset: None,
+            },
+        )
+        .await
+        .map_err(|err| PortalError::Upstream(err.to_string()))?;
     let writable = can_write(&ctx, &queue);
+    let queues = load_selector_options(&state, &ctx, &queue.id).await?;
+    let item_count = items.len() as i64;
+    let total_label = format_total_duration(compute_total_ms(&items, &tracks));
     render(&QueueEditorPage {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
@@ -303,6 +367,11 @@ pub async fn queue_editor(
         items: QueueItemRow::from_items(items),
         can_write: writable,
         can_control: ctx.has("control.write"),
+        queue_kind_label: queue.kind.to_uppercase(),
+        total_label,
+        item_count_label: format!("{item_count:02}"),
+        version_label: format!("V.{:02}", queue.version),
+        queues,
         queue,
     })
 }

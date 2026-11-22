@@ -32,6 +32,7 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 const HTMX_JS: &str = include_str!("../static/htmx.min.js");
 const HTMX_SSE_JS: &str = include_str!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
+const QUEUE_CSS: &str = include_str!("../static/queue.css");
 const SORTABLE_JS: &str = include_str!("../static/sortable.min.js");
 const WAVEFORM_JS: &str = include_str!("../static/waveform.js");
 
@@ -463,6 +464,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/static/htmx.min.js", get(htmx_js))
         .route("/static/htmx-ext-sse.js", get(htmx_sse_js))
         .route("/static/app.css", get(app_css))
+        .route("/static/queue.css", get(queue_css))
         .route("/static/sortable.min.js", get(sortable_js))
         .route("/static/waveform.js", get(waveform_js))
         // Issue #148: cockpit WebSocket bridge. Deliberately **outside** the
@@ -498,6 +500,13 @@ async fn htmx_sse_js() -> impl IntoResponse {
 
 async fn app_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
+}
+
+async fn queue_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        QUEUE_CSS,
+    )
 }
 
 async fn sortable_js() -> impl IntoResponse {

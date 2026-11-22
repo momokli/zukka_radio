@@ -267,6 +267,14 @@ pub struct QueuesPage {
     pub error: Option<String>,
 }
 
+/// One `<option>` of the queue toolbar selector; `selected` is precomputed
+/// server-side (Askama cannot compare two borrowed values in the template).
+pub struct QueueSelectorOption {
+    pub id: String,
+    pub name: String,
+    pub selected: bool,
+}
+
 /// Queue editor (`GET /queues/{id}`). Carries the fragment fields too so
 /// `partials/queue_list.html` can be `{% include %}`-d in scope.
 #[derive(Template)]
@@ -281,6 +289,25 @@ pub struct QueueEditorPage {
     /// Whether the viewer may skip (`control.write`, §6.10.1) — global control,
     /// independent of queue write permission.
     pub can_control: bool,
+    /// All visible queues (own + foreign) for the toolbar `<select>`.
+    pub queues: Vec<QueueSelectorOption>,
+    /// Precomputed toolbar display strings (Issue #155, Block 1).
+    pub queue_kind_label: String,
+    pub total_label: String,
+    pub item_count_label: String,
+    pub version_label: String,
+}
+
+/// Formats a duration in ms as `mm:ss` (or `hh:mm:ss` beyond an hour); a zero
+/// total renders as `00:00` (unlike [`format_duration`], which is empty).
+pub fn format_total_duration(ms: i64) -> String {
+    let total = ms.max(0) / 1000;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 /// The authoritative item list (`partials/queue_list.html`), returned by every
