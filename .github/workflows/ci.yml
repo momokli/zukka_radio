@@ -90,6 +90,20 @@ jobs:
             savonet/liquidsoap:v2.4.5 \
             liquidsoap /etc/liquidsoap/tests/fun_jingle_test.liq
 
+      - name: mixer preset test
+        run: |
+          docker run --rm -e ZUKKA_HARBOR_SLOTS=0 \
+            -v "$PWD/liquidsoap:/etc/liquidsoap:ro" \
+            savonet/liquidsoap:v2.4.5 \
+            liquidsoap /etc/liquidsoap/tests/mixer_preset_test.liq
+
+      - name: operators gate
+        run: |
+          docker run --rm -e ZUKKA_HARBOR_SLOTS=0 \
+            -v "$PWD/liquidsoap:/etc/liquidsoap:ro" \
+            savonet/liquidsoap:v2.4.5 \
+            liquidsoap /etc/liquidsoap/tests/operators_test.liq
+
   icecast-config:
     # #109: hermetic test of the icecast config template render path
     # (envsubst). No Docker, no root, no real secret.
