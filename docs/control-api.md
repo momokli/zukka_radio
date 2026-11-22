@@ -683,3 +683,5 @@ for i in 0..n:
 - `docs/product-v2-cockpit.md` §7/§8 (Mixer-Graph, UI-Datenmodell).
 - `scheduler/src/liquidsoap.rs` (Command-Server-Client, bestehende Commands).
 - `scheduler/src/api/control.rs`, `scheduler/src/dto.rs` (ControlStateDto).
+- `portal/src/control_debug.rs`, `portal/templates/control_debug.html` (minimale
+  Debug-UI `GET /control/debug`, die den Vertrag end-to-end ausübt; Issue #149).

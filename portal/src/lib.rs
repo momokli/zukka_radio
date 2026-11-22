@@ -12,6 +12,7 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod control;
+pub mod control_debug;
 pub mod control_ws;
 pub mod error;
 pub mod ffprobe;

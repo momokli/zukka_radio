@@ -542,6 +542,17 @@ pub struct ControlPage {
     pub view: ControlView,
 }
 
+/// Minimal control debug page (`GET /control/debug`, Issue #149).
+///
+/// Standalone page (does **not** extend `layout.html`): it is a throwaway
+/// placeholder driven entirely by the WebSocket bridge in the browser.
+#[derive(Template)]
+#[template(path = "control_debug.html")]
+pub struct ControlDebugPage {
+    /// Whether the session may send engine writes (`control.write`).
+    pub can_write: bool,
+}
+
 /// The `control-state` fragment (`GET /control/state`), swapped via SSE/polling.
 #[derive(Template)]
 #[template(path = "partials/control_state.html")]
