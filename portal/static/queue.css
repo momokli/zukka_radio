@@ -1,4 +1,25 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=VT323&display=swap");
+/* Vendored fonts (docs/portal.md D18: no build step, no CDN). Served from
+   `/static/fonts/` by `app.rs`; sources under `tapes/assets/fonts/` (OFL). */
+
+@font-face {
+  font-family: "VT323";
+  src: url("/static/fonts/VT323.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Mono";
+  src: url("/static/fonts/SpaceMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Mono";
+  src: url("/static/fonts/SpaceMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
 
 /* Issue #155 — Portal QUEUE screen (ported from the RadioZukkaAdmin prototype).
    Scoped to `.queue-screen` so the mixer/cockpit surface and `app.css` stay

@@ -1278,3 +1278,77 @@ async fn queue_css_is_served() {
     );
     assert!(body.contains(".queue-screen"), "queue tokens + shell");
 }
+
+#[tokio::test]
+async fn fonts_are_served_unprotected() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues, control);
+    // No session cookie: the vendored fonts must load on the login-free path
+    // so `@font-face` resolves for anonymous queue CSS (Issue #155 review).
+    for (path, magic) in [
+        ("/static/fonts/VT323.woff2", "wOF2"),
+        ("/static/fonts/SpaceMono-Regular.woff2", "wOF2"),
+        ("/static/fonts/SpaceMono-Bold.woff2", "wOF2"),
+    ] {
+        let (status, headers, body) = send(&app, Method::GET, path, &[], None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("font/woff2"),
+            "{path}"
+        );
+        assert!(
+            body.starts_with(magic),
+            "{path} body: {:?}",
+            &body[..8.min(body.len())]
+        );
+    }
+}
+
+/// Issue #155 review (truncated TOTAL): a queue item that references a track
+/// outside the first `load_catalog` page (limit 200) must still contribute its
+/// duration to `TOTAL` and resolve its title. The `FakeTrackApi` honours
+/// `offset`/`limit`, so seeding 250 tracks makes the referenced one land beyond
+/// the page — the old code summed a truncated catalog (0 ms, id fallback).
+#[tokio::test]
+async fn total_and_title_resolve_beyond_catalog_page() {
+    let (queues, control) = seeded();
+    let tracks = Arc::new(FakeTrackApi::new());
+    // 249 filler tracks occupy the first catalog page (limit 200); the
+    // referenced track sits past it, at list position 249.
+    for i in 0..249 {
+        tracks.seed(track(
+            &format!("t-{i}"),
+            "Filler",
+            "A",
+            Some("c-1"),
+            "shared",
+        ));
+    }
+    let mut target = track("t-deep", "Deep Cut", "Artist Z", Some("c-1"), "shared");
+    target.duration_ms = 305_000; // 05:05
+    tracks.seed(target);
+
+    let mut queued = item("x", "q-own", 0);
+    queued.track_id = Some("t-deep".into());
+    queues.seed_item(queued);
+
+    let app = router_with_tracks(caster_perms(), queues, control, tracks);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Title resolved from the referenced track (not the `t-deep` fallback).
+    assert!(body.contains("Deep Cut"), "title beyond page: {body}");
+    assert!(!body.contains(">t-deep<"), "no id fallback: {body}");
+    // TOTAL carries the referenced duration; the truncated catalog would sum 0.
+    assert!(body.contains("05:05"), "TOTAL beyond page: {body}");
+}

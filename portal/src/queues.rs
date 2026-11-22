@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use crate::api_client::{
     ControlError, NewQueue, NewQueueItem, Queue, QueueError, QueueItem, QueueQuery, Track,
-    TrackQuery,
+    TrackError, TrackQuery,
 };
 use crate::app::AppState;
 use crate::auth::AuthContext;
@@ -154,13 +154,13 @@ async fn render_list_fragment(
         .items(Some(&ctx.caster_id), queue_id)
         .await
         .map_err(queue_error)?;
-    let tracks = load_catalog(state, ctx).await?;
+    let referenced = load_referenced_tracks(state, ctx, &items).await?;
     let writable = can_write(ctx, &queue);
     let fragment = QueueListFragment {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items, &tracks),
+        items: QueueItemRow::from_items(items, &referenced),
         can_write: writable,
     };
     let mut response = render(&fragment)?;
@@ -293,6 +293,44 @@ pub async fn queues_post(
 // US-3: editor
 // ---------------------------------------------------------------------------
 
+/// Loads the tracks referenced by `items` (kind `track`) via one targeted
+/// [`TrackApi::get`] per unique id, in first-occurrence order.
+///
+/// Unlike [`load_catalog`] (a single `limit: 200` page used for the source
+/// panel) this never truncates: a referenced track outside the first catalog
+/// page still contributes its duration to `TOTAL` and its title to the item
+/// row (Issue #155 review — truncated `TOTAL`). A track invisible to the
+/// viewer (`NotFound`, e.g. foreign-private) is skipped so one stale reference
+/// never fails the whole page; other errors surface as `Upstream` like
+/// [`load_catalog`].
+pub(crate) async fn load_referenced_tracks(
+    state: &AppState,
+    ctx: &AuthContext,
+    items: &[QueueItem],
+) -> Result<Vec<Track>, PortalError> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut ids: Vec<&str> = Vec::new();
+    for item in items {
+        if item.kind != "track" {
+            continue;
+        }
+        if let Some(id) = item.track_id.as_deref() {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+    let mut tracks = Vec::with_capacity(ids.len());
+    for id in ids {
+        match state.tracks.get(Some(&ctx.caster_id), id).await {
+            Ok(track) => tracks.push(track),
+            Err(TrackError::NotFound) => {}
+            Err(err) => return Err(PortalError::Upstream(err.to_string())),
+        }
+    }
+    Ok(tracks)
+}
+
 /// Loads the viewer-scoped track catalog (shared + own private), used to
 /// resolve queue-item titles/durations and to fill the source panel.
 async fn load_catalog(state: &AppState, ctx: &AuthContext) -> Result<Vec<Track>, PortalError> {
@@ -382,10 +420,11 @@ pub async fn queue_editor(
         .await
         .map_err(queue_error)?;
     let tracks = load_catalog(&state, &ctx).await?;
+    let referenced = load_referenced_tracks(&state, &ctx, &items).await?;
     let writable = can_write(&ctx, &queue);
     let queues = load_selector_options(&state, &ctx, &queue.id).await?;
     let item_count = items.len() as i64;
-    let total_label = format_total_duration(compute_total_ms(&items, &tracks));
+    let total_label = format_total_duration(compute_total_ms(&items, &referenced));
     let rows = source_rows(&tracks);
     let found = found_label(&rows);
     let pending_count = items.iter().filter(|i| i.state == "pending").count() as i64;
@@ -395,7 +434,7 @@ pub async fn queue_editor(
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items, &tracks),
+        items: QueueItemRow::from_items(items, &referenced),
         can_write: writable,
         can_control: ctx.has("control.write"),
         queue_kind_label: queue.kind.to_uppercase(),
