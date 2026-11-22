@@ -1,6 +1,7 @@
 //! HTTP API: router builder + shared extractors.
 
 pub mod queues;
+pub mod tapes;
 
 pub mod announcement_templates;
 pub mod announcement_timings;
@@ -92,7 +93,13 @@ pub fn router(pool: SqlitePool) -> Router {
             axum::routing::patch(queues::update_item).delete(queues::delete_item),
         )
         .route("/queues/{id}/reorder", post(queues::reorder))
-        .route("/queues/{id}/clear", post(queues::clear));
+        .route("/queues/{id}/clear", post(queues::clear))
+        .route("/queues/{id}/activate", post(queues::activate));
+
+    // Tapes (Issue #162): public API with viewer scope
+    let api = api
+        .route("/tapes", get(tapes::list))
+        .route("/tapes/{id}", get(tapes::get_one));
 
     let api = api
         .route("/shows", get(shows::list).post(shows::create))

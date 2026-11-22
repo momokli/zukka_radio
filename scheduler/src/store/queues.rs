@@ -3,7 +3,10 @@
 use sqlx::sqlite::Sqlite;
 use sqlx::{SqlitePool, Transaction};
 
-use crate::dto::{CreateQueueRequest, QueueDto, QueueKind, ReorderRequest, UpdateQueueRequest};
+use crate::dto::{
+    ActivateQueueRequest, ActivateQueueResponse, CreateQueueRequest, QueueDto, QueueKind,
+    ReorderRequest, UpdateQueueRequest,
+};
 use crate::error::{ApiError, ApiResult, is_foreign_key_violation, unique_violation};
 use crate::store::now_ts;
 use crate::uuid::new_id;
@@ -360,4 +363,102 @@ pub async fn clear(pool: &SqlitePool, id: &str) -> ApiResult<()> {
 
     tx.commit().await?;
     Ok(())
+}
+
+/// Activates a queue — either by setting `settings['queue.active_id']` or by
+/// creating and starting a `kind='playlist'` broadcast in a single transaction.
+pub async fn activate(
+    pool: &SqlitePool,
+    id: &str,
+    req: &ActivateQueueRequest,
+    viewer: Option<&str>,
+) -> ApiResult<ActivateQueueResponse> {
+    let mut tx = pool.begin().await?;
+
+    // Load queue with version check
+    let queue = fetch_tx(&mut tx, id).await?;
+    if queue.version != req.version {
+        return Err(ApiError::conflict(
+            "version_conflict",
+            "queue was modified by another client",
+        ));
+    }
+
+    match req.mode.as_str() {
+        "settings" => {
+            let ts = now_ts();
+            sqlx::query(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('queue.active_id', ?, ?)",
+            )
+            .bind(id)
+            .bind(&ts)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(ActivateQueueResponse {
+                mode: "settings".to_string(),
+                broadcast_id: None,
+            })
+        }
+        "broadcast" => {
+            // Validate starts_at <= ends_at if both provided
+            let now = now_ts();
+            let starts_at = req.starts_at.as_deref().unwrap_or_else(|| now.as_str());
+            if let Some(ends_at) = &req.ends_at {
+                if ends_at.as_str() < starts_at {
+                    return Err(ApiError::validation(
+                        "ends_at",
+                        "ends_at must be after starts_at",
+                    ));
+                }
+            }
+
+            // Create the playlist broadcast
+            let broadcast_id = new_id();
+            let ts = now.clone();
+            let show_id = req.show_id.as_deref();
+            let title = req.title.as_deref().unwrap_or(&queue.name);
+            let description = req.description.clone().unwrap_or_default();
+            let ends_at = req.ends_at.as_deref();
+            let caster_id = &queue.caster_id;
+            let created_by = viewer.unwrap_or(caster_id);
+
+            sqlx::query(
+                "INSERT INTO broadcasts 
+                 (id, show_id, caster_id, kind, title, description, starts_at, ends_at, status, queue_id, version, created_by, created_at, updated_at) 
+                 VALUES (?, ?, ?, 'playlist', ?, ?, ?, ?, 'scheduled', ?, 1, ?, ?, ?)",
+            )
+            .bind(&broadcast_id)
+            .bind(show_id)
+            .bind(caster_id)
+            .bind(title)
+            .bind(&description)
+            .bind(starts_at)
+            .bind(ends_at)
+            .bind(id)
+            .bind(created_by)
+            .bind(&ts)
+            .bind(&ts)
+            .execute(&mut *tx)
+            .await?;
+
+            // Start the broadcast immediately (transition scheduled -> live)
+            sqlx::query("UPDATE broadcasts SET status = 'live', started_at = ?, version = version + 1, updated_at = ? WHERE id = ?")
+                .bind(&ts)
+                .bind(&ts)
+                .bind(&broadcast_id)
+                .execute(&mut *tx)
+                .await?;
+
+            tx.commit().await?;
+            Ok(ActivateQueueResponse {
+                mode: "broadcast".to_string(),
+                broadcast_id: Some(broadcast_id),
+            })
+        }
+        _ => Err(ApiError::validation(
+            "mode",
+            "mode must be 'settings' or 'broadcast'",
+        )),
+    }
 }

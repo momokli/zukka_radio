@@ -17,9 +17,10 @@
 //!   (see `docs/liquidsoap.md` §3.4).
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::SqliteTransaction;
+use sqlx::{SqlitePool, sqlite::SqliteTransaction};
 
-use crate::error::ApiResult;
+use crate::dto::{ListTapesParams, TapeDto};
+use crate::error::{ApiError, ApiResult};
 use crate::migrate::slug::slug_from_key;
 use crate::store::now_ts;
 use crate::store::tape_jobs::UPLOAD_KIND;
@@ -122,4 +123,121 @@ pub async fn finalize_live_tape(
     .await?;
 
     Ok(Some(id))
+}
+
+/// Row shape of `tapes`, mapped onto the DTO.
+#[derive(Debug, sqlx::FromRow)]
+struct TapeRow {
+    id: String,
+    slug: String,
+    caster_id: String,
+    show_id: Option<String>,
+    broadcast_id: Option<String>,
+    title: String,
+    description: Option<String>,
+    started_at: String,
+    ended_at: String,
+    duration_ms: Option<i64>,
+    source: String,
+    music_api_id: Option<String>,
+    storage_key: Option<String>,
+    format: Option<String>,
+    mime: Option<String>,
+    size_bytes: Option<i64>,
+    etag: Option<String>,
+    status: String,
+    visible: bool,
+    published_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl TapeRow {
+    fn into_dto(self) -> TapeDto {
+        TapeDto {
+            id: self.id,
+            slug: self.slug,
+            caster_id: self.caster_id,
+            show_id: self.show_id,
+            broadcast_id: self.broadcast_id,
+            title: self.title,
+            description: self.description,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+            duration_ms: self.duration_ms,
+            source: self.source,
+            music_api_id: self.music_api_id,
+            storage_key: self.storage_key,
+            format: self.format,
+            mime: self.mime,
+            size_bytes: self.size_bytes,
+            etag: self.etag,
+            status: self.status,
+            visible: self.visible,
+            published_at: self.published_at,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+const SELECT: &str = "SELECT id, slug, caster_id, show_id, broadcast_id, title, description, \
+     started_at, ended_at, duration_ms, source, music_api_id, storage_key, format, mime, size_bytes, etag, \
+     status, visible, published_at, created_at, updated_at FROM tapes";
+
+/// The visibility scope predicate: visible=1 (public) OR caster_id = viewer.
+const SCOPE: &str = "(visible = 1 OR caster_id = ?)";
+
+/// Lists/searches tapes with the viewer scope.
+///
+/// Viewer-Scope: `WHERE (visible=1 OR caster_id=viewer)` — analog `tracks::search`.
+/// The `tapes` table has no `visibility` column, only `visible` (0/1) and `source` (`live|upload`).
+/// Filter `visibility` parameter is accepted but maps to `visible` boolean.
+pub async fn search(
+    pool: &SqlitePool,
+    params: &ListTapesParams,
+    viewer: Option<&str>,
+) -> ApiResult<Vec<TapeDto>> {
+    let like = params.q.as_ref().map(|q| format!("%{}%", q.trim()));
+    let sql = format!(
+        "{SELECT} \
+         WHERE (? IS NULL OR title LIKE ?) \
+         AND (? IS NULL OR visible = ?) \
+         AND (? IS NULL OR caster_id = ?) \
+         AND (? IS NULL OR source = ?) \
+         AND (? IS NULL OR status = ?) \
+         AND {SCOPE} \
+         ORDER BY created_at DESC, id LIMIT ? OFFSET ?"
+    );
+    let rows: Vec<TapeRow> = sqlx::query_as(&sql)
+        .bind(params.q.as_deref())
+        .bind(like.as_deref())
+        .bind(params.visible)
+        .bind(params.visible.map(|v| if v { 1i64 } else { 0i64 }))
+        .bind(params.owner_caster_id.as_deref())
+        .bind(params.owner_caster_id.as_deref())
+        .bind(params.source.as_deref())
+        .bind(params.source.as_deref())
+        .bind(params.status.as_deref())
+        .bind(params.status.as_deref())
+        .bind(viewer)
+        .bind(params.limit.unwrap_or(50).min(200))
+        .bind(params.offset.unwrap_or(0).max(0))
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(TapeRow::into_dto).collect())
+}
+
+/// Fetches one tape within the viewer's visibility scope, else `404`.
+pub async fn get(pool: &SqlitePool, id: &str, viewer: Option<&str>) -> ApiResult<TapeDto> {
+    let sql = format!("{SELECT} WHERE id = ? AND {SCOPE}");
+    let row: Option<TapeRow> = sqlx::query_as(&sql)
+        .bind(id)
+        .bind(viewer)
+        .fetch_optional(pool)
+        .await?;
+    match row {
+        Some(row) => Ok(row.into_dto()),
+        None => Err(ApiError::not_found("tape", id)),
+    }
 }

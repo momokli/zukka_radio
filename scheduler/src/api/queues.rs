@@ -1,15 +1,15 @@
 //! Queue + queue-item handlers (thin wrappers over the store layer).
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{Json, response::IntoResponse};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
-use crate::api::ApiJson;
+use crate::api::{ApiJson, viewer_caster_id};
 use crate::dto::{
-    CreateItemRequest, CreateQueueRequest, QueueDto, QueueItemDto, QueueKind, ReorderRequest,
-    UpdateItemRequest, UpdateQueueRequest,
+    ActivateQueueRequest, ActivateQueueResponse, CreateItemRequest, CreateQueueRequest, QueueDto,
+    QueueItemDto, QueueKind, ReorderRequest, UpdateItemRequest, UpdateQueueRequest,
 };
 use crate::error::ApiResult;
 use crate::store;
@@ -125,4 +125,18 @@ pub async fn clear(
 ) -> ApiResult<StatusCode> {
     store::queues::clear(&pool, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /queues/{id}/activate` — activates a queue either by setting
+/// `settings['queue.active_id']` or by creating+starting a playlist broadcast.
+pub async fn activate(
+    State(pool): State<SqlitePool>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<ActivateQueueRequest>,
+) -> ApiResult<Json<ActivateQueueResponse>> {
+    let viewer = viewer_caster_id(&headers);
+    Ok(Json(
+        store::queues::activate(&pool, &id, &req, viewer.as_deref()).await?,
+    ))
 }
