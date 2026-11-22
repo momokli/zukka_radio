@@ -1711,3 +1711,184 @@ async fn t59_proxy_engine_request_counting() {
         "bad_gain"
     );
 }
+
+// --- T60–T62: proxy success matrix, read-command rejection, scripted engine --
+
+/// Engine fixture with a **scriptable** response sequence: the i-th request gets
+/// `responses[i]` (falling back to `OK`), so a test can prove a response belongs
+/// to a specific request line.
+async fn spawn_scripted_engine(
+    responses: Vec<&'static str>,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind scripted engine");
+    let addr = listener.local_addr().expect("scripted engine addr");
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    let responses = std::sync::Arc::new(responses);
+    let counter = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let log = log2.clone();
+            let responses = responses.clone();
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 4096];
+                let n = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+                if let Some((_, request_body)) = request.split_once("\r\n\r\n") {
+                    log.lock().unwrap().push(request_body.trim().to_string());
+                }
+                let index = {
+                    let mut count = counter.lock().unwrap();
+                    let current = *count;
+                    *count += 1;
+                    current
+                };
+                let body = responses.get(index).copied().unwrap_or("OK");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    (format!("http://{addr}/control"), log)
+}
+
+#[tokio::test]
+async fn t60_proxy_write_surface_reaches_engine() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, pool, app) = setup().await;
+
+    let cases: &[(&str, Value, &str)] = &[
+        (
+            "mixer.trim",
+            json!({"channel":"live","gain_db":-3.0}),
+            "mixer.trim live -3",
+        ),
+        (
+            "mixer.mute",
+            json!({"channel":"live","mute":true}),
+            "mixer.mute live true",
+        ),
+        (
+            "mixer.solo",
+            json!({"channel":"live","solo":true}),
+            "mixer.solo live true",
+        ),
+        (
+            "mixer.exclusive",
+            json!({"channel":"live"}),
+            "mixer.exclusive live",
+        ),
+        (
+            "mixer.patch",
+            json!({"channel":"live","source":"file:/x"}),
+            "mixer.patch live file:/x",
+        ),
+        ("mixer.master", json!({"gain_db":0.0}), "mixer.master 0"),
+        (
+            "layer.enable",
+            json!({"layer":"queue","enabled":true}),
+            "layer.enable queue true",
+        ),
+        (
+            "live.set",
+            json!({"mount":"/live/slot-01"}),
+            "live.set /live/slot-01",
+        ),
+        ("live.clear", json!({}), "live.clear"),
+        ("tape.start", json!({"tape_id":"t-1"}), "tape.start t-1"),
+        ("tape.stop", json!({}), "tape.stop"),
+    ];
+
+    for (index, (cmd, args, expected)) in cases.iter().enumerate() {
+        let (status, body) = proxy(&app, cmd, args.clone(), "op").await;
+        assert_eq!(status, StatusCode::OK, "{cmd}: {body}");
+        assert_eq!(body["result"]["applied"], true, "{cmd}");
+        let reqs = received(&log);
+        assert_eq!(
+            reqs.len(),
+            index + 1,
+            "each command pushes exactly once: {reqs:?}"
+        );
+        assert_eq!(reqs.last().unwrap(), expected, "{cmd}");
+    }
+    // Exactly one audit row per proxied command.
+    assert_eq!(
+        event_count(&pool, "control_action").await,
+        cases.len() as i64
+    );
+}
+
+#[tokio::test]
+async fn t61_proxy_read_commands_not_proxyable() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, pool, app) = setup().await;
+
+    for cmd in [
+        "mixer.meters",
+        "live.status",
+        "layer.status",
+        "monitor.status",
+    ] {
+        let (status, body) = proxy(&app, cmd, json!({}), "x").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{cmd}: {body}");
+        assert_eq!(body["error"]["code"], "unknown_command", "{cmd}");
+    }
+    // A read command is never forwarded to the engine.
+    assert!(
+        received(&log).is_empty(),
+        "read commands must not reach the engine: {:?}",
+        received(&log)
+    );
+    assert_eq!(event_count(&pool, "control_action").await, 4);
+}
+
+#[tokio::test]
+async fn t62_proxy_scripted_engine_responses() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_scripted_engine(vec!["OK", "ERROR unknown_channel: x"]).await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, _pool, app) = setup().await;
+
+    // First command: engine answers `OK` → 200.
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "gain_db": -6.0 }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Second command: the *next* scripted response is an engine error → 404.
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "adhoc-1", "gain_db": -6.0 }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "channel_not_found");
+
+    // The response order proves each answer belongs to its request line.
+    assert_eq!(
+        received(&log),
+        vec!["mixer.set live -6", "mixer.set adhoc-1 -6"]
+    );
+}
