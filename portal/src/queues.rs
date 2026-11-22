@@ -357,11 +357,19 @@ pub fn compute_total_ms(items: &[QueueItem], tracks: &[Track]) -> i64 {
         .sum()
 }
 
+/// Query of `GET /queues/{id}` (`?conflict=1` renders the `409` banner after a
+/// version-conflict reload, Issue #155 Block 4).
+#[derive(Debug, Default, Deserialize)]
+pub struct EditorQuery {
+    pub conflict: Option<String>,
+}
+
 /// `GET /queues/{id}` — items in position order + the queue-screen editor.
 pub async fn queue_editor(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
+    Query(query): Query<EditorQuery>,
 ) -> Result<Response, PortalError> {
     let queue = state
         .queues
@@ -380,6 +388,9 @@ pub async fn queue_editor(
     let total_label = format_total_duration(compute_total_ms(&items, &tracks));
     let rows = source_rows(&tracks);
     let found = found_label(&rows);
+    let pending_count = items.iter().filter(|i| i.state == "pending").count() as i64;
+    let playing_count = items.iter().filter(|i| i.state == "playing").count() as i64;
+    let has_items = !items.is_empty();
     render(&QueueEditorPage {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
@@ -398,6 +409,11 @@ pub async fn queue_editor(
         is_tape: false,
         is_link: false,
         rows,
+        conflict: query.conflict.as_deref() == Some("1"),
+        has_items,
+        is_playing: playing_count > 0,
+        pending_count,
+        playing_count,
         queues,
         queue,
     })

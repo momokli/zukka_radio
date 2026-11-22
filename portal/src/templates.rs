@@ -392,6 +392,13 @@ pub struct QueueEditorPage {
     pub is_tape: bool,
     pub is_link: bool,
     pub rows: Vec<SourceRowView>,
+    // Transport bar + states (Issue #155, Block 4).
+    /// `409` version-conflict banner (`?conflict=1` after a reload).
+    pub conflict: bool,
+    pub has_items: bool,
+    pub is_playing: bool,
+    pub pending_count: i64,
+    pub playing_count: i64,
 }
 
 /// The source-catalog fragment (`GET /queues/{id}/sources`) swapped into
