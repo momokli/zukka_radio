@@ -43,6 +43,10 @@ im Hintergrund und ist sichtbar, aber jederzeit übersteuerbar.
 └───────────────┴──────────────────────────────────────────────┘
 ```
 
+Nicht auf sechs Strips begrenzt: das Cockpit zeigt **N Kanäle** (6 Program +
+`harbor.slot-NN` + `relay.slot-NN` + `adhoc-<n>`) in der normativen Reihenfolge
+(§5.5). Beleg-Mockup-Daten: `fixtures/wide.json`.
+
 Jeder Kanal: Label, Quelle, Fader (dB), Meter (L/R), Mute, Solo, Exclusive,
 optional Gain/Trim, Verbunden-Indikator.
 
@@ -78,12 +82,14 @@ optional Gain/Trim, Verbunden-Indikator.
 | `idle` | keine Quelle verbunden, alles stumm |
 | `live` | ein Caster live, andere stumm |
 | `crossfade` | zwei Quellen gleichzeitig hörbar (z. B. Relay + Queue) |
+| `wide` | N Kanäle (>6): Program + Harbor-/Relay-Slots + Adhoc gleichzeitig sichtbar (`wide.json`) |
 | `override` | Operator hat manuell übernommen |
 | `engine_down` | Engine nicht erreichbar (Banner, letzter Zustand bleibt sichtbar) |
 | `empty` | keine Kanäle gepatcht / keine Hörer |
 | `error` | Command abgelehnt (z. B. `bad_gain`) |
 
-Fixtures: `fixtures/idle.json`, `live.json`, `relay-crossfade.json`, `two-casters.json`.
+Fixtures: `fixtures/idle.json`, `live.json`, `relay-crossfade.json`, `wide.json`
+(>6 Kanäle: 6 Program + Harbor-/Relay-Slots + Adhoc, normative Reihenfolge).
 
 ## 8. Visuelle Sprache
 

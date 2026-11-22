@@ -17,7 +17,8 @@
 Ein **Mischpult**, kein Schalter. Der Operator sieht und hört die komplette Audio-Pipeline
 und kann jeden Kanal greifen:
 
-- 4–8 Kanäle gleichzeitig hörbar, bis zu 30 patchbar.
+- 4–8 Kanäle gleichzeitig hörbar, N Kanal-Slots patchbar (6 Program + 32 Harbor +
+  8 Relay + N Adhoc, verbindlich in `docs/control-api.md` §5.5).
 - Jeder Kanal: Fader, Mute, Solo/Cue, Gain/Trim, Meter, Limiter.
 - Kein Cut: Übergänge per Fade, auch vorausschauend (Set 10 s vor Ende einblenden).
 - Automation entscheidet **auf Quellen-Ebene** (Schedule/Fallback), nicht per Pegel-Takeover.
@@ -40,15 +41,14 @@ Quellen (patchbar)
   show                 Scheduler-Pull (request.dynamic)
   rotation             playlist (request.dynamic)
   fun                  Jingle / Testton
-  adhoc.file-*         Datei/Upload (Object Store)
-  adhoc.url-*          beliebige URL
+  adhoc-<n>            Datei/Upload (Object Store) oder beliebige URL
 
 Kanäle (Mixer)
-  ch01..ch30:  source → gain(ref) → mute(ref) → rms → [limiter] ─┐
-                                                                 ├─► mix ─► master ─► outputs
-                                                                 │
-Busse                                                            │
-  program (öffentlich)  → icecast / hls / tape                   │
+  N Kanäle: 6 Program-Kanäle + Harbor-/Relay-Slots + Adhoc
+  source → gain(ref) → mute(ref) → rms → [limiter] ─┐
+                                                    ├─► mix ─► master ─► outputs
+Busse                                               │
+  program (öffentlich)  → icecast / hls / tape      │
   cue/monitor (privat)  → WebRTC-Return (nur Operator/DJ)  ◄─────┘
 ```
 
@@ -199,6 +199,24 @@ MonitorView { connected_djs, latency_ms, codec }
 
 CockpitState { channels[], master, automation, monitors, listeners, now_playing }
 ```
+
+**`id` / `kind` (normativ, #152):**
+
+| Gruppe | `id` | `kind` |
+| ------ | ---- | ------ |
+| Program (fix) | `live`, `show`, `queue`, `rotation`, `relay`, `fun` | gleichnamig |
+| Harbor-Slots | `harbor.slot-01` … `harbor.slot-32` | `harbor` |
+| Relay-Slots | `relay.slot-01` … `relay.slot-08` | `relay` |
+| Adhoc | `adhoc-1`, `adhoc-2`, … | `adhoc` |
+
+`kind` hat damit 8 Werte. `kind: "relay"` gilt für den Program-Kanal **und** die
+Relay-Slots → Disambiguierung über `id`. `adhoc.file-*`/`adhoc.url-*` sind
+Quell-Präfixe (`source`), nicht `id`.
+
+**Reihenfolge `channels[]` (normativ):** erst die 6 Program-Kanäle in
+Fix-Reihenfolge, dann `harbor.slot-NN` aufsteigend, dann `relay.slot-NN`
+aufsteigend, dann `adhoc-<n>` aufsteigend (siehe `docs/control-api.md` §5.5).
+Verbindlich auch für `mixer.meters` und den Binär-Meter-Frame.
 
 ---
 

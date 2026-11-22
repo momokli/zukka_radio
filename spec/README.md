@@ -22,21 +22,25 @@ implementiert wird.
 | `../tapes/assets/`              | Referenz-Optik (Tapes-Seite, CSS)                              |
 | `../player/`                    | Referenz-Optik (Kassette, Player)                              |
 
-## Bekannte Lücke (bitte beim Design beachten)
+## Kanalmodell (Vertrag, kein Ausblick mehr)
 
-`docs/control-api.md` modelliert aktuell **6 Layer-Kanäle** (`live`, `show`, `queue`,
-`rotation`, `relay`, `fun`). Das Produkt braucht aber **N patchbare Mixer-Kanäle**
-(32 Harbor-Slots, 8 Relay-Slots, Adhoc). Die Erweiterung ist als Issue angelegt
-(„Multi-Channel-Modell“):
+Das Multi-Channel-Modell ist mit **Issue #152** in den normativen Vertrag
+(`docs/control-api.md` §5.1/§5.5, `state.schema.json`) eingezogen. Es gilt:
 
-- `ChannelView.kind` wird um `harbor`, `relay`, `adhoc` erweitert (oder `id`-Präfixe).
-- `id`: `harbor.slot-01`…, `relay.slot-01`…, `adhoc-<n>`; die festen Program-Kanäle
-  (`queue`, `rotation`, `show`, `fun`) bleiben.
-- `mixer.patch`, `mixer.meters` und `CockpitState` müssen N Kanäle tragen.
+- `ChannelView.kind` hat **8 Werte**: `live`, `show`, `queue`, `rotation`, `relay`,
+  `fun`, `harbor`, `adhoc` (`state.schema.json` `$defs.ChannelKind.enum`).
+- `id`: die festen Program-Kanäle (`live`, `show`, `queue`, `rotation`, `relay`,
+  `fun`) plus Slot-Kanäle `harbor.slot-01…`, `relay.slot-01…` und `adhoc-<n>`.
+  Das Schema validiert die `id` per `pattern`.
+- `mixer.patch`, `mixer.meters` und `CockpitState.channels` tragen **N** Kanäle
+  (nicht mehr fix 6). `schema_version` bleibt `1` (additive Erweiterung, §1.1).
+- Reihenfolge (`CockpitState.channels`, `mixer.meters`, Binär-Frame): erst die
+  sechs Program-Kanäle in Fix-Reihenfolge, dann `harbor.slot-NN`, dann
+  `relay.slot-NN`, dann `adhoc-<n>` — jeweils aufsteigend (§5.5).
 
-Für die **visuelle Exploration** gilt schon das Zielmodell: **mehrere Kanal-Strips**,
-nicht sechs. Die Fixtures zeigen vorerst die sechs dokumentierten Kanäle; ein
-`wide`-Fixture folgt mit dem Issue.
+Für die **visuelle Exploration** gilt jetzt genau dieses Zielmodell: **mehrere
+Kanal-Strips**, nicht sechs. Belege dafür sind `fixtures/wide.json` (>6 Kanäle,
+alle Gruppen) sowie die drei weiterhin gültigen 6-Kanal-Fixtures.
 
 ## Empfohlenes Werkzeug
 
