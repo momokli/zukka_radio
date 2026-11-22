@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zukkafabrik.de/spec/cockpit-state.schema.json",
+  "title": "CockpitState",
+  "description": "Read-only snapshot of the cockpit, per docs/control-api.md §5.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "channels", "master", "automation", "monitors"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "channels": { "type": "array", "items": { "$ref": "#/$defs/ChannelView" } },
+    "master": { "$ref": "#/$defs/MasterView" },
+    "automation": { "$ref": "#/$defs/AutomationView" },
+    "monitors": { "$ref": "#/$defs/MonitorView" },
+    "listeners": { "type": ["integer", "null"], "minimum": 0 },
+    "now_playing": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["title", "artist", "source"],
+          "additionalProperties": false,
+          "properties": {
+            "title": { "type": ["string", "null"] },
+            "artist": { "type": ["string", "null"] },
+            "source": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "ChannelKind": {
+      "type": "string",
+      "enum": ["live", "show", "queue", "rotation", "relay", "fun"]
+    },
+    "ChannelView": {
+      "type": "object",
+      "required": ["id", "label", "kind", "connected", "trim_db", "mute", "solo", "exclusive", "limiter_active"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "kind": { "$ref": "#/$defs/ChannelKind" },
+        "source": { "type": ["string", "null"] },
+        "connected": { "type": "boolean" },
+        "gain_db": { "type": ["number", "null"], "minimum": -60, "maximum": 12 },
+        "trim_db": { "type": "number", "minimum": -60, "maximum": 12 },
+        "mute": { "type": "boolean" },
+        "solo": { "type": "boolean" },
+        "exclusive": { "type": "boolean" },
+        "rms_l": { "type": ["number", "null"] },
+        "rms_r": { "type": ["number", "null"] },
+        "peak": { "type": ["number", "null"] },
+        "limiter_active": { "type": "boolean" },
+        "metadata": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "title": { "type": ["string", "null"] },
+                "artist": { "type": ["string", "null"] }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "MasterView": {
+      "type": "object",
+      "required": ["gain_db", "limiter_active", "outputs"],
+      "additionalProperties": false,
+      "properties": {
+        "gain_db": { "type": "number", "minimum": -60, "maximum": 12 },
+        "limiter_active": { "type": "boolean" },
+        "outputs": {
+          "type": "object",
+          "required": ["icecast", "hls", "tape"],
+          "additionalProperties": false,
+          "properties": {
+            "icecast": { "type": "boolean" },
+            "hls": { "type": "boolean" },
+            "tape": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "AutomationView": {
+      "type": "object",
+      "required": ["mode", "preset", "next_event_at", "next_source", "override"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["auto", "manual"] },
+        "preset": { "type": ["string", "null"] },
+        "next_event_at": { "type": ["string", "null"], "format": "date-time" },
+        "next_source": { "type": ["string", "null"] },
+        "override": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["channel", "since"],
+              "additionalProperties": false,
+              "properties": {
+                "channel": { "type": "string" },
+                "since": { "type": "string", "format": "date-time" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "MonitorView": {
+      "type": "object",
+      "required": ["connected_djs", "latency_ms", "codec"],
+      "additionalProperties": false,
+      "properties": {
+        "connected_djs": { "type": "integer", "minimum": 0 },
+        "latency_ms": { "type": "number", "minimum": 0 },
+        "codec": { "type": "string", "enum": ["opus", "pcm"] }
+      }
+    }
+  }
+}

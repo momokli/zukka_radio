@@ -83,8 +83,9 @@ EQ/Filter: **nicht v2**, optional später (`filter.iir.eq.*`).
 Drei Ebenen, klar getrennt:
 
 1. **Schedule/Priority (primär)** — der Scheduler entscheidet, welche Quelle _soll_.
-   Die heutige Kette `live > show > queue > rotation > relay > fun` wird zu einem
-   **Preset**, das Kanal-Gains/-Gates setzt.
+   Die frühere `fallback`-Kette (`live > show > queue > rotation > relay > fun`) wird
+   **nicht** nachgebaut: Es gibt nur den Mixer. Ein Preset setzt Kanal-Gains/-Gates
+   (z. B. `live`: Harbor-Kanal auf 0 dB, alle anderen auf −∞).
 2. **Übergänge** — Fades zwischen Quellen (siehe §5).
 3. **Level als Werkzeug (nicht als Umschalter)** — Ducking (Musik unter Stimme),
    Fade-in. Ein kurzer Pegel-Dropout darf **nicht** zurückschalten.
@@ -262,7 +263,7 @@ auf `.200`, Cache auf planet.
 
 1. **S1 — Mixer-Graph & Cockpit**
    - Kanäle, `mix`, Gain-Refs, `rms`, Mute/Solo, Patch.
-   - Schedule/Priority-Automation als Preset.
+   - Schedule/Priority-Automation als Preset (ersetzt die alte `fallback`-Kette).
    - `smooth_add`/`crossfade` für Übergänge.
    - Rust-WebSocket-Bridge + Mischpult-UI.
 2. **S2 — Monitor**
@@ -277,7 +278,8 @@ auf `.200`, Cache auf planet.
 
 Vom Operator bestätigt (2026-11-21): "die Empfehlungen sind gut".
 
-- [x] **Liquidsoap-Graph**: `mix` mit 4–8 aktiven Kanälen; weitere gepatcht, aber gestoppt/gestummt.
+- [x] **Kein Fallback/Kompatibilitätspreset**: Der Mixer ersetzt die `fallback`-Kette.
+      DEV darf während der Umstellung kurz broken sein (PROD läuft weiter auf v1).
 - [x] **Patching**: vorab angelegte Slots (32 Harbor, 8 Relay, N adhoc).
 - [x] **Automation**: Presets (`default`/`live`/`relay-only`) + Schedule; Pegel nur für Ducking/Fade-in.
 - [x] **Monitor-Transport**: direktes WebRTC (`str0m`/`webrtc-rs`) für 5 Peers; SFU erst bei Skalierung.

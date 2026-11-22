@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-22T19:59:48Z",
+  "channels": [
+    { "id": "live", "label": "Live", "kind": "live", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "show", "label": "Show · Podcast", "kind": "show", "source": "https:/api.zukkafabrik.de/isrc/XXXX/320", "connected": true, "gain_db": -3.0, "trim_db": 0.0, "mute": false, "solo": false, "exclusive": false, "rms_l": -16.4, "rms_r": -16.1, "peak": -2.8, "limiter_active": false, "metadata": { "title": "Podcast Folge 12", "artist": "Kappel" } },
+    { "id": "queue", "label": "Queue · Set", "kind": "queue", "source": "https:/api.zukkafabrik.de/isrc/YYYY/320", "connected": true, "gain_db": -18.0, "trim_db": 0.0, "mute": false, "solo": false, "exclusive": false, "rms_l": -31.2, "rms_r": -30.8, "peak": -14.0, "limiter_active": false, "metadata": { "title": "Saturday Night Set", "artist": "Kappel" } },
+    { "id": "rotation", "label": "Rotation", "kind": "rotation", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "relay", "label": "Relay", "kind": "relay", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "fun", "label": "Fun", "kind": "fun", "source": "file:/rotation/fun.mp3", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null }
+  ],
+  "master": { "gain_db": 0.0, "limiter_active": false, "outputs": { "icecast": true, "hls": true, "tape": false } },
+  "automation": { "mode": "auto", "preset": "default", "next_event_at": "2026-11-22T20:00:00Z", "next_source": "queue", "override": null },
+  "monitors": { "connected_djs": 2, "latency_ms": 120, "codec": "opus" },
+  "listeners": 38,
+  "now_playing": { "title": "Podcast Folge 12", "artist": "Kappel", "source": "show" }
+}

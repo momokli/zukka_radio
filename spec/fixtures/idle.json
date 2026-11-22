@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-22T19:42:10Z",
+  "channels": [
+    { "id": "live", "label": "Live", "kind": "live", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "show", "label": "Show", "kind": "show", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "queue", "label": "Queue", "kind": "queue", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "rotation", "label": "Rotation", "kind": "rotation", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "relay", "label": "Relay", "kind": "relay", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "fun", "label": "Fun", "kind": "fun", "source": "file:/rotation/fun.mp3", "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null }
+  ],
+  "master": { "gain_db": 0.0, "limiter_active": false, "outputs": { "icecast": true, "hls": true, "tape": false } },
+  "automation": { "mode": "auto", "preset": "default", "next_event_at": "2026-11-22T20:00:00Z", "next_source": "show", "override": null },
+  "monitors": { "connected_djs": 0, "latency_ms": 0, "codec": "opus" },
+  "listeners": 0,
+  "now_playing": null
+}

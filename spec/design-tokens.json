@@ -1,0 +1,53 @@
+{
+  "source": ["tapes/assets/app.css", "player/index.html"],
+  "colors": {
+    "sage": "#9eb092",
+    "cream": "#f2efe4",
+    "teal": "#2a8fa8",
+    "orange": "#e85a2a",
+    "ink": "#1a1a18",
+    "bevelLight": "#ffffff",
+    "bevelDark": "#7a7770",
+    "bevelDarker": "#3d3b38",
+    "btn": "#d4d0c8",
+    "lcdBg": "#161c1a",
+    "lcdFg": "#7ee8fa",
+    "waveBg": "#161c1a",
+    "waveRest": "#7a7770",
+    "live": "#4caf50",
+    "rec": "#ff3333",
+    "playerTheme": "#0d1117",
+    "cassetteLabel": "#1a2f4c"
+  },
+  "typography": {
+    "pixel": "VT323",
+    "mono": "Space Mono",
+    "accent": "Permanent Marker",
+    "usage": {
+      "pixel": "Labels, Buttons, LCD-Werte, Channel-Namen",
+      "mono": "Fließtext, Tabellen, Zahlen",
+      "accent": "Songtitel / Kassette (sparsam)"
+    }
+  },
+  "shape": {
+    "radius": 0,
+    "border": "2px solid",
+    "bevel": "border-top/left light, border-bottom/right dark",
+    "shadow": "hard drop shadow, kein blur",
+    "mood": "Retro-Hardware: Bevel, LCD, Pixel-Labels, wenig Blau"
+  },
+  "components": {
+    "channelStrip": {
+      "fader": "vertikal, dB-Skala",
+      "meter": "LCD-Grün",
+      "mute": "orange",
+      "solo": "teal"
+    },
+    "master": { "fader": "vertikal", "limiter": "LED" },
+    "automation": {
+      "mode": "auto/manual Badge",
+      "preset": "Label",
+      "next": "Uhrzeit + Quelle"
+    }
+  }
+}
