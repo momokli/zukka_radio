@@ -2,7 +2,9 @@
 # show and queue pull their next item from the scheduler as `request.dynamic`
 # sources (issue #106); rotation and relay are static fallbacks.
 
-rotation = playlist("/rotation/rotation.m3u", reload_mode="watch")
+# Track-to-track crossfade (issue #145, US7): both sides are files with a known
+# duration, so a full crossfade is safe here (unlike the live path, D11).
+rotation = crossfade(playlist("/rotation/rotation.m3u", reload_mode="watch"))
 
 # SomaFM rejects Liquidsoap's default user agent (HTTP 403), so the relay
 # presents a browser UA. Without it the relay layer is permanently silent.
