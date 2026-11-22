@@ -15,7 +15,7 @@
 
 use askama::Template;
 use axum::Extension;
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -30,8 +30,19 @@ use crate::error::{PortalError, redirect};
 use crate::rbac;
 use crate::templates::{
     QueueEditorPage, QueueFormFragment, QueueItemRow, QueueListFragment, QueueRow,
-    QueueSelectorOption, QueuesPage, format_total_duration,
+    QueueSelectorOption, QueueSourcesFragment, QueuesPage, SourceRowView, format_total_duration,
+    normalized_source_kind,
 };
+
+/// Projects catalog tracks into source-panel rows.
+fn source_rows(tracks: &[Track]) -> Vec<SourceRowView> {
+    tracks.iter().map(SourceRowView::from_track).collect()
+}
+
+/// The `NN FOUND` counter label of the source panel.
+fn found_label(rows: &[SourceRowView]) -> String {
+    format!("{:02} FOUND", rows.len())
+}
 
 fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
     Ok(Html(page.render()?).into_response())
@@ -360,6 +371,8 @@ pub async fn queue_editor(
     let queues = load_selector_options(&state, &ctx, &queue.id).await?;
     let item_count = items.len() as i64;
     let total_label = format_total_duration(compute_total_ms(&items, &tracks));
+    let rows = source_rows(&tracks);
+    let found = found_label(&rows);
     render(&QueueEditorPage {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
@@ -371,8 +384,83 @@ pub async fn queue_editor(
         total_label,
         item_count_label: format!("{item_count:02}"),
         version_label: format!("V.{:02}", queue.version),
+        kind: "track".to_string(),
+        q: String::new(),
+        found_label: found,
+        is_track: true,
+        is_tape: false,
+        is_link: false,
+        rows,
         queues,
         queue,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Issue #155, Block 2: source-catalog fragment (`GET /queues/{id}/sources`)
+// ---------------------------------------------------------------------------
+
+/// Query of `GET /queues/{id}/sources` (htmx catalog fragment).
+#[derive(Debug, Deserialize)]
+pub struct SourceQuery {
+    pub q: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// `GET /queues/{id}/sources` — the source-catalog fragment swapped into
+/// `#source-results`. Tracks reuse [`TrackApi::list`] with the viewer scope
+/// (shared + the viewer's own private); tapes have no read-contract and links
+/// are manual input, so only `kind=track` hits the catalog.
+pub async fn queue_sources(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(query): Query<SourceQuery>,
+) -> Result<Response, PortalError> {
+    let queue = state
+        .queues
+        .get(Some(&ctx.caster_id), &id)
+        .await
+        .map_err(queue_error)?;
+    let writable = can_write(&ctx, &queue);
+    let kind = normalized_source_kind(query.kind.as_deref()).to_string();
+    let q = query.q.unwrap_or_default();
+    let rows = if kind == "track" {
+        let trimmed = q.trim();
+        let tracks = state
+            .tracks
+            .list(
+                Some(&ctx.caster_id),
+                &TrackQuery {
+                    q: if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    },
+                    visibility: None,
+                    owner_caster_id: None,
+                    limit: Some(50),
+                    offset: None,
+                },
+            )
+            .await
+            .map_err(|err| PortalError::Upstream(err.to_string()))?;
+        source_rows(&tracks)
+    } else {
+        Vec::new()
+    };
+    let found = found_label(&rows);
+    render(&QueueSourcesFragment {
+        csrf_token: ctx.csrf_token.clone(),
+        queue_id: id,
+        can_write: writable,
+        is_track: kind == "track",
+        is_tape: kind == "tape",
+        is_link: kind == "link",
+        kind,
+        q,
+        found_label: found,
+        rows,
     })
 }
 

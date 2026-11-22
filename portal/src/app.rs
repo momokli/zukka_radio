@@ -346,6 +346,8 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::queues::queues_get).post(crate::queues::queues_post),
         )
         .route("/queues/{id}", get(crate::queues::queue_editor))
+        // Issue #155: htmx source-catalog fragment (tracks) for the queue screen.
+        .route("/queues/{id}/sources", get(crate::queues::queue_sources))
         .route(
             "/queues/{id}/items",
             axum::routing::post(crate::queues::item_add),

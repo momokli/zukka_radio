@@ -19,52 +19,45 @@
     {% endif %}
   </section>
 
-  {% if can_write %}
-  <section class="card">
-    <h2>Item hinzufügen</h2>
-    <form
-      method="post"
-      action="/queues/{{ queue_id }}/items"
-      hx-post="/queues/{{ queue_id }}/items"
-      hx-target="#queue-items"
-      hx-swap="outerHTML"
-      class="stack"
-    >
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <label>
-        Art
-        <select name="kind">
-          <option value="track">Track</option>
-          <option value="link">Link</option>
-        </select>
-      </label>
-      <label>
-        Track-ID (bei Art = Track)
-        <input type="text" name="track_id" />
-      </label>
-      <label>
-        Provider (bei Art = Link)
-        <select name="link_provider">
-          <option value="youtube">youtube</option>
-          <option value="spotify">spotify</option>
-          <option value="other">other</option>
-        </select>
-      </label>
-      <label>
-        Link-URL (bei Art = Link)
-        <input type="url" name="link_url" />
-      </label>
-      <button type="submit">Hinzufügen</button>
-    </form>
-  </section>
-  {% endif %}
+  <div class="queue-workspace">
+    <section class="queue-source-panel" aria-labelledby="source-heading">
+      <div class="queue-panel-header">
+        <div><span>CATALOG / INPUT</span><h2 id="source-heading">SOURCE</h2></div>
+        <span>{{ found_label }}</span>
+      </div>
+      <div class="source-controls">
+        <label for="source-search">SEARCH TITLE / ARTIST / ISRC</label>
+        <div class="search-shell">
+          <input
+            id="source-search"
+            type="search"
+            name="q"
+            value="{{ q }}"
+            aria-label="Search title artist ISRC"
+            placeholder="TYPE TO SEARCH..."
+            hx-get="/queues/{{ queue_id }}/sources"
+            hx-trigger="keyup changed delay:300ms"
+            hx-target="#source-results"
+            hx-swap="innerHTML"
+            hx-include="#source-kind"
+          />
+        </div>
+      </div>
+      <div id="source-results">
+        {% include "partials/queue_sources.html" %}
+      </div>
+    </section>
 
-  <section class="card">
-    <h2>Items</h2>
-    <div id="queue-items-wrapper">
-      {% include "partials/queue_list.html" %}
-    </div>
-  </section>
+    <section class="queue-list-panel" aria-labelledby="queue-list-heading">
+      <div class="queue-panel-header">
+        <div><span>ORDERED PLAYLIST</span><h2 id="queue-list-heading">QUEUE</h2></div>
+        <span>{% if !can_write %}VIEW ONLY{% else %}EDIT MODE{% endif %}</span>
+      </div>
+      <div id="queue-items-wrapper">
+        {% include "partials/queue_list.html" %}
+      </div>
+    </section>
+  </div>
 
   {% if can_write %}
   <section class="card">

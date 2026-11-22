@@ -275,6 +275,36 @@ pub struct QueueSelectorOption {
     pub selected: bool,
 }
 
+/// One catalog row in the source panel (`partials/queue_sources.html`), built
+/// from a `Track` (Issue #155, Block 2).
+pub struct SourceRowView {
+    pub id: String,
+    pub title: String,
+    /// `artist · album` (or the Music-API id when no album is known).
+    pub detail: String,
+    pub duration_label: String,
+    /// `shared` | `private` (the viewer-scoped visibility the scheduler returned).
+    pub access: String,
+}
+
+impl SourceRowView {
+    /// Projects a scheduler `Track` into a source row.
+    pub fn from_track(track: &Track) -> Self {
+        let detail = if track.album.trim().is_empty() {
+            track.music_api_id.clone()
+        } else {
+            track.album.clone()
+        };
+        Self {
+            id: track.id.clone(),
+            title: track.title.clone(),
+            detail,
+            duration_label: format_total_duration(track.duration_ms),
+            access: track.visibility.clone(),
+        }
+    }
+}
+
 /// Queue editor (`GET /queues/{id}`). Carries the fragment fields too so
 /// `partials/queue_list.html` can be `{% include %}`-d in scope.
 #[derive(Template)]
@@ -296,6 +326,42 @@ pub struct QueueEditorPage {
     pub total_label: String,
     pub item_count_label: String,
     pub version_label: String,
+    // Source panel (Issue #155, Block 2) — field names mirror
+    // [`QueueSourcesFragment`] so `partials/queue_sources.html` is `{% include %}`-d.
+    pub kind: String,
+    pub q: String,
+    pub found_label: String,
+    pub is_track: bool,
+    pub is_tape: bool,
+    pub is_link: bool,
+    pub rows: Vec<SourceRowView>,
+}
+
+/// The source-catalog fragment (`GET /queues/{id}/sources`) swapped into
+/// `#source-results` (Issue #155, Block 2). Includes the filter group so a
+/// filter/kind change re-renders the pressed state too.
+#[derive(Template)]
+#[template(path = "partials/queue_sources.html")]
+pub struct QueueSourcesFragment {
+    pub csrf_token: String,
+    pub queue_id: String,
+    pub can_write: bool,
+    pub kind: String,
+    pub q: String,
+    pub found_label: String,
+    pub is_track: bool,
+    pub is_tape: bool,
+    pub is_link: bool,
+    pub rows: Vec<SourceRowView>,
+}
+
+/// Resolves the source-filter kind (`track`|`tape`|`link`, default `track`).
+pub fn normalized_source_kind(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("tape") => "tape",
+        Some("link") => "link",
+        _ => "track",
+    }
 }
 
 /// Formats a duration in ms as `mm:ss` (or `hh:mm:ss` beyond an hour); a zero
