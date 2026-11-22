@@ -37,6 +37,8 @@ use crate::control_ws::throttle::{FaderCoalescer, RateLimiter};
 pub const CLOSE_UNAUTHORIZED: u16 = 4401;
 /// Close code for a missed protocol pong (§2.2).
 pub const CLOSE_PING_TIMEOUT: u16 = 4408;
+/// Close code for a vanished engine (§6.3).
+pub const CLOSE_ENGINE_UNAVAILABLE: u16 = 4503;
 
 /// Server-reported name in the `hello` event.
 const SERVER_NAME: &str = "zukka-portal";
@@ -77,6 +79,9 @@ struct Session {
     viewer: Option<String>,
     /// Session id echoed in `hello` (`"service"` for a service token).
     id: String,
+    /// Whether this principal may mutate the engine (`control.write`, §6.10.1).
+    /// Service tokens always may; cookie sessions only with the permission.
+    can_write: bool,
 }
 
 fn parse_bearer(headers: &HeaderMap) -> Option<String> {
@@ -144,6 +149,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, pre: PreAuth) {
             {
                 return;
             }
+            // §6.3: `engine_unavailable` is the one error that ends the
+            // connection, with close code 4503.
+            let _ = socket
+                .send(Message::Close(Some(close_frame(
+                    CLOSE_ENGINE_UNAVAILABLE,
+                    "engine unavailable",
+                ))))
+                .await;
+            return;
         }
     }
 
@@ -163,6 +177,7 @@ async fn authenticate(
             return Ok(Session {
                 viewer: None,
                 id: "service".to_string(),
+                can_write: true,
             });
         }
     }
@@ -177,9 +192,17 @@ async fn authenticate(
                     .copied()
                     .unwrap_or(false)
                 {
+                    // Writes are gated on `control.write` (§6.10.1); absent ⇒ false.
+                    let can_write = validation
+                        .caster
+                        .permissions
+                        .get("control.write")
+                        .copied()
+                        .unwrap_or(false);
                     return Ok(Session {
                         viewer: Some(validation.caster.id),
                         id: validation.session_id,
+                        can_write,
                     });
                 }
                 return Err(close_frame(CLOSE_UNAUTHORIZED, "forbidden"));
@@ -198,6 +221,7 @@ async fn authenticate(
                             return Ok(Session {
                                 viewer: None,
                                 id: "service".to_string(),
+                                can_write: true,
                             });
                         }
                     }
@@ -241,6 +265,17 @@ async fn run_connection(socket: WebSocket, state: AppState, session: Session) {
                         )
                         .await
                         {
+                            // Give the peer a bounded moment to complete the
+                            // close handshake so our Close frame is delivered
+                            // (dropping immediately can reset the connection).
+                            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                                while let Some(Ok(message)) = receiver.next().await {
+                                    if matches!(message, Message::Close(_)) {
+                                        break;
+                                    }
+                                }
+                            })
+                            .await;
                             break;
                         }
                     }
@@ -297,8 +332,26 @@ async fn run_connection(socket: WebSocket, state: AppState, session: Session) {
                 }
             }
             _ = tick.tick() => {
+                let mut close = false;
                 for command in coalescer.take(Instant::now()) {
-                    let _ = state.engine.command(&command).await;
+                    // F6: surface engine failures instead of discarding them.
+                    if let Err(err) = state.engine.command(&command).await {
+                        let data = serde_json::json!({
+                            "code": err.code().as_str(),
+                            "message": err.message(),
+                        });
+                        if sender
+                            .send(Message::Text(event_json("error", data).into()))
+                            .await
+                            .is_err()
+                        {
+                            close = true;
+                            break;
+                        }
+                    }
+                }
+                if close {
+                    break;
                 }
             }
             _ = ping_tick.tick() => {
@@ -367,8 +420,25 @@ where
                 send(sender, reply_ok(id.as_deref(), result)).await
             }
             Err(err) => {
-                let err = WsError::new(WsErrorCode::EngineUnavailable, err.to_string());
-                send(sender, reply_err(id.as_deref(), &err)).await
+                // §6.3: `engine_unavailable` also ends the connection (4503).
+                let error = WsError::new(WsErrorCode::EngineUnavailable, err.to_string());
+                if !send(sender, reply_err(id.as_deref(), &error)).await {
+                    return false;
+                }
+                let event = serde_json::json!({
+                    "code": "engine_unavailable",
+                    "message": err.to_string(),
+                });
+                if !send(sender, Message::Text(event_json("error", event).into())).await {
+                    return false;
+                }
+                let _ = sender
+                    .send(Message::Close(Some(close_frame(
+                        CLOSE_ENGINE_UNAVAILABLE,
+                        "engine unavailable",
+                    ))))
+                    .await;
+                false
             }
         },
         Ok(Action::MetersSubscribe { binary: enabled }) => {
@@ -377,6 +447,12 @@ where
             send(sender, reply_ok(id.as_deref(), result)).await
         }
         Ok(Action::Engine(command)) => {
+            // Authorization: cookie sessions may only mutate the engine with
+            // `control.write` (§6.10.1); service tokens always may.
+            if !session.can_write {
+                let err = WsError::new(WsErrorCode::Forbidden, "missing permission control.write");
+                return send(sender, reply_err(id.as_deref(), &err)).await;
+            }
             if let Some(key) = fader_key(&command) {
                 coalescer.submit(key, command);
                 let result = serde_json::json!({ "applied": true });

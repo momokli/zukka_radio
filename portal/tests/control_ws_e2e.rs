@@ -238,6 +238,16 @@ async fn serve_state(
     engine: Arc<FakeEngineClient>,
     hub: Arc<MeterHub>,
 ) -> String {
+    serve_state_control(identity, engine, hub, Arc::new(FakeControlApi::new())).await
+}
+
+/// Serves the router for a prebuilt identity and control API; returns the URL.
+async fn serve_state_control(
+    identity: Arc<FakeIdentity>,
+    engine: Arc<FakeEngineClient>,
+    hub: Arc<MeterHub>,
+    control: Arc<dyn zukka_portal::api_client::ControlApi>,
+) -> String {
     let state = AppState::with_clients(
         config(),
         identity.clone(),
@@ -247,7 +257,7 @@ async fn serve_state(
         Arc::new(NoWaveforms),
         Arc::new(FakeTrackApi::new()),
         Arc::new(FakeQueueApi::new()),
-        Arc::new(FakeControlApi::new()),
+        control,
     )
     .with_engine(engine)
     .with_meter_hub(hub);
@@ -297,7 +307,7 @@ async fn read_close_code(ws: &mut Ws) -> u16 {
         match message {
             Ok(Message::Close(Some(frame))) => return u16::from(frame.code),
             Ok(_) => continue,
-            Err(_) => panic!("error before close"),
+            Err(e) => panic!("error before close: {e:?}"),
         }
     }
 }
@@ -402,6 +412,80 @@ async fn auth_cookie_without_control_read_closes_4401() {
     );
     let (mut ws, _) = connect_async(request).await.unwrap();
     assert_eq!(read_close_code(&mut ws).await, 4401);
+}
+
+// ---------------------------------------------------------------------------
+// (a2) authz: cookie session writes require `control.write` (§6.10.1)
+// ---------------------------------------------------------------------------
+
+/// Opens a WS with a session cookie for `token` and drains `hello`+`state`.
+async fn connect_cookie(url: &str, token: &str) -> Ws {
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Cookie",
+        format!("__Host-zukka_session={token}").parse().unwrap(),
+    );
+    let (mut ws, _) = connect_async(request).await.unwrap();
+    read_until_type(&mut ws, "state").await;
+    ws
+}
+
+#[tokio::test]
+async fn cookie_caster_without_control_write_is_forbidden() {
+    let engine = Arc::new(FakeEngineClient::new());
+    let hub = Arc::new(MeterHub::new());
+    // `caster` has `control.read` but not `control.write` (§6.10.1).
+    let identity = Arc::new(FakeIdentity::new("caster"));
+    let token = "caster-session";
+    identity.seed_session(token);
+    let url = serve_state(identity, engine.clone(), hub).await;
+
+    let mut ws = connect_cookie(&url, token).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({
+            "id": "w-1", "cmd": "mixer.set",
+            "args": {"channel": "live", "gain_db": -6.0}
+        }),
+    )
+    .await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["id"], "w-1");
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"]["code"], "forbidden");
+
+    // The engine must never have received the command (including the fader tick).
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(
+        !engine.commands().iter().any(|c| c == "mixer.set live -6"),
+        "forbidden write reached the engine: {:?}",
+        engine.commands()
+    );
+}
+
+#[tokio::test]
+async fn cookie_operator_with_control_write_reaches_engine() {
+    let engine = Arc::new(FakeEngineClient::new());
+    let hub = Arc::new(MeterHub::new());
+    // `operator` has `control.write`.
+    let identity = Arc::new(FakeIdentity::new("operator"));
+    let token = "operator-session";
+    identity.seed_session(token);
+    let url = serve_state(identity, engine.clone(), hub).await;
+
+    let mut ws = connect_cookie(&url, token).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({
+            "id": "w-2", "cmd": "mixer.set",
+            "args": {"channel": "live", "gain_db": -6.0}
+        }),
+    )
+    .await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["id"], "w-2");
+    assert_eq!(reply["ok"], true);
+    write_until_commands(&engine, "mixer.set live -6").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +659,89 @@ async fn command_errors_are_reported() {
     .await;
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["error"]["code"], "version_mismatch");
+}
+
+#[tokio::test]
+async fn engine_unavailable_after_auth_closes_4503() {
+    let engine = Arc::new(FakeEngineClient::new());
+    let hub = Arc::new(MeterHub::new());
+    let identity = Arc::new(FakeIdentity::new("operator"));
+    // The state snapshot comes from the scheduler; make it fail.
+    let control = Arc::new(FakeControlApi::new());
+    control.fail_state();
+    let url = serve_state_control(identity, engine, hub, control).await;
+    let mut ws = connect(&url).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({"type": "auth", "token": SERVICE_TOKEN}),
+    )
+    .await;
+
+    let hello = read_until_type(&mut ws, "hello").await;
+    assert_eq!(hello["type"], "hello");
+    let error = read_until_type(&mut ws, "error").await;
+    assert_eq!(error["data"]["code"], "engine_unavailable");
+    assert_eq!(read_close_code(&mut ws).await, 4503);
+}
+
+#[tokio::test]
+async fn state_get_engine_unavailable_closes_4503() {
+    let engine = Arc::new(FakeEngineClient::new());
+    let hub = Arc::new(MeterHub::new());
+    let identity = Arc::new(FakeIdentity::new("operator"));
+    let control = Arc::new(FakeControlApi::new());
+    let url = serve_state_control(identity, engine, hub, control.clone()).await;
+    let mut ws = connect(&url).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({"type": "auth", "token": SERVICE_TOKEN}),
+    )
+    .await;
+    read_until_type(&mut ws, "state").await;
+
+    control.fail_state();
+    send_text(
+        &mut ws,
+        serde_json::json!({"id": "s-9", "cmd": "state.get"}),
+    )
+    .await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["id"], "s-9");
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"]["code"], "engine_unavailable");
+    assert_eq!(read_close_code(&mut ws).await, 4503);
+}
+
+#[tokio::test]
+async fn coalesced_fader_engine_error_is_reported() {
+    let engine = Arc::new(FakeEngineClient::new());
+    engine.fail_commands(zukka_portal::control_ws::engine::EngineError::Command {
+        code: zukka_portal::control_ws::protocol::WsErrorCode::ChannelNotFound,
+        message: "ERROR unknown_channel: live".into(),
+    });
+    let hub = Arc::new(MeterHub::new());
+    let url = serve("operator", engine, hub).await;
+    let mut ws = connect(&url).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({"type": "auth", "token": SERVICE_TOKEN}),
+    )
+    .await;
+    read_until_type(&mut ws, "state").await;
+
+    send_text(
+        &mut ws,
+        serde_json::json!({
+            "id": "f-1", "cmd": "mixer.set",
+            "args": {"channel": "live", "gain_db": -6.0}
+        }),
+    )
+    .await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["ok"], true); // fader is acknowledged, applied async
+
+    let error = read_until_type(&mut ws, "error").await;
+    assert_eq!(error["data"]["code"], "channel_not_found");
 }
 
 // ---------------------------------------------------------------------------

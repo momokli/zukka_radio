@@ -41,6 +41,7 @@ Regeln:
 | ---------- | ----- | -------- | --------------- |
 | 2026-11-22 | #147  | Control-Plan-Ressource `GET`/`PUT /api/v1/control/plan` (200 + Body statt 204, §2.1-Ausnahme/§4.7) + HTTP Command-Proxy §4.6; `paused` advisory | **`schema_version` bleibt `1`** |
 | 2026-11-22 | #152  | Multi-Channel-Modell: `ChannelView.kind` um `harbor`/`adhoc` erweitert (Enum-Widening auf 8 Werte), `id`-Grammatik für Slot-Kanäle dokumentiert, `CockpitState.channels`-Reihenfolge normativ als Gruppenordnung, N-generische Formulierung für `mixer.patch`/`mixer.meters`/Binär-Meter-Frame | **`schema_version` bleibt `1`** |
+| 2026-11-22 | #148  | WebSocket-Bridge implementiert §2.2/§6: `GET /api/v1/control/ws` (Auth in-band, Close `4401`/`4408`/`4503`), Command-Dispatch §6.1/§6.1.1, binäre 30-Hz-Meter §6.2, Fader-Drosselung §6.5. Additiv: `meters.subscribe` in §6.1.1 gelistet; neuer Fehlercode `forbidden` in §6.4 (Write-Gate `control.write`); Binär-Meter-Cap `N≤255` präzisiert | **`api_version`/`schema_version` bleiben `1`** |
 
 **Begründung „kein Versionssprung“ (Issue #152):** Das Erweitern eines `enum` um
 zusätzliche Werte sowie zusätzliche `channels[]`-Einträge sind *additiv* im Sinne
@@ -513,9 +514,16 @@ Die WS-Commands spiegeln §4.1–§4.4, mit `args`-Objekten statt Positionsargum
 | `tape.start`       | `{tape_id}`                                         |
 | `tape.stop`        | `{}`                                                |
 | `state.get`        | `{}` → `result` = `CockpitState`                    |
+| `meters.subscribe` | `{binary?}` (Default `true`) → `result` = `{binary}` |
 | `ping`             | `{}` → `result` = `{ "pong": true, "t": "…" }`      |
 
 `gain_db` und `linear` schließen sich aus; sind beide gesetzt → `validation_error`.
+
+Schreibende Commands (`Action::Engine`, §4.1–§4.4) setzen im Cookie-Weg die
+Permission `control.write` voraus (§6.10.1); fehlt sie, antwortet die Bridge
+mit `forbidden` (§6.4) und führt den Command **nicht** aus. Service-Token-Sitzungen
+haben Vollzugriff. Lesende Commands (`state.get`, `ping`, `meters.subscribe`)
+genügen `control.read`.
 
 ### 6.2 Bridge → Client (Meter-Frames, binär)
 
@@ -534,7 +542,9 @@ Die Bridge pusht **30 Hz** binäre Meter-Frames. Layout (Little-Endian):
   `adhoc-<n>`.
 - **`N` ist ein `u8`** → **Cap 255 Kanäle**. Das Zielmodell
   (6 Program + bis zu 32 Harbor + 8 Relay + Adhoc) liegt deutlich darunter; wird der
-  Cap dennoch überschritten, ist ein Frame-Layout-Bump nötig (separates Issue).
+  Cap dennoch überschritten, kürzt die Bridge auf die ersten 255 Kanäle (Header-`N`
+  und Payload-Länge bleiben konsistent `4 + N*12`); ein Frame-Layout-Bump für mehr
+  Kanäle wäre ein separates Issue.
 - Kanalreihenfolge = Reihenfolge von `channels[]` im letzten `CockpitState` (§5.5).
 - Ändert sich die Reihenfolge/Anzahl, sendet die Bridge vorher ein
   `meters.layout`-Event (§6.3) mit der neuen `channel_ids`-Liste.
@@ -570,6 +580,12 @@ Regeln:
 - Ein `error`-Event beendet die Verbindung **nicht** (außer `engine_unavailable`
   mit Close-Code `4503`).
 
+**Abgrenzung (Follow-up, Issue #148):** `state` wird nach Auth genau einmal
+(Voll-Snapshot) gesendet. Inkrementelle `state.diff`-/`event`-Emission setzt eine
+Control-Event-Quelle voraus (Scheduler-Control-Events), die noch nicht an die
+Bridge angebunden ist; sie wird als Folge-Issue nachgezogen. Bis dahin erhalten
+Clients Änderungen durch erneutes `state.get`.
+
 ### 6.4 WS-Fehlercodes (zusätzlich zu §3.1)
 
 | `code`              | Bedeutung |
@@ -583,6 +599,7 @@ Regeln:
 | `engine_unavailable`| Liquidsoap-Command-Server nicht erreichbar |
 | `version_mismatch`  | `api_version` unbekannt |
 | `rate_limited`      | zu viele Commands (Fader-Drossel) |
+| `forbidden`         | Cookie-Session ohne `control.write` versucht einen Engine-Write (#148) |
 
 ### 6.5 Drosselung
 

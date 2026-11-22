@@ -13,6 +13,8 @@ pub const METER_HEADER_RESERVED: u16 = 0;
 pub const METER_PROTOCOL_VERSION: u8 = 1;
 /// `f32` MIN used to encode "no signal" (`-inf`) in meter frames (§6.2).
 pub const METER_NEG_INF: f32 = f32::MIN;
+/// Contract cap on the channel count `N` in a binary meter frame (§6.2): `u8`.
+pub const METER_MAX_CHANNELS: usize = u8::MAX as usize;
 
 /// Contract version the bridge speaks (§1).
 pub const API_VERSION: u32 = 1;
@@ -33,6 +35,8 @@ pub enum WsErrorCode {
     EngineUnavailable,
     VersionMismatch,
     RateLimited,
+    /// The authenticated session lacks `control.write` (§6.4, additive).
+    Forbidden,
 }
 
 impl WsErrorCode {
@@ -48,6 +52,7 @@ impl WsErrorCode {
             WsErrorCode::EngineUnavailable => "engine_unavailable",
             WsErrorCode::VersionMismatch => "version_mismatch",
             WsErrorCode::RateLimited => "rate_limited",
+            WsErrorCode::Forbidden => "forbidden",
         }
     }
 }
@@ -488,12 +493,18 @@ where
 ///
 /// Layout: `[u8 ver=1][u8 N][u16 0][f32[3N] LE]`, length `4 + N*12`.
 /// `None` levels are encoded as [`METER_NEG_INF`].
+///
+/// `N` is a `u8`, so at most [`METER_MAX_CHANNELS`] (255) channels are encoded;
+/// the order is truncated to the first 255 entries, keeping the header count and
+/// the payload length consistent (`4 + N*12`). The target model stays well below
+/// this cap (see §6.2).
 pub fn encode_meter_frame(order: &[String], meters: &[ChannelMeter]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(4 + order.len() * 12);
+    let count = order.len().min(METER_MAX_CHANNELS);
+    let mut frame = Vec::with_capacity(4 + count * 12);
     frame.push(METER_PROTOCOL_VERSION);
-    frame.push(order.len().min(u8::MAX as usize) as u8);
+    frame.push(count as u8);
     frame.extend_from_slice(&METER_HEADER_RESERVED.to_le_bytes());
-    for id in order {
+    for id in order.iter().take(count) {
         let entry = meters.iter().find(|m| &m.id == id);
         let (rms_l, rms_r, peak) = match entry {
             Some(m) => (
@@ -729,6 +740,25 @@ mod tests {
             frame[7 + 12 + 8],
         ]);
         assert_eq!(show_peak, METER_NEG_INF);
+    }
+
+    #[test]
+    fn meter_frame_caps_channel_count_at_255() {
+        // More channels than the `u8` header can express: the frame must keep a
+        // consistent length (`4 + N*12`) with `N = 255`.
+        let order: Vec<String> = (0..300).map(|i| format!("adhoc-{i}")).collect();
+        let meters = vec![];
+        let frame = encode_meter_frame(&order, &meters);
+        assert_eq!(frame[0], METER_PROTOCOL_VERSION);
+        assert_eq!(frame[1], 255);
+        assert_eq!(frame.len(), 4 + METER_MAX_CHANNELS * 12);
+        assert_eq!(frame.len(), 4 + 255 * 12);
+    }
+
+    #[test]
+    fn forbidden_code_serializes() {
+        let err = WsError::new(WsErrorCode::Forbidden, "missing control.write");
+        assert_eq!(err.to_json()["code"], "forbidden");
     }
 
     #[test]
