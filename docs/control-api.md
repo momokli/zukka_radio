@@ -35,6 +35,22 @@ Regeln:
 - Der Server verwirft Commands mit unbekannter `api_version` nicht still, sondern
   antwortet mit `version_mismatch` (§4).
 
+### 1.1 Changelog
+
+| Datum      | Issue | Änderung | Versionswirkung |
+| ---------- | ----- | -------- | --------------- |
+| 2026-11-22 | #152  | Multi-Channel-Modell: `ChannelView.kind` um `harbor`/`adhoc` erweitert (Enum-Widening auf 8 Werte), `id`-Grammatik für Slot-Kanäle dokumentiert, `CockpitState.channels`-Reihenfolge normativ als Gruppenordnung, N-generische Formulierung für `mixer.patch`/`mixer.meters`/Binär-Meter-Frame | **`schema_version` bleibt `1`** |
+
+**Begründung „kein Versionssprung“ (Issue #152):** Das Erweitern eines `enum` um
+zusätzliche Werte sowie zusätzliche `channels[]`-Einträge sind *additiv* im Sinne
+dieser Regeln — bestehende Clients, die unbekannte `kind`/`id`-Werte ignorieren,
+bleiben funktionsfähig, und die sechs Program-Kanäle behalten ID, Bedeutung und
+Position. Die Präzisierung der `channels[]`-Reihenfolge (Gruppenordnung statt
+laxem „`id` sortiert“, §5.5) ändert die *Formulierung*, nicht das drahtseitige
+Schema: sie war für die sechs Program-Kanäle bereits identisch und wird nun für
+N Kanäle eindeutig festgeschrieben. Damit ist kein Feld umbenannt, kein Typ
+geändert und keine Semantik invertiert → **keine** Erhöhung von `schema_version`.
+
 ---
 
 ## 2. Transport & Auth
@@ -117,7 +133,7 @@ Command-Servers beginnen mit `ERROR` und werden als `command_failed` gemappt.
 | `mixer.mute <ch> <true\|false>` | `ch`; bool                               | `OK`            | `unknown_channel` |
 | `mixer.solo <ch> <true\|false>` | `ch`; bool                               | `OK`            | `unknown_channel` |
 | `mixer.exclusive <ch>`       | `ch` (unmutet genau diesen Kanal, mutet alle anderen) | `OK` | `unknown_channel` |
-| `mixer.patch <ch> <source>`  | `ch`; `source` = `file:<pfad>` \| `https:<url>` \| `harbor:/live/slot-NN` \| `relay:<url>` | `OK` | `unknown_channel`, `bad_source` |
+| `mixer.patch <ch> <source>`  | `ch` = **jede** Kanal-ID (§5.5); `source` = `file:<pfad>` \| `https:<url>` \| `harbor:/live/slot-NN` \| `relay:<url>` | `OK` | `unknown_channel`, `bad_source` |
 | `mixer.master <gain_db>`     | `gain_db` in dB                              | `OK`            | `bad_gain` |
 | `mixer.meters`               | keine                                        | JSON-Array (siehe §4.5) oder Binär | – |
 
@@ -131,6 +147,10 @@ Semantik:
   (Oder-Verknüpfung). `mixer.exclusive` ist die UI-Abkürzung „nur dieser".
 - `mixer.patch` tauscht die Quelle eines Kanals zur Laufzeit; der Kanal bleibt
   gemutet, bis `mixer.mute … false` kommt.
+- N-generisch: `<ch>` ist **jede** in `CockpitState.channels` vorkommende Kanal-ID
+  (§5.5) — die sechs Program-Kanäle **oder** Slot-Kanäle (`harbor.slot-NN`,
+  `relay.slot-NN`, `adhoc-<n>`). Die Quellen-Grammatik ist unverändert und
+  unabhängig von der Kanalzahl.
 
 ### 4.2 Layer / Automation
 
@@ -165,8 +185,9 @@ Automatik; `none` gibt an die Automatik zurück.
 
 ### 4.5 `mixer.meters` — Rückgabe
 
-`mixer.meters` liefert ein JSON-Array, ein Objekt pro Kanal in der Reihenfolge
-von `CockpitState.channels`:
+`mixer.meters` liefert ein JSON-Array, **ein Objekt pro Kanal** (N-generisch,
+N = Länge von `CockpitState.channels`) in exakt der Reihenfolge von
+`CockpitState.channels` (§5.5):
 
 ```json
 [
@@ -177,6 +198,8 @@ von `CockpitState.channels`:
 
 - `rms_l`/`rms_r`/`peak` in dBFS (`-inf` als `null`).
 - `limiter_active` = `true`, wenn der Gain-Control/Limiter des Kanals eingreift.
+- Das Array hat immer genau N Einträge in `channels[]`-Ordnung; `id` identifiziert
+  den Kanal (nicht die Position).
 
 ---
 
@@ -209,9 +232,9 @@ Numerische Pegel sind dBFS, sofern nicht anders vermerkt.
 
 | Feld             | Typ              | Bedeutung |
 | ---------------- | ---------------- | --------- |
-| `id`             | string           | stabile Kanal-ID (`live`, `show`, `queue`, `rotation`, `relay`, `fun`) |
+| `id`             | string           | stabile Kanal-ID (Grammatik unten) |
 | `label`          | string           | Anzeigename |
-| `kind`           | enum             | `live` \| `show` \| `queue` \| `rotation` \| `relay` \| `fun` |
+| `kind`           | enum             | `live` \| `show` \| `queue` \| `rotation` \| `relay` \| `fun` \| `harbor` \| `adhoc` |
 | `source`         | string \| null   | aktuell gepatchte Quelle (`file:`/`https:`/`harbor:`/`relay:`) |
 | `connected`      | bool             | Quelle liefert Daten |
 | `gain_db`        | number \| null   | Fader in dB (`null` = linear/stumm) |
@@ -223,6 +246,26 @@ Numerische Pegel sind dBFS, sofern nicht anders vermerkt.
 | `peak`           | number \| null   | Peak dBFS |
 | `limiter_active` | bool             | Limiter greift ein |
 | `metadata`       | object \| null   | `{title, artist}` |
+
+#### `id`-Grammatik und `kind`-Zuordnung
+
+Die Kanal-ID kodiert Rolle und – bei Slot-Kanälen – den Slot. `kind` ist die
+Klassifikation für die UI; `id` ist stabil und identifiziert den Kanal eindeutig.
+
+| Gruppe | `id`-Muster | `kind` | Bedeutung |
+| ------ | ----------- | ------ | --------- |
+| Program (fix) | `live`, `show`, `queue`, `rotation`, `relay`, `fun` | jeweils gleichnamig | die sechs festen Program-Layer, immer vorhanden |
+| Harbor-Slots | `harbor.slot-01` … `harbor.slot-32` (2-stellig) | `harbor` | Caster-Eingänge (`input.harbor`) |
+| Relay-Slots | `relay.slot-01` … `relay.slot-08` (2-stellig) | `relay` | externe Streams (SomaFM/Twitch/YouTube/SRT) |
+| Adhoc | `adhoc-1`, `adhoc-2`, … (1-basiert) | `adhoc` | Datei/Upload oder URL |
+
+Hinweise:
+
+- `kind: "relay"` kommt bei **zwei** Gruppen vor: dem Program-Kanal `id: "relay"`
+  **und** den Slot-Kanälen `relay.slot-NN`. Disambiguiert wird über `id`.
+- Die kanonische Adhoc-ID ist `adhoc-<n>`; `adhoc.file-*`/`adhoc.url-*` sind
+  Quell-Präfixe (`source`), **keine** `id`.
+- Die Program-Kanäle behalten ID, `kind` und Position unverändert.
 
 ### 5.2 `MasterView`
 
@@ -295,7 +338,7 @@ Numerische Pegel sind dBFS, sofern nicht anders vermerkt.
 | ---------------- | -------------- | --------- |
 | `schema_version` | number         | Vertragsversion dieses Dokuments (`1`) |
 | `generated_at`   | string         | Snapshot-Zeitpunkt (ISO-8601 UTC) |
-| `channels`       | ChannelView[]  | alle Kanäle, stabile Reihenfolge (`id` sortiert) |
+| `channels`       | ChannelView[]  | alle Kanäle, stabile Reihenfolge (Gruppenordnung, siehe unten) |
 | `master`         | MasterView     | Master |
 | `automation`     | AutomationView | Automatik |
 | `monitors`       | MonitorView    | Monitor |
@@ -304,6 +347,20 @@ Numerische Pegel sind dBFS, sofern nicht anders vermerkt.
 
 `CockpitState` ist der Body von `GET /api/v1/control/state` und zugleich der
 Voll-Snapshot, den die Bridge beim WebSocket-`hello` pusht.
+
+**Reihenfolge von `channels[]` (normativ):** Die Liste trägt N Kanäle in vier
+Gruppen, in dieser festen Ordnung:
+
+1. **Program (fix)** in genau dieser Reihenfolge: `live`, `show`, `queue`,
+   `rotation`, `relay`, `fun`.
+2. **Harbor-Slots** `harbor.slot-01` … `harbor.slot-NN` aufsteigend.
+3. **Relay-Slots** `relay.slot-01` … `relay.slot-08` aufsteigend.
+4. **Adhoc** `adhoc-1` … `adhoc-<n>` aufsteigend.
+
+Diese Ordnung ist die einzige verbindliche Sortierung — sie ersetzt das frühere
+laxe „`id` sortiert“ (eine lexikografische Sortierung würde `adhoc-*` vor
+`live` einsortieren, was **nicht** gewollt ist). Dieselbe Reihenfolge gilt für
+`mixer.meters` (§4.5) und den binären Meter-Frame (§6.2).
 
 ---
 
@@ -374,12 +431,18 @@ Die Bridge pusht **30 Hz** binäre Meter-Frames. Layout (Little-Endian):
 | Offset | Größe | Typ       | Bedeutung |
 | ------ | ----- | --------- | --------- |
 | 0      | 1     | u8        | Protokollversion = `1` |
-| 1      | 1     | u8        | Kanalanzahl `N` |
+| 1      | 1     | u8        | Kanalanzahl `N` (N-generisch, siehe unten) |
 | 2      | 2     | u16       | reserviert (`0`) |
 | 4      | N×12  | f32[3N]   | pro Kanal: `rms_l`, `rms_r`, `peak` (dBFS) |
 
 - Gesamtlänge = `4 + N*12` Bytes.
-- Kanalreihenfolge = Reihenfolge von `channels[]` im letzten `CockpitState`.
+- `N` ist die Anzahl der Kanäle in `CockpitState.channels` (nicht mehr fix 6).
+  Es gilt das Modell aus §5.5: 6 Program + `harbor.slot-NN` + `relay.slot-NN` +
+  `adhoc-<n>`.
+- **`N` ist ein `u8`** → **Cap 255 Kanäle**. Das Zielmodell
+  (6 Program + bis zu 32 Harbor + 8 Relay + Adhoc) liegt deutlich darunter; wird der
+  Cap dennoch überschritten, ist ein Frame-Layout-Bump nötig (separates Issue).
+- Kanalreihenfolge = Reihenfolge von `channels[]` im letzten `CockpitState` (§5.5).
 - Ändert sich die Reihenfolge/Anzahl, sendet die Bridge vorher ein
   `meters.layout`-Event (§6.3) mit der neuen `channel_ids`-Liste.
 - Werte `-inf` werden als `-3.4028235e38` (f32 MIN) kodiert; Clients interpretieren
@@ -400,7 +463,7 @@ Alle Events haben `type` und `at` (ISO-8601 UTC):
 | `hello`             | `{api_version, server, session_id}`                | Verbindungsaufbau |
 | `state`             | `CockpitState` (Voll-Snapshot)                     | nach Auth, danach bei jeder Zustandsänderung |
 | `state.diff`        | `{channels?: [...], master?, automation?, …}`      | inkrementelle Änderung |
-| `meters.layout`     | `{channel_ids: [...]}`                             | Kanalreihenfolge/Anzahl geändert |
+| `meters.layout`     | `{channel_ids: [...]}`                             | Kanal-`channels[]`-Anzahl **oder** -Reihenfolge geändert (z. B. neuer Adhoc-Kanal, `harbor.slot-NN` verbunden/getrennt) |
 | `meters`            | `{frames: [{id, rms_l, rms_r, peak}]}`             | nur bei `binary:false` |
 | `event`             | `{kind, …}` (z. B. `layer.changed`, `live.started`) | fachliches Event |
 | `error`             | `{code, message, details?}`                        | asynchroner Fehler (z. B. Engine weg) |

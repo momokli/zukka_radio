@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-22T21:14:57Z",
+  "channels": [
+    { "id": "live", "label": "Live · Kappel", "kind": "live", "source": "harbor:/live/slot-02", "connected": true, "gain_db": -6.0, "trim_db": 0.0, "mute": false, "solo": false, "exclusive": false, "rms_l": -18.2, "rms_r": -18.0, "peak": -3.1, "limiter_active": false, "metadata": { "title": "Live Set", "artist": "Kappel" } },
+    { "id": "show", "label": "Show · Podcast", "kind": "show", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "queue", "label": "Queue · Set", "kind": "queue", "source": "https:/api.zukkafabrik.de/isrc/YYYY/320", "connected": true, "gain_db": -18.0, "trim_db": 0.0, "mute": false, "solo": false, "exclusive": false, "rms_l": -31.2, "rms_r": -30.8, "peak": -14.0, "limiter_active": false, "metadata": { "title": "Saturday Night Set", "artist": "Kappel" } },
+    { "id": "rotation", "label": "Rotation", "kind": "rotation", "source": "file:/rotation/rotation.m3u", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "relay", "label": "Relay · SomaFM", "kind": "relay", "source": "relay:https://ice1.somafm.com/groovesalad-128-mp3", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": -22.0, "rms_r": -22.4, "peak": -8.0, "limiter_active": false, "metadata": { "title": "BistroBoy - Emotions", "artist": "SomaFM Groove Salad" } },
+    { "id": "fun", "label": "Fun", "kind": "fun", "source": "file:/rotation/fun.mp3", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "harbor.slot-01", "label": "Harbor 01 · Gast", "kind": "harbor", "source": "harbor:/live/slot-01", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": -26.0, "rms_r": -26.2, "peak": -10.5, "limiter_active": false, "metadata": { "title": "Guest Mix", "artist": "DJ Nova" } },
+    { "id": "harbor.slot-02", "label": "Harbor 02", "kind": "harbor", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "harbor.slot-03", "label": "Harbor 03", "kind": "harbor", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "relay.slot-01", "label": "Relay 01 · Twitch", "kind": "relay", "source": "relay:https://twitch.tv/zukkafm", "connected": true, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": -24.0, "rms_r": -24.3, "peak": -9.2, "limiter_active": false, "metadata": { "title": "Live DJ Stream", "artist": "Twitch" } },
+    { "id": "relay.slot-02", "label": "Relay 02", "kind": "relay", "source": null, "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null },
+    { "id": "adhoc-1", "label": "Adhoc · Upload", "kind": "adhoc", "source": "file:/adhoc/drop-final-mix.mp3", "connected": true, "gain_db": -12.0, "trim_db": 0.0, "mute": false, "solo": false, "exclusive": false, "rms_l": -20.5, "rms_r": -20.7, "peak": -5.4, "limiter_active": false, "metadata": { "title": "Final Mix", "artist": "Kappel" } },
+    { "id": "adhoc-2", "label": "Adhoc · URL", "kind": "adhoc", "source": "https:/cdn.example.org/promo/teaser.mp3", "connected": false, "gain_db": -60.0, "trim_db": 0.0, "mute": true, "solo": false, "exclusive": false, "rms_l": null, "rms_r": null, "peak": null, "limiter_active": false, "metadata": null }
+  ],
+  "master": { "gain_db": 0.0, "limiter_active": false, "outputs": { "icecast": true, "hls": true, "tape": false } },
+  "automation": { "mode": "auto", "preset": "live", "next_event_at": "2026-11-22T22:00:00Z", "next_source": "harbor.slot-01", "override": null },
+  "monitors": { "connected_djs": 3, "latency_ms": 140, "codec": "opus" },
+  "listeners": 57,
+  "now_playing": { "title": "Live Set", "artist": "Kappel", "source": "live" }
+}

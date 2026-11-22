@@ -1,5 +1,6 @@
 {
   "source": "docs/control-api.md §4/§6.1.1",
+  "channel": "string — jede Kanal-ID, N-generisch (#152): Program-Fix-IDs (live, show, queue, rotation, relay, fun) + harbor.slot-NN + relay.slot-NN + adhoc-<n>",
   "ws_frame": {
     "request": { "id": "string", "api_version": 1, "cmd": "string", "args": "object?" },
     "response_ok": { "id": "string", "ok": true, "result": "object" },
@@ -11,7 +12,7 @@
     { "cmd": "mixer.mute", "args": { "channel": "string", "mute": "boolean" } },
     { "cmd": "mixer.solo", "args": { "channel": "string", "solo": "boolean" } },
     { "cmd": "mixer.exclusive", "args": { "channel": "string" }, "note": "unmutet diesen Kanal, mutet alle anderen" },
-    { "cmd": "mixer.patch", "args": { "channel": "string", "source": "string" }, "note": "file: | https: | harbor:/live/slot-NN | relay:<url>" },
+    { "cmd": "mixer.patch", "args": { "channel": "string", "source": "string" }, "note": "channel = jede Kanal-ID (N-generisch); source = file: | https: | harbor:/live/slot-NN | relay:<url>" },
     { "cmd": "mixer.master", "args": { "gain_db": "number" } },
     { "cmd": "layer.preset", "args": { "preset": "default|live|relay-only" } },
     { "cmd": "layer.force", "args": { "layer": "live|show|queue|rotation|relay|fun|none" } },
