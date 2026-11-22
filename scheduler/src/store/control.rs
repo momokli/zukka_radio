@@ -1397,3 +1397,294 @@ fn contract_code(err: &ApiError) -> String {
         _ => "command_failed".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Calls [`build_command`] with a JSON `args` object.
+    fn build(cmd: &str, args: serde_json::Value) -> ApiResult<String> {
+        build_command(cmd, &args)
+    }
+
+    /// The §6.4 contract code of an [`ApiError`].
+    fn err_code(err: &ApiError) -> &'static str {
+        match err {
+            ApiError::Contract { code, .. } => code,
+            ApiError::Validation { .. } => "validation_error",
+            _ => "other",
+        }
+    }
+
+    /// The `error.details.field` of an [`ApiError`], when present.
+    fn err_field(err: &ApiError) -> Option<String> {
+        match err {
+            ApiError::Contract { details, .. } => details
+                .as_ref()
+                .and_then(|d| d.get("field"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            ApiError::Validation { field, .. } => Some((*field).to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn build_command_mixer_surface_translates() {
+        let cases: &[(&str, serde_json::Value, &str)] = &[
+            (
+                "mixer.set",
+                json!({"channel":"live","gain_db":-6.0}),
+                "mixer.set live -6",
+            ),
+            (
+                "mixer.set",
+                json!({"channel":"show","linear":0.5}),
+                "mixer.set show 0.5",
+            ),
+            (
+                "mixer.trim",
+                json!({"channel":"queue","gain_db":-3.0}),
+                "mixer.trim queue -3",
+            ),
+            (
+                "mixer.mute",
+                json!({"channel":"live","mute":true}),
+                "mixer.mute live true",
+            ),
+            (
+                "mixer.mute",
+                json!({"channel":"live","mute":false}),
+                "mixer.mute live false",
+            ),
+            (
+                "mixer.solo",
+                json!({"channel":"relay","solo":true}),
+                "mixer.solo relay true",
+            ),
+            (
+                "mixer.exclusive",
+                json!({"channel":"rotation"}),
+                "mixer.exclusive rotation",
+            ),
+            (
+                "mixer.patch",
+                json!({"channel":"fun","source":"file:/x"}),
+                "mixer.patch fun file:/x",
+            ),
+            (
+                "mixer.patch",
+                json!({"channel":"fun","source":"https://h/x"}),
+                "mixer.patch fun https://h/x",
+            ),
+            (
+                "mixer.patch",
+                json!({"channel":"fun","source":"relay:https://h/x"}),
+                "mixer.patch fun relay:https://h/x",
+            ),
+            (
+                "mixer.patch",
+                json!({"channel":"fun","source":"harbor:/live/slot-07"}),
+                "mixer.patch fun harbor:/live/slot-07",
+            ),
+            ("mixer.master", json!({"gain_db":0.0}), "mixer.master 0"),
+        ];
+        for (cmd, args, expected) in cases {
+            assert_eq!(build(cmd, args.clone()).unwrap(), *expected, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn build_command_channel_grammar() {
+        for ok in [
+            "live",
+            "show",
+            "queue",
+            "rotation",
+            "relay",
+            "fun",
+            "harbor.slot-01",
+            "relay.slot-08",
+            "adhoc-1",
+        ] {
+            assert!(
+                build("mixer.mute", json!({"channel": ok, "mute": true})).is_ok(),
+                "{ok} must be a valid channel"
+            );
+        }
+        for bad in [
+            "harbor.slot-1",
+            "harbor.slot-001",
+            "relay.slot-1",
+            "adhoc-",
+            "adhoc-x",
+            "LIVE",
+            "harbor:/live/slot-01",
+        ] {
+            let err = build("mixer.mute", json!({"channel": bad, "mute": true})).unwrap_err();
+            assert_eq!(err_code(&err), "invalid_args", "{bad}");
+            assert_eq!(err_field(&err).as_deref(), Some("channel"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn build_command_gain_bounds_and_exclusivity() {
+        // dB bounds are inclusive at -60 / +12.
+        assert_eq!(
+            build("mixer.set", json!({"channel":"live","gain_db":-60.0})).unwrap(),
+            "mixer.set live -60"
+        );
+        assert_eq!(
+            build("mixer.set", json!({"channel":"live","gain_db":12.0})).unwrap(),
+            "mixer.set live 12"
+        );
+        assert_eq!(
+            err_code(&build("mixer.set", json!({"channel":"live","gain_db":-60.01})).unwrap_err()),
+            "bad_gain"
+        );
+        assert_eq!(
+            err_code(&build("mixer.set", json!({"channel":"live","gain_db":12.01})).unwrap_err()),
+            "bad_gain"
+        );
+        // Linear bounds are inclusive at 0 / 1.
+        assert_eq!(
+            build("mixer.set", json!({"channel":"live","linear":0.0})).unwrap(),
+            "mixer.set live 0"
+        );
+        assert_eq!(
+            build("mixer.set", json!({"channel":"live","linear":1.0})).unwrap(),
+            "mixer.set live 1"
+        );
+        assert_eq!(
+            err_code(&build("mixer.set", json!({"channel":"live","linear":-0.01})).unwrap_err()),
+            "bad_gain"
+        );
+        assert_eq!(
+            err_code(&build("mixer.set", json!({"channel":"live","linear":1.01})).unwrap_err()),
+            "bad_gain"
+        );
+        // Both set → mutually exclusive; neither set → missing argument.
+        assert_eq!(
+            err_code(
+                &build(
+                    "mixer.set",
+                    json!({"channel":"live","gain_db":-6.0,"linear":0.5})
+                )
+                .unwrap_err()
+            ),
+            "invalid_args"
+        );
+        assert_eq!(
+            err_code(&build("mixer.set", json!({"channel":"live"})).unwrap_err()),
+            "invalid_args"
+        );
+    }
+
+    #[test]
+    fn build_command_source_prefixes() {
+        for ok in [
+            "file:x",
+            "https://h/x",
+            "relay:https://h/x",
+            "harbor:/live/slot-07",
+        ] {
+            assert!(
+                build("mixer.patch", json!({"channel":"live","source": ok})).is_ok(),
+                "{ok} must be a valid source"
+            );
+        }
+        for bad in ["ftp:x", "file:", "harbor:/live/slot-7"] {
+            let err = build("mixer.patch", json!({"channel":"live","source": bad})).unwrap_err();
+            assert_eq!(err_code(&err), "bad_source", "{bad}");
+        }
+    }
+
+    #[test]
+    fn build_command_layer_live_tape_and_whitelist() {
+        for preset in ["default", "live", "relay-only"] {
+            assert_eq!(
+                build("layer.preset", json!({"preset": preset})).unwrap(),
+                format!("layer.preset {preset}")
+            );
+        }
+        let err = build("layer.preset", json!({"preset":"rotation"})).unwrap_err();
+        assert_eq!(err_code(&err), "invalid_args");
+        assert_eq!(err_field(&err).as_deref(), Some("preset"));
+
+        assert_eq!(
+            build("layer.force", json!({"layer":"none"})).unwrap(),
+            "layer.force none"
+        );
+        for layer in ["live", "show", "queue", "rotation", "relay", "fun"] {
+            assert_eq!(
+                build("layer.force", json!({"layer": layer})).unwrap(),
+                format!("layer.force {layer}")
+            );
+        }
+        assert_eq!(
+            build("layer.enable", json!({"layer":"queue","enabled":true})).unwrap(),
+            "layer.enable queue true"
+        );
+        assert_eq!(
+            build("live.set", json!({"mount":"/live/slot-01"})).unwrap(),
+            "live.set /live/slot-01"
+        );
+        assert_eq!(build("live.clear", json!({})).unwrap(), "live.clear");
+        assert_eq!(
+            build("tape.start", json!({"tape_id":"t-1"})).unwrap(),
+            "tape.start t-1"
+        );
+        assert_eq!(build("tape.stop", json!({})).unwrap(), "tape.stop");
+
+        // Read-only / non-proxyable commands stay unknown to the proxy.
+        for cmd in [
+            "mixer.meters",
+            "live.status",
+            "monitor.status",
+            "monitor.enable",
+        ] {
+            let err = build(cmd, json!({"enabled": true})).unwrap_err();
+            assert_eq!(err_code(&err), "unknown_command", "{cmd}");
+        }
+    }
+
+    #[test]
+    fn preset_channel_intent_per_preset() {
+        assert_eq!(
+            preset_channel_intent(Some("default"), "rotation"),
+            (Some(0.0), false)
+        );
+        assert_eq!(preset_channel_intent(Some("default"), "live"), (None, true));
+        assert_eq!(
+            preset_channel_intent(Some("live"), "live"),
+            (Some(0.0), false)
+        );
+        assert_eq!(
+            preset_channel_intent(Some("relay-only"), "relay"),
+            (Some(0.0), false)
+        );
+        assert_eq!(preset_channel_intent(None, "live"), (None, false));
+        assert_eq!(preset_channel_intent(Some("bogus"), "live"), (None, false));
+    }
+
+    #[test]
+    fn parse_meters_null_and_unknown_ids() {
+        let body = r#"[
+            {"id":"live","rms_l":-18.2,"rms_r":null,"peak":-3.1},
+            {"id":"ghost","rms_l":-1.0}
+        ]"#;
+        let map = parse_meters(body);
+        let live = map.get("live").expect("live present");
+        assert_eq!(live.rms_l, Some(-18.2));
+        assert_eq!(live.rms_r, None);
+        assert_eq!(live.peak, Some(-3.1));
+        assert!(!live.limiter_active);
+        // An id the projection does not know stays in the map.
+        let ghost = map.get("ghost").expect("unknown id kept");
+        assert_eq!(ghost.rms_l, Some(-1.0));
+        assert!(ghost.peak.is_none());
+        // Fail-open: broken / non-array JSON ⇒ empty map (state stays 200).
+        assert!(parse_meters("not json").is_empty());
+        assert!(parse_meters("{}").is_empty());
+    }
+}

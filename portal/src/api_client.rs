@@ -4675,3 +4675,68 @@ mod lifecycle_tests {
         assert!(!out.warnings.is_empty(), "warnings decorated: {out:?}");
     }
 }
+
+#[cfg(test)]
+mod cockpit_state_tests {
+    use super::*;
+
+    /// The eight documented `ChannelView.kind` wire values (§5.1).
+    const KINDS: [&str; 8] = [
+        "live", "show", "queue", "rotation", "relay", "fun", "harbor", "adhoc",
+    ];
+
+    #[test]
+    fn cockpit_state_deserializes_all_spec_fixtures() {
+        let fixtures = [
+            ("idle", include_str!("../../spec/fixtures/idle.json")),
+            ("live", include_str!("../../spec/fixtures/live.json")),
+            (
+                "relay-crossfade",
+                include_str!("../../spec/fixtures/relay-crossfade.json"),
+            ),
+            ("wide", include_str!("../../spec/fixtures/wide.json")),
+        ];
+        for (name, body) in fixtures {
+            let state: CockpitState =
+                serde_json::from_str(body).unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(state.schema_version, 1, "{name}");
+            assert!(!state.channels.is_empty(), "{name}");
+            for channel in &state.channels {
+                assert!(
+                    KINDS.contains(&channel.kind.as_str()),
+                    "{name}: unexpected kind {:?}",
+                    channel.kind
+                );
+            }
+            if name == "wide" {
+                assert!(
+                    state.channels.len() > 6,
+                    "wide fixture exposes slot channels"
+                );
+            } else {
+                assert_eq!(state.channels.len(), 6, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn cockpit_state_roundtrip_preserves_order_and_nulls() {
+        let body = include_str!("../../spec/fixtures/wide.json");
+        let state: CockpitState = serde_json::from_str(body).unwrap();
+        let ids: Vec<String> = state.channels.iter().map(|c| c.id.clone()).collect();
+
+        let value = serde_json::to_value(&state).unwrap();
+        let back: CockpitState = serde_json::from_value(value).unwrap();
+        let ids_back: Vec<String> = back.channels.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids_back, ids, "channel order must survive the roundtrip");
+
+        // `null` meter levels stay `None` (fail-open, §4.5).
+        let show = back.channels.iter().find(|c| c.id == "show").unwrap();
+        assert!(show.rms_l.is_none() && show.rms_r.is_none() && show.peak.is_none());
+
+        // Optional top-level fields stay present-but-optional.
+        let again = serde_json::to_value(&back).unwrap();
+        assert!(again.get("listeners").is_some());
+        assert!(again.get("now_playing").is_some());
+    }
+}

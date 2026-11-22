@@ -847,3 +847,191 @@ async fn state_get_returns_cockpit_state() {
 
 #[allow(dead_code)]
 fn _assert_control_state_used(_: ControlState) {}
+
+// ---------------------------------------------------------------------------
+// (g) `mixer.mute` zeroes the channel level (§4.1/§4.5/§6.2)
+// ---------------------------------------------------------------------------
+
+/// Engine whose meter values react to `mixer.mute`/`mixer.set`, so the e2e test
+/// can observe "mute ⇒ no signal" through the real WS meter frame.
+struct MutingEngine {
+    levels: Mutex<HashMap<String, (f32, f32)>>,
+    muted: Mutex<HashMap<String, bool>>,
+}
+
+impl MutingEngine {
+    fn new() -> Self {
+        let mut levels = HashMap::new();
+        levels.insert("live".to_string(), (-18.2f32, -18.0f32));
+        levels.insert("show".to_string(), (-24.0f32, -24.0f32));
+        Self {
+            levels: Mutex::new(levels),
+            muted: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn apply(&self, command: &str) {
+        let mut parts = command.split_whitespace();
+        match parts.next() {
+            Some("mixer.mute") => {
+                let channel = parts.next().unwrap_or("").to_string();
+                let muted = parts.next() == Some("true");
+                self.muted.lock().unwrap().insert(channel, muted);
+            }
+            Some("mixer.set") => {
+                let channel = parts.next().unwrap_or("");
+                if let Ok(gain) = parts.next().unwrap_or("0").parse::<f32>() {
+                    if let Some(level) = self.levels.lock().unwrap().get_mut(channel) {
+                        *level = (gain, gain);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn meters_json(&self) -> String {
+        let levels = self.levels.lock().unwrap();
+        let muted = self.muted.lock().unwrap();
+        let rows: Vec<String> = levels
+            .iter()
+            .map(|(id, (rms_l, rms_r))| {
+                if *muted.get(id).unwrap_or(&false) {
+                    format!("{{\"id\":\"{id}\",\"rms_l\":null,\"rms_r\":null,\"peak\":null}}")
+                } else {
+                    format!("{{\"id\":\"{id}\",\"rms_l\":{rms_l},\"rms_r\":{rms_r},\"peak\":-3.0}}")
+                }
+            })
+            .collect();
+        format!("[{}]", rows.join(","))
+    }
+}
+
+#[async_trait]
+impl zukka_portal::control_ws::engine::EngineClient for MutingEngine {
+    async fn command(
+        &self,
+        command: &str,
+    ) -> Result<String, zukka_portal::control_ws::engine::EngineError> {
+        self.apply(command);
+        Ok("OK".to_string())
+    }
+
+    async fn meters(&self) -> Result<String, zukka_portal::control_ws::engine::EngineError> {
+        Ok(self.meters_json())
+    }
+
+    fn enabled(&self) -> bool {
+        true
+    }
+}
+
+/// Serves the router with a dynamic engine (mirrors [`serve`]).
+async fn serve_dyn(
+    role: &str,
+    engine: Arc<dyn zukka_portal::control_ws::engine::EngineClient>,
+    hub: Arc<MeterHub>,
+) -> String {
+    let identity = Arc::new(FakeIdentity::new(role));
+    let state = AppState::with_clients(
+        config(),
+        identity,
+        Arc::new(WindowLimiter::new(50, Duration::from_secs(900))),
+        Arc::new(FakeMusicApi::new()),
+        Arc::new(NoJobs),
+        Arc::new(NoWaveforms),
+        Arc::new(FakeTrackApi::new()),
+        Arc::new(FakeQueueApi::new()),
+        Arc::new(FakeControlApi::new()),
+    )
+    .with_engine(engine)
+    .with_meter_hub(hub);
+    let router = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    format!("ws://{addr}/api/v1/control/ws")
+}
+
+/// Reads text frames until one has the given `id` (skips meter frames/events).
+async fn read_reply(ws: &mut Ws, id: &str) -> serde_json::Value {
+    loop {
+        let value = next_json(ws).await;
+        if value["id"] == id {
+            return value;
+        }
+    }
+}
+
+/// Reads binary meter frames until `pred` matches (skips text frames).
+async fn read_binary_until<F>(ws: &mut Ws, pred: F) -> Vec<u8>
+where
+    F: Fn(&[u8]) -> bool,
+{
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("meter frame timeout")
+            .expect("ws closed")
+            .expect("ws error");
+        if let Message::Binary(bytes) = message {
+            if pred(&bytes) {
+                return bytes.to_vec();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn mute_zeroes_channel_level() {
+    let engine = Arc::new(MutingEngine::new());
+    let hub = Arc::new(MeterHub::new());
+    let url = serve_dyn("operator", engine.clone(), hub).await;
+    let mut ws = connect(&url).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({"type": "auth", "token": SERVICE_TOKEN}),
+    )
+    .await;
+    read_until_type(&mut ws, "state").await;
+
+    // Mute `live`: the reply is `ok:true`.
+    send_text(
+        &mut ws,
+        serde_json::json!({"id": "m-1", "cmd": "mixer.mute",
+            "args": {"channel": "live", "mute": true}}),
+    )
+    .await;
+    let reply = read_reply(&mut ws, "m-1").await;
+    assert_eq!(reply["ok"], true);
+
+    // A later binary frame reports `live` as no signal (`f32::MIN`).
+    let frame = read_binary_until(&mut ws, |bytes| {
+        bytes.len() >= 8 && f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) == f32::MIN
+    })
+    .await;
+    assert_eq!(frame[0], 1);
+    let live_rms = f32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
+    assert_eq!(live_rms, f32::MIN);
+    // `show` is the second channel in canonical order and keeps its level.
+    let show_rms = f32::from_le_bytes([frame[16], frame[17], frame[18], frame[19]]);
+    assert!((show_rms - (-24.0)).abs() < 1e-3, "show={show_rms}");
+
+    // Unmute: the level returns.
+    send_text(
+        &mut ws,
+        serde_json::json!({"id": "m-2", "cmd": "mixer.mute",
+            "args": {"channel": "live", "mute": false}}),
+    )
+    .await;
+    let reply = read_reply(&mut ws, "m-2").await;
+    assert_eq!(reply["ok"], true);
+    let frame = read_binary_until(&mut ws, |bytes| {
+        bytes.len() >= 8 && f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) != f32::MIN
+    })
+    .await;
+    let live_rms = f32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
+    assert!((live_rms - (-18.2)).abs() < 1e-3, "live={live_rms}");
+}
