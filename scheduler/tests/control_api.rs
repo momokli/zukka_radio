@@ -223,6 +223,7 @@ async fn latest_details(pool: &SqlitePool, event: &str) -> Value {
 
 #[tokio::test]
 async fn t16_unknown_subroute() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(&app, "/api/v1/control/nope", json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -235,6 +236,7 @@ async fn t16_unknown_subroute() {
 
 #[tokio::test]
 async fn t1_live_set() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     let (status, _) = post(
@@ -252,6 +254,7 @@ async fn t1_live_set() {
 
 #[tokio::test]
 async fn t2_live_clear() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_setting(&pool, "live.override_caster_id", CASTER).await;
@@ -267,6 +270,7 @@ async fn t2_live_clear() {
 
 #[tokio::test]
 async fn t3_live_unknown_caster() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let ghost = "ffffffff-ffff-7fff-8fff-ffffffffffff";
     let (status, body) = post(
@@ -281,6 +285,7 @@ async fn t3_live_unknown_caster() {
 
 #[tokio::test]
 async fn t4_live_non_uuid() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(
         &app,
@@ -295,6 +300,7 @@ async fn t4_live_non_uuid() {
 
 #[tokio::test]
 async fn t5_live_without_reason() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(&app, "/api/v1/control/live", json!({ "caster_id": null })).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -308,6 +314,7 @@ async fn t5_live_without_reason() {
 
 #[tokio::test]
 async fn t6_switch_valid() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     let (status, _) = post(
         &app,
@@ -324,6 +331,7 @@ async fn t6_switch_valid() {
 
 #[tokio::test]
 async fn t7_switch_unknown_layer() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(
         &app,
@@ -342,6 +350,7 @@ async fn t7_switch_unknown_layer() {
 
 #[tokio::test]
 async fn t8_skip_with_playing_item() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_queue(&pool, "a0000000-0000-7000-8000-000000000001", CASTER).await;
@@ -360,6 +369,7 @@ async fn t8_skip_with_playing_item() {
 
 #[tokio::test]
 async fn t9_skip_without_playing_item() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(&app, "/api/v1/control/skip", json!({ "reason": "x" })).await;
     assert_eq!(
@@ -375,6 +385,7 @@ async fn t9_skip_without_playing_item() {
 
 #[tokio::test]
 async fn t10_pause_live_not_active() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     let (status, _) = post(
         &app,
@@ -391,6 +402,7 @@ async fn t10_pause_live_not_active() {
 
 #[tokio::test]
 async fn t11_pause_live_override_active() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_setting(&pool, "live.override_caster_id", CASTER).await;
@@ -409,6 +421,7 @@ async fn t11_pause_live_override_active() {
 
 #[tokio::test]
 async fn t12_pause_live_broadcast_active() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_broadcast(
@@ -432,6 +445,7 @@ async fn t12_pause_live_broadcast_active() {
 
 #[tokio::test]
 async fn t13_resume_even_when_live_active() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     seed_setting(&pool, "live.override_caster_id", CASTER).await;
@@ -450,6 +464,7 @@ async fn t13_resume_even_when_live_active() {
 
 #[tokio::test]
 async fn t14_pause_non_bool() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(
         &app,
@@ -464,6 +479,7 @@ async fn t14_pause_non_bool() {
 
 #[tokio::test]
 async fn t15_pause_without_reason() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = post(&app, "/api/v1/control/pause", json!({ "paused": true })).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -479,6 +495,7 @@ async fn t15_pause_without_reason() {
 /// `settings` **and** appended to `event_log` (observable side effects).
 #[tokio::test]
 async fn t17_pause_persists_state_and_event_log() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     let (status, _) = post(
         &app,
@@ -502,6 +519,7 @@ async fn t17_pause_persists_state_and_event_log() {
 /// writes a `control_action{action:"skip"}` event.
 #[tokio::test]
 async fn t18_switch_and_skip_write_event_log() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     let (status, _) = post(
         &app,
@@ -529,6 +547,7 @@ async fn t18_switch_and_skip_write_event_log() {
 /// `live` set/clear each append their own `event_log` event.
 #[tokio::test]
 async fn t19_live_set_and_clear_write_event_log() {
+    let _env = lock_control_env().await;
     let (_dir, pool, app) = setup().await;
     seed_caster(&pool, CASTER).await;
     let (status, _) = post(
@@ -554,6 +573,7 @@ async fn t19_live_set_and_clear_write_event_log() {
 /// either `405` (method not allowed) or the `404` JSON envelope, never a crash.
 #[tokio::test]
 async fn t20_get_methods_not_silently_accepted() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     for path in [
         "/api/v1/control/pause",
@@ -730,6 +750,7 @@ async fn t26_state_active_queue_layer() {
 /// router is still mounted (401 without token), and control stays reachable.
 #[tokio::test]
 async fn t21_control_does_not_collide_with_playback() {
+    let _env = lock_control_env().await;
     let (_dir, _pool, app) = setup().await;
     let (status, body) = send(&app, Method::GET, "/api/v1/playback/current", None).await;
     assert_eq!(
