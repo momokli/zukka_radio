@@ -23,7 +23,7 @@ use tower::ServiceExt;
 use zukka_portal::api_client::{
     CasterDto, CreatedSessionDto, FakeControlApi, FakeQueueApi, FakeTrackApi, IdentityApi,
     IdentityError, JobError, NewUploadJob, NewWaveform, Queue, QueueApi, QueueError, QueueItem,
-    SessionValidationDto, UploadJob, UploadJobApi, UploadJobPatch, Waveform, WaveformApi,
+    SessionValidationDto, Track, UploadJob, UploadJobApi, UploadJobPatch, Waveform, WaveformApi,
     WaveformApiError,
 };
 use zukka_portal::api_client::{CasterUpdate, CreatedCaster, NewCaster};
@@ -238,6 +238,16 @@ fn router(
     queues: Arc<FakeQueueApi>,
     control: Arc<FakeControlApi>,
 ) -> Router {
+    router_with_tracks(perms, queues, control, Arc::new(FakeTrackApi::new()))
+}
+
+/// Like [`router`] but with a pre-seeded track catalog (Issue #155, Block 5).
+fn router_with_tracks(
+    perms: BTreeMap<String, bool>,
+    queues: Arc<FakeQueueApi>,
+    control: Arc<FakeControlApi>,
+    tracks: Arc<FakeTrackApi>,
+) -> Router {
     let state = AppState::with_clients(
         config(),
         Arc::new(FakeIdentity::new(perms)),
@@ -245,11 +255,29 @@ fn router(
         Arc::new(FakeMusicApi::new()),
         Arc::new(NoJobs),
         Arc::new(NoWaveforms),
-        Arc::new(FakeTrackApi::new()),
+        tracks,
         queues,
         control,
     );
     build_router(state)
+}
+
+/// A catalog track for the source-panel assertions.
+fn track(id: &str, title: &str, artist: &str, caster: Option<&str>, visibility: &str) -> Track {
+    Track {
+        id: id.into(),
+        music_api_id: format!("m-{id}"),
+        title: title.into(),
+        artist: artist.into(),
+        album: String::new(),
+        duration_ms: 180_000,
+        storage_key: format!("k/{id}"),
+        artwork_url: None,
+        visibility: visibility.into(),
+        caster_id: caster.map(|c| c.to_string()),
+        created_at: "2026-11-19T12:00:00.000Z".into(),
+        updated_at: "2026-11-19T12:00:00.000Z".into(),
+    }
 }
 
 fn caster_perms() -> BTreeMap<String, bool> {
@@ -1056,4 +1084,197 @@ async fn fake_queue_api_enforces_content_matrix() {
         .await
         .expect_err("missing content");
     assert!(matches!(bad, QueueError::Validation { .. }), "{bad}");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #155, Block 5: the ported queue-screen markup.
+// ---------------------------------------------------------------------------
+
+/// `true` when the `data-kind="tape"` filter button carries `disabled`.
+fn tapes_button_disabled(body: &str) -> bool {
+    let Some(idx) = body.find("data-kind=\"tape\"") else {
+        return false;
+    };
+    body[idx..idx + 200.min(body.len() - idx)].contains("disabled")
+}
+
+#[tokio::test]
+async fn queue_screen_shell_renders_all_components() {
+    let (queues, control) = seeded();
+    queues.seed_item(item("a", "q-own", 0));
+    let tracks = Arc::new(FakeTrackApi::new());
+    tracks.seed(track("t-a", "Alpha", "Artist A", Some("c-1"), "shared"));
+    let app = router_with_tracks(caster_perms(), queues, control, tracks);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // 1 + 2: shell + toolbar.
+    assert!(body.contains("class=\"queue-screen\""), "{body}");
+    assert!(body.contains("class=\"queue-toolbar\""), "{body}");
+
+    // 3: selector lists own + foreign queues.
+    assert!(body.contains("aria-label=\"Select queue\""), "{body}");
+    assert!(body.contains("<option value=\"q-own\""), "{body}");
+    assert!(body.contains("<option value=\"q-foreign\""), "{body}");
+
+    // 4: meta.
+    assert!(body.contains("class=\"queue-meta\""), "{body}");
+    assert!(body.contains("V.01"), "{body}");
+    assert!(body.contains("TOTAL"), "{body}");
+
+    // 5: source panel + search.
+    assert!(body.contains("class=\"queue-source-panel\""), "{body}");
+    assert!(body.contains("type=\"search\""), "{body}");
+    assert!(body.contains("name=\"q\""), "{body}");
+
+    // 7: TAPES disabled (no read-contract).
+    assert!(body.contains("TAPES"), "{body}");
+    assert!(tapes_button_disabled(&body), "tapes disabled: {body}");
+
+    // 8: item row anatomy.
+    assert!(body.contains("class=\"queue-position\""), "{body}");
+    assert!(body.contains("class=\"drag-handle\""), "{body}");
+    assert!(
+        body.contains("class=\"queue-kind-icon kind-track\""),
+        "{body}"
+    );
+
+    // 9: item menu with a summary (write queue).
+    assert!(body.contains("class=\"item-menu\""), "{body}");
+    assert!(body.contains("<summary"), "{body}");
+
+    // 10: transport bar + status.
+    assert!(body.contains("class=\"transport-bar\""), "{body}");
+    assert!(body.contains("transport-status"), "{body}");
+    assert!(body.contains("PENDING"), "{body}");
+
+    // 13: catalog ADD posts `kind=track` to the existing items route.
+    assert!(body.contains("action=\"/queues/q-own/items\""), "{body}");
+    assert!(body.contains("name=\"kind\" value=\"track\""), "{body}");
+}
+
+#[tokio::test]
+async fn empty_queue_renders_empty_state() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("class=\"queue-empty\""), "{body}");
+}
+
+#[tokio::test]
+async fn read_only_queue_has_no_item_menu() {
+    let (queues, control) = seeded();
+    queues.seed_item(item("a", "q-foreign", 0));
+    let app = router(caster_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-foreign",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("class=\"item-menu\""),
+        "read-only queue has no item menu: {body}"
+    );
+    // 15: read-only badge on the meta.
+    assert!(body.contains("queue-readonly-badge"), "{body}");
+}
+
+#[tokio::test]
+async fn own_queue_has_no_readonly_badge() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("queue-readonly-badge"),
+        "own queue is not read-only: {body}"
+    );
+}
+
+#[tokio::test]
+async fn sources_fragment_lists_tracks() {
+    let (queues, control) = seeded();
+    let tracks = Arc::new(FakeTrackApi::new());
+    tracks.seed(track("t-a", "Alpha", "Artist A", Some("c-1"), "shared"));
+    let app = router_with_tracks(caster_perms(), queues, control, tracks);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own/sources?kind=track",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("<html"), "fragment only: {body}");
+    assert!(body.contains("class=\"source-row\""), "{body}");
+    assert!(body.contains("class=\"source-filters\""), "{body}");
+    assert!(body.contains("access-badge"), "{body}");
+}
+
+#[tokio::test]
+async fn sources_fragment_empty_catalog() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues, control);
+    let (session, _csrf) = login(&app).await;
+    let (status, _, body) = send(
+        &app,
+        Method::GET,
+        "/queues/q-own/sources?kind=track&q=zzz",
+        &[("cookie", &cookie(&session))],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("<html"), "fragment only: {body}");
+    assert!(
+        body.contains("class=\"source-empty\"") || body.contains("NO MATCHING SOURCE"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn queue_css_is_served() {
+    let (queues, control) = seeded();
+    let app = router(caster_perms(), queues, control);
+    let (status, headers, body) = send(&app, Method::GET, "/static/queue.css", &[], None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/css; charset=utf-8")
+    );
+    assert!(body.contains(".queue-screen"), "queue tokens + shell");
 }
