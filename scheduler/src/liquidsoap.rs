@@ -45,6 +45,133 @@ pub const TAPE_STOP: &str = "tape.stop";
 /// `tape.status` — JSON `{active, tape_id, path}` (§4.4, issue #108).
 pub const TAPE_STATUS: &str = "tape.status";
 
+// ---------------------------------------------------------------------------
+// Issue #147: mixer / layer / monitor command builders (§4.1/§4.2/§4.3)
+// ---------------------------------------------------------------------------
+
+/// `mixer.set <ch> <gain>` — a fader value (§4.1). `gain` is a bare dB number
+/// or a linear factor; the caller validates the range (Q7).
+pub fn mixer_set(channel: &str, gain: &str) -> String {
+    format!("mixer.set {} {}", channel.trim(), gain.trim())
+}
+
+/// `mixer.trim <ch> <gain_db>` — the pre-fader trim (§4.1).
+pub fn mixer_trim(channel: &str, gain_db: &str) -> String {
+    format!("mixer.trim {} {}", channel.trim(), gain_db.trim())
+}
+
+/// `mixer.mute <ch> <true|false>` (§4.1).
+pub fn mixer_mute(channel: &str, muted: bool) -> String {
+    format!("mixer.mute {} {muted}", channel.trim())
+}
+
+/// `mixer.solo <ch> <true|false>` — route the channel to the cue bus (§4.1).
+pub fn mixer_solo(channel: &str, solo: bool) -> String {
+    format!("mixer.solo {} {solo}", channel.trim())
+}
+
+/// `mixer.exclusive <ch>` — unmute only this channel (§4.1).
+pub fn mixer_exclusive(channel: &str) -> String {
+    format!("mixer.exclusive {}", channel.trim())
+}
+
+/// `mixer.patch <ch> <source>` — re-source a channel (§4.1).
+pub fn mixer_patch(channel: &str, source: &str) -> String {
+    format!("mixer.patch {} {}", channel.trim(), source.trim())
+}
+
+/// `mixer.master <gain_db>` — the master fader (§4.1).
+pub fn mixer_master(gain_db: &str) -> String {
+    format!("mixer.master {}", gain_db.trim())
+}
+
+/// `layer.preset <name>` — apply a documented mixer preset (§4.2).
+pub fn layer_preset(name: &str) -> String {
+    format!("layer.preset {}", name.trim())
+}
+
+/// `layer.force <layer|none>` — the manual automation override (§4.2).
+pub fn layer_force(layer: &str) -> String {
+    format!("layer.force {}", layer.trim())
+}
+
+/// `layer.enable <layer> <true|false>` — per-layer availability (§4.2).
+pub fn layer_enable(layer: &str, enabled: bool) -> String {
+    format!("layer.enable {} {enabled}", layer.trim())
+}
+
+/// `monitor.enable <true|false>` (§4.3).
+pub fn monitor_enable(enabled: bool) -> String {
+    format!("monitor.enable {enabled}")
+}
+
+/// `mixer.meters` — per-channel levels as JSON (§4.5).
+pub const MIXER_METERS: &str = "mixer.meters";
+
+/// A stable error code parsed from the Liquidsoap command response (§6.4).
+///
+/// The engine returns `"ERROR <code>: …"` **in the body** (not as an HTTP
+/// status); [`parse_engine_error`] maps it to the contract code the scheduler
+/// proxy exposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineErrorCode {
+    /// `unknown_channel` / `unknown_layer` → `404 channel_not_found`.
+    ChannelNotFound,
+    /// `bad_gain` → `422 bad_gain`.
+    BadGain,
+    /// `bad_source` → `422 bad_source`.
+    BadSource,
+    /// `invalid_args` → `422 invalid_args`.
+    InvalidArgs,
+    /// Any other `ERROR …` / malformed body → `502 command_failed`.
+    CommandFailed,
+}
+
+impl EngineErrorCode {
+    /// The contract code exposed on the wire (§3.1/§6.4).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineErrorCode::ChannelNotFound => "channel_not_found",
+            EngineErrorCode::BadGain => "bad_gain",
+            EngineErrorCode::BadSource => "bad_source",
+            EngineErrorCode::InvalidArgs => "invalid_args",
+            EngineErrorCode::CommandFailed => "command_failed",
+        }
+    }
+}
+
+/// Classifies a command response body.
+///
+/// `None` means success (`OK`/JSON body). `Some(code)` means the engine (or a
+/// malformed/empty body) reported a failure. The `ERROR <code>: …` prefix is
+/// stable across `mixer.liq`/`control.liq`.
+pub fn parse_engine_error(body: &str) -> Option<EngineErrorCode> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Some(EngineErrorCode::CommandFailed);
+    }
+    if let Some(rest) = trimmed.strip_prefix("ERROR") {
+        let token = rest
+            .trim_start()
+            .split(|c: char| c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        return Some(match token {
+            "unknown_channel" | "unknown_layer" => EngineErrorCode::ChannelNotFound,
+            "bad_gain" => EngineErrorCode::BadGain,
+            "bad_source" => EngineErrorCode::BadSource,
+            "invalid_args" => EngineErrorCode::InvalidArgs,
+            _ => EngineErrorCode::CommandFailed,
+        });
+    }
+    // A success body is `OK` or a JSON document (§4.1/§4.4).
+    if trimmed == "OK" || trimmed.starts_with('{') || trimmed.starts_with('[') {
+        None
+    } else {
+        Some(EngineErrorCode::CommandFailed)
+    }
+}
+
 fn client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -99,6 +226,15 @@ pub async fn status() -> Result<Option<String>, String> {
     push(LIVE_STATUS).await
 }
 
+/// Read helper for a single command (`read` semantics, Issue #147).
+///
+/// `Ok(None)` means no endpoint is configured (push disabled) — used by the
+/// fail-open state projection (e.g. `mixer.meters`). Transport errors are
+/// surfaced so callers can decide how to degrade.
+pub async fn read(command: &str) -> Result<Option<String>, String> {
+    push(command).await
+}
+
 /// Best-effort push with logging; failures are never fatal.
 ///
 /// Shared by the control store and the broadcast transition wiring: a push
@@ -127,5 +263,82 @@ mod tests {
     fn tape_command_constants_are_exact() {
         assert_eq!(TAPE_STOP, "tape.stop");
         assert_eq!(TAPE_STATUS, "tape.status");
+    }
+
+    #[test]
+    fn mixer_builders_trim_and_prefix() {
+        assert_eq!(mixer_set(" live ", " -6.0 "), "mixer.set live -6.0");
+        assert_eq!(mixer_trim("live", "-3"), "mixer.trim live -3");
+        assert_eq!(mixer_mute(" live", true), "mixer.mute live true");
+        assert_eq!(mixer_solo("live", false), "mixer.solo live false");
+        assert_eq!(mixer_exclusive(" queue "), "mixer.exclusive queue");
+        assert_eq!(mixer_patch("live", " file:/x "), "mixer.patch live file:/x");
+        assert_eq!(mixer_master(" 0.0 "), "mixer.master 0.0");
+        assert_eq!(layer_preset(" live "), "layer.preset live");
+        assert_eq!(layer_force("none"), "layer.force none");
+        assert_eq!(layer_enable(" queue ", true), "layer.enable queue true");
+        assert_eq!(monitor_enable(false), "monitor.enable false");
+        assert_eq!(MIXER_METERS, "mixer.meters");
+    }
+
+    #[test]
+    fn parse_engine_error_ok_is_none() {
+        assert_eq!(parse_engine_error("OK"), None);
+        assert_eq!(parse_engine_error("  OK  "), None);
+        assert_eq!(parse_engine_error("{\"live_order\":[]}"), None);
+        assert_eq!(parse_engine_error("[1,2]"), None);
+    }
+
+    #[test]
+    fn parse_engine_error_maps_stable_codes() {
+        assert_eq!(
+            parse_engine_error("ERROR bad_gain: -99"),
+            Some(EngineErrorCode::BadGain)
+        );
+        assert_eq!(
+            parse_engine_error("ERROR unknown_channel: x"),
+            Some(EngineErrorCode::ChannelNotFound)
+        );
+        assert_eq!(
+            parse_engine_error("ERROR unknown_layer: x"),
+            Some(EngineErrorCode::ChannelNotFound)
+        );
+        assert_eq!(
+            parse_engine_error("ERROR bad_source: ftp:x"),
+            Some(EngineErrorCode::BadSource)
+        );
+        assert_eq!(
+            parse_engine_error("ERROR invalid_args: usage"),
+            Some(EngineErrorCode::InvalidArgs)
+        );
+    }
+
+    #[test]
+    fn parse_engine_error_garbage_is_command_failed() {
+        assert_eq!(parse_engine_error(""), Some(EngineErrorCode::CommandFailed));
+        assert_eq!(
+            parse_engine_error("   "),
+            Some(EngineErrorCode::CommandFailed)
+        );
+        assert_eq!(
+            parse_engine_error("ERROR we-failed"),
+            Some(EngineErrorCode::CommandFailed)
+        );
+        assert_eq!(
+            parse_engine_error("totally not a response"),
+            Some(EngineErrorCode::CommandFailed)
+        );
+    }
+
+    #[test]
+    fn engine_error_code_wire_names() {
+        assert_eq!(
+            EngineErrorCode::ChannelNotFound.as_str(),
+            "channel_not_found"
+        );
+        assert_eq!(EngineErrorCode::BadGain.as_str(), "bad_gain");
+        assert_eq!(EngineErrorCode::BadSource.as_str(), "bad_source");
+        assert_eq!(EngineErrorCode::InvalidArgs.as_str(), "invalid_args");
+        assert_eq!(EngineErrorCode::CommandFailed.as_str(), "command_failed");
     }
 }
