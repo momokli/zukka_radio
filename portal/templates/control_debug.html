@@ -40,6 +40,7 @@
       background: #1f2533; color: #e6e9ef; cursor: pointer;
     }
     .btn[aria-pressed="true"] { background: #b45309; border-color: #b45309; color: #fff; }
+    .btn:disabled, .ch__fader:disabled { opacity: .45; cursor: not-allowed; }
     .ch__meters { display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: .5rem; }
     .meter { display: block; height: .5rem; border-radius: 4px; background: #0c0f15; overflow: hidden; }
     .meter__fill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #22c55e, #eab308 80%, #ef4444); }
@@ -77,8 +78,7 @@
     var API_VERSION = 1;
     var FADER_MIN = -60;
     var FADER_MAX = 12;
-    // §6.2: f32::MIN marks "no signal".
-    var NEG_INF = -3.4028235e38;
+    var CAN_WRITE = {% if can_write %}true{% else %}false{% endif %};
     var FADER_THROTTLE_MS = 33; // ~30 sends/s (§6.5)
 
     var channelsEl = document.getElementById("channels");
@@ -96,12 +96,6 @@
     function nextId() {
       seq += 1;
       return "c-" + seq;
-    }
-
-    function esc(value) {
-      return String(value == null ? "" : value).replace(/[&<>"']/g, function (c) {
-        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-      });
     }
 
     function setConn(text, ok) {
@@ -192,6 +186,12 @@
         meterPeak: root.querySelector('[data-role="meter-peak"]')
       };
 
+      if (!CAN_WRITE) {
+        refs.fader.disabled = true;
+        refs.mute.disabled = true;
+        refs.solo.disabled = true;
+      }
+
       refs.fader.addEventListener("input", function () {
         var gain = parseFloat(refs.fader.value);
         refs.gain.textContent = gain.toFixed(1) + " dB";
@@ -217,7 +217,7 @@
       refs.kind.textContent = ch.kind || "";
       refs.connected.setAttribute("data-state", ch.connected ? "on" : "off");
       if (document.activeElement !== refs.fader) {
-        refs.fader.value = ch.gain_db == null ? "0" : String(ch.gain_db);
+        refs.fader.value = ch.gain_db == null ? String(FADER_MIN) : String(ch.gain_db);
       }
       refs.gain.textContent = ch.gain_db == null ? "—" : Number(ch.gain_db).toFixed(1) + " dB";
       refs.mute.setAttribute("aria-pressed", String(!!ch.mute));
@@ -287,7 +287,7 @@
     }
 
     function dbToPercent(db) {
-      if (db === NEG_INF || db == null || db <= FADER_MIN) {
+      if (db == null || !Number.isFinite(db) || db <= FADER_MIN) {
         return 0;
       }
       if (db >= 0) {
@@ -297,7 +297,7 @@
     }
 
     function fmtDb(db) {
-      if (db === NEG_INF || db == null || db <= FADER_MIN) {
+      if (db == null || !Number.isFinite(db) || db <= FADER_MIN) {
         return "—";
       }
       return db.toFixed(1);
@@ -406,8 +406,20 @@
       ws.onopen = function () { setConn("verbunden", true); };
       ws.onmessage = onMessage;
       ws.onerror = function () { setConn("Verbindungsfehler", false); };
-      ws.onclose = function () {
-        setConn("getrennt — neuer Versuch…", false);
+      ws.onclose = function (ev) {
+        var code = ev && typeof ev.code === "number" ? ev.code : 0;
+        var reason = ev && ev.reason ? " — " + ev.reason : "";
+        if (code === 4401) {
+          setConn("getrennt (4401: Auth/Session abgelaufen) — neu laden", false);
+          toast("Auth/Session abgelaufen (4401) — bitte neu einloggen", "error");
+          return;
+        }
+        if (code === 4503) {
+          setConn("getrennt (4503: Engine nicht erreichbar) — kein Auto-Reconnect", false);
+          toast("Engine weg (4503) — kein automatischer Neuversuch", "error");
+          return;
+        }
+        setConn("getrennt (Code " + code + reason + ") — neuer Versuch…", false);
         setTimeout(connect, 2000);
       };
     }
