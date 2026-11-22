@@ -319,6 +319,7 @@ Alle Pfade unter eigenem Host (`studio.<domain>`), damit das
 | POST    | `/schedule/{id}/cancel`            | Broadcast abbrechen (`scheduled`/`live`→`cancelled`)     | `broadcast.write`        |
 | POST    | `/schedule/{id}/delete`            | Broadcast löschen                                        | `broadcast.write`        |
 | GET     | `/control`                         | Control Panel                                            | `control.read`           |
+| GET     | `/control/debug`                   | Minimale Debug-UI (Fader/Mute/Solo/Meter, nur WS-Bridge) | `control.read`           |
 | POST    | `/control/source`                  | Quelle umschalten                                        | `control.write`          |
 | POST    | `/control/pause`                   | Pause/Resume                                             | `control.write`          |
 | POST    | `/control/skip`                    | Skip                                                     | `control.write`          |
@@ -498,6 +499,14 @@ das neue Passwort gilt ab der nächsten Verbindung.
 - **Write-Gate:** Cookie-Sessions dürfen Engine-Writes nur mit `control.write`
   (§6.10.1); sonst antwortet die Bridge `forbidden` und mutiert die Engine nicht.
   Service-Token-Sitzungen haben Vollzugriff.
+
+**Minimale Debug-UI (#149):** `GET /control/debug` (Permission `control.read`)
+rendert eine eigenständige Seite mit N Kanälen (Fader, Mute, Solo, Meter). Sie
+nutzt **ausschließlich** die WebSocket-Bridge `/api/v1/control/ws` — kein SSE,
+kein Polling, kein REST-Read. Kanäle kommen aus dem WS-`state`-Event (Reihenfolge
+§5.5), Fader/Mute/Solo senden `mixer.set`/`mixer.mute`/`mixer.solo`, Meter aus
+den binären 30-Hz-Frames (§6.2). Die Seite ist ein Platzhalter und wird später
+durch das echte Cockpit ersetzt.
 
 ### 3.7 Datenmodell `portal.db`
 
