@@ -1934,3 +1934,92 @@ where
 {
     Option::<T>::deserialize(deserializer).map(Some)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// One `ChannelViewDto` with `null` levels/metadata for serde tests.
+    fn channel(id: &str) -> ChannelViewDto {
+        ChannelViewDto {
+            id: id.to_string(),
+            label: id.to_string(),
+            kind: ChannelKindDto::from_id(id),
+            source: None,
+            connected: false,
+            gain_db: None,
+            trim_db: 0.0,
+            mute: false,
+            solo: false,
+            exclusive: false,
+            rms_l: None,
+            rms_r: None,
+            peak: None,
+            limiter_active: false,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn channel_kind_from_id_matches_grammar() {
+        // The six program channels are `id == kind`.
+        let program = [
+            ("live", ChannelKindDto::Live),
+            ("show", ChannelKindDto::Show),
+            ("queue", ChannelKindDto::Queue),
+            ("rotation", ChannelKindDto::Rotation),
+            ("relay", ChannelKindDto::Relay),
+            ("fun", ChannelKindDto::Fun),
+        ];
+        for (id, kind) in program {
+            assert_eq!(ChannelKindDto::from_id(id), kind, "{id}");
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(id));
+        }
+        // Slots keep their group kind; adhoc is its own kind.
+        assert_eq!(
+            ChannelKindDto::from_id("harbor.slot-01"),
+            ChannelKindDto::Harbor
+        );
+        assert_eq!(
+            ChannelKindDto::from_id("harbor.slot-08"),
+            ChannelKindDto::Harbor
+        );
+        assert_eq!(
+            ChannelKindDto::from_id("relay.slot-01"),
+            ChannelKindDto::Relay
+        );
+        assert_eq!(ChannelKindDto::from_id("adhoc-1"), ChannelKindDto::Adhoc);
+        assert_eq!(ChannelKindDto::from_id("adhoc-42"), ChannelKindDto::Adhoc);
+    }
+
+    #[test]
+    fn channel_view_dto_serde_roundtrip() {
+        let original = channel("harbor.slot-01");
+        let value = serde_json::to_value(&original).unwrap();
+        // snake_case field names and the lowercase `kind` wire value.
+        assert_eq!(value["kind"], "harbor");
+        assert!(value["gain_db"].is_null());
+        assert!(value["rms_l"].is_null());
+        assert!(value["metadata"].is_null());
+        assert!(value.get("trim_db").is_some());
+
+        let back: ChannelViewDto = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), value);
+
+        // `adhoc` uses its own wire value too.
+        assert_eq!(
+            serde_json::to_value(ChannelKindDto::Adhoc).unwrap(),
+            json!("adhoc")
+        );
+    }
+
+    #[test]
+    fn channel_kind_rejects_unknown_wire_value() {
+        // The enum is strict: an unknown `kind` is a Serde error, never a
+        // silent default (additive widening keeps `schema_version` at 1).
+        let err = serde_json::from_value::<ChannelKindDto>(json!("bogus"));
+        assert!(err.is_err(), "unknown kind must not deserialize");
+        assert!(serde_json::from_str::<ChannelKindDto>("\"nope\"").is_err());
+    }
+}
