@@ -30,9 +30,9 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnection;
 
 use crate::dto::{
-    ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlSkipRequest,
-    ControlStateDto, ControlSwitchRequest, LayerSource, LiveStateDto, ObservedNowPlaying,
-    SourceDto, SourceLayer,
+    ConnectedCasterDto, ControlLiveRequest, ControlPauseRequest, ControlPlanPutRequest,
+    ControlSkipRequest, ControlStateDto, ControlSwitchRequest, LayerSource, LiveStateDto,
+    ObservedNowPlaying, PlanDto, PlanEngineStatus, SourceDto, SourceLayer,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::liquidsoap::push_best_effort;
@@ -45,6 +45,16 @@ const LIVE_OVERRIDE_KEY: &str = "live.override_caster_id";
 const FORCED_LAYER_KEY: &str = "control.forced_layer";
 /// `settings` key holding the pause flag.
 const PAUSED_KEY: &str = "control.paused";
+/// `settings` key holding the active mixer preset (`default|live|relay-only`).
+const PRESET_KEY: &str = "control.preset";
+
+/// The three documented mixer presets (`mixer.liq` `preset_names`).
+const PRESETS: [&str; 3] = ["default", "live", "relay-only"];
+
+/// True when `raw` is a documented preset name.
+fn is_valid_preset(raw: &str) -> bool {
+    PRESETS.contains(&raw)
+}
 
 // ---------------------------------------------------------------------------
 // Settings helpers (US-2)
@@ -297,7 +307,9 @@ pub async fn switch(pool: &SqlitePool, req: &ControlSwitchRequest) -> ApiResult<
         json!({ "reason": reason }),
     )
     .await?;
-    // Layer forcing is a separate follow-up: §4.4 has no layer.force command yet.
+    // Issue #147: replay the decision to the engine (`layer.force`). The DB
+    // stays authoritative; a failed push is re-asserted by `reconcile` at boot.
+    push_best_effort(&crate::liquidsoap::layer_force(layer.as_str())).await;
     Ok(())
 }
 
@@ -606,5 +618,221 @@ pub async fn pause(pool: &SqlitePool, req: &ControlPauseRequest) -> ApiResult<()
     )
     .await?;
     // Pause/resume is enforced downstream; §4.4 has no control.pause command.
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Issue #147: control plan (presets / force / pause) + engine reconcile
+// ---------------------------------------------------------------------------
+
+/// Read helper: the persisted [`PlanDto`] (Issue #147, US-3).
+///
+/// An unparseable/unknown key is treated as absent (a `GET` must never `500`).
+pub async fn get_plan(pool: &SqlitePool) -> ApiResult<PlanDto> {
+    let preset = get_setting(pool, PRESET_KEY)
+        .await?
+        .filter(|raw| is_valid_preset(raw));
+    let forced_layer = get_setting(pool, FORCED_LAYER_KEY)
+        .await?
+        .and_then(|raw| SourceLayer::parse("control.forced_layer", &raw).ok());
+    let paused = get_setting(pool, PAUSED_KEY).await?.as_deref() == Some("true");
+    let updated_at: Option<String> =
+        sqlx::query_scalar("SELECT MAX(updated_at) FROM settings WHERE key IN (?, ?, ?)")
+            .bind(PRESET_KEY)
+            .bind(FORCED_LAYER_KEY)
+            .bind(PAUSED_KEY)
+            .fetch_one(pool)
+            .await?;
+
+    Ok(PlanDto {
+        preset,
+        forced_layer,
+        paused,
+        updated_at,
+    })
+}
+
+/// Outcome of a best-effort engine push, for the `engine` status object (Q4).
+enum PushOutcome {
+    Applied,
+    Skipped,
+    Failed,
+}
+
+impl PushOutcome {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PushOutcome::Applied => "applied",
+            PushOutcome::Skipped => "skipped",
+            PushOutcome::Failed => "failed",
+        }
+    }
+}
+
+/// Best-effort push that also classifies the engine response (no logging side
+/// effect beyond `push_best_effort`).
+async fn push_outcome(command: &str) -> PushOutcome {
+    match crate::liquidsoap::push(command).await {
+        Ok(None) => PushOutcome::Skipped,
+        Ok(Some(body)) => match crate::liquidsoap::parse_engine_error(&body) {
+            None => PushOutcome::Applied,
+            Some(code) => {
+                tracing::warn!(
+                    command,
+                    code = code.as_str(),
+                    "engine rejected plan command"
+                );
+                PushOutcome::Failed
+            }
+        },
+        Err(err) => {
+            tracing::warn!(command, "engine push failed: {err}");
+            PushOutcome::Failed
+        }
+    }
+}
+
+/// `PUT /control/plan` — merge-semantics plan update (Issue #147, US-4).
+///
+/// Persists the change, audits exactly one `control_action` row and pushes the
+/// resulting intent to the engine best-effort. Push failures are **not** fatal:
+/// the plan is DB-authoritative and `reconcile` replays it at boot (Q4).
+pub async fn put_plan(
+    pool: &SqlitePool,
+    req: &ControlPlanPutRequest,
+) -> ApiResult<(PlanDto, PlanEngineStatus)> {
+    let reason = require_reason(req.reason.as_deref())?;
+
+    // Validate every field before writing anything.
+    let preset = match &req.preset {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(raw)) => {
+            if !is_valid_preset(raw) {
+                return Err(ApiError::validation(
+                    "preset",
+                    format!("unknown preset '{raw}', expected 'default', 'live' or 'relay-only'"),
+                ));
+            }
+            Some(Some(raw.clone()))
+        }
+    };
+    let forced_layer = match &req.forced_layer {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(raw)) => Some(Some(SourceLayer::parse("forced_layer", raw)?)),
+    };
+    let paused = match &req.paused {
+        None => None,
+        Some(serde_json::Value::Bool(value)) => Some(*value),
+        Some(_) => {
+            return Err(ApiError::validation(
+                "paused",
+                "paused must be a JSON boolean",
+            ));
+        }
+    };
+
+    // Guard only on pause: resuming is always allowed (D3, unchanged).
+    if paused == Some(true) && live_is_active(pool).await? {
+        return Err(ApiError::Conflict {
+            code: "live_active",
+            message: "cannot pause active live layer".to_string(),
+            details: Some(json!({ "field": "paused" })),
+        });
+    }
+
+    let mut engine = PlanEngineStatus {
+        preset: None,
+        forced_layer: None,
+        paused: "advisory".to_string(),
+    };
+    let mut changed = serde_json::Map::new();
+
+    match preset {
+        None => {}
+        Some(None) => {
+            delete_setting(pool, PRESET_KEY).await?;
+            changed.insert("preset".to_string(), serde_json::Value::Null);
+        }
+        Some(Some(name)) => {
+            set_setting(pool, PRESET_KEY, &name).await?;
+            changed.insert("preset".to_string(), json!(name));
+            engine.preset = Some(
+                push_outcome(&crate::liquidsoap::layer_preset(&name))
+                    .await
+                    .as_str()
+                    .to_string(),
+            );
+        }
+    }
+
+    match forced_layer {
+        None => {}
+        Some(None) => {
+            delete_setting(pool, FORCED_LAYER_KEY).await?;
+            changed.insert("forced_layer".to_string(), serde_json::Value::Null);
+            engine.forced_layer = Some(
+                push_outcome(&crate::liquidsoap::layer_force("none"))
+                    .await
+                    .as_str()
+                    .to_string(),
+            );
+        }
+        Some(Some(layer)) => {
+            set_setting(pool, FORCED_LAYER_KEY, layer.as_str()).await?;
+            changed.insert("forced_layer".to_string(), json!(layer.as_str()));
+            engine.forced_layer = Some(
+                push_outcome(&crate::liquidsoap::layer_force(layer.as_str()))
+                    .await
+                    .as_str()
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(value) = paused {
+        set_setting(pool, PAUSED_KEY, if value { "true" } else { "false" }).await?;
+        changed.insert("paused".to_string(), json!(value));
+        // No engine command exists for pause; keep the flag advisory (Q5).
+        tracing::info!(
+            paused = value,
+            "control plan pause is advisory (no engine command)"
+        );
+    }
+
+    log_control_event(
+        pool,
+        "control_action",
+        None,
+        json!({ "action": "plan", "reason": reason, "changed": changed }),
+    )
+    .await?;
+
+    let plan = get_plan(pool).await?;
+    Ok((plan, engine))
+}
+
+/// Re-asserts the persisted control plan after a scheduler restart (Issue #147,
+/// US-7). Called **after** [`reassert_live`], fail-open: an unreachable engine is
+/// only a warning, never a boot failure. Idempotent.
+pub async fn reconcile(pool: &SqlitePool) -> ApiResult<()> {
+    if let Some(preset) = get_setting(pool, PRESET_KEY).await? {
+        if is_valid_preset(&preset) {
+            push_best_effort(&crate::liquidsoap::layer_preset(&preset)).await;
+        } else {
+            tracing::warn!(preset, "control.preset is unknown, skipping engine push");
+        }
+    }
+    if let Some(raw) = get_setting(pool, FORCED_LAYER_KEY).await? {
+        let command = match SourceLayer::parse("control.forced_layer", &raw) {
+            Ok(layer) => crate::liquidsoap::layer_force(layer.as_str()),
+            Err(_) => crate::liquidsoap::layer_force("none"),
+        };
+        push_best_effort(&command).await;
+    }
+    if get_setting(pool, PAUSED_KEY).await?.is_some() {
+        tracing::info!("control plan pause persisted (advisory, no engine command)");
+    }
     Ok(())
 }

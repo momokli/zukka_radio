@@ -784,6 +784,84 @@ pub struct ControlPauseRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #147: control plan + command proxy
+// ---------------------------------------------------------------------------
+
+/// The persisted control plan (`GET`/`PUT /control/plan`, Issue #147).
+///
+/// `preset` ∈ `default|live|relay-only` (or `null`); `forced_layer` is one of
+/// the six program layers (or `null` = automation); `paused` mirrors
+/// `settings['control.paused'] == "true"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanDto {
+    pub preset: Option<String>,
+    pub forced_layer: Option<SourceLayer>,
+    pub paused: bool,
+    /// Newest `settings.updated_at` across the plan keys, or `null` (additive).
+    pub updated_at: Option<String>,
+}
+
+/// Body of `PUT /control/plan` — partial merge.
+///
+/// `preset`/`forced_layer` use `double_option`: absent = keep, JSON `null` =
+/// delete the key, value = set. `paused` is a raw value so a non-boolean is a
+/// field-level `422` (`details.field=paused`), not a `400`. `reason` is
+/// mandatory (D5).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlPlanPutRequest {
+    #[serde(default, deserialize_with = "double_option")]
+    pub preset: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub forced_layer: Option<Option<String>>,
+    #[serde(default)]
+    pub paused: Option<serde_json::Value>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Engine-push status attached to a `PUT /control/plan` response (Q4).
+///
+/// `preset`/`forced_layer` are `applied|skipped|failed`; `paused` stays
+/// advisory (no engine command exists, Q5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanEngineStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forced_layer: Option<String>,
+    pub paused: String,
+}
+
+/// Response of `PUT /control/plan`: the resulting plan plus engine status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlPlanPutResponse {
+    #[serde(flatten)]
+    pub plan: PlanDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<PlanEngineStatus>,
+}
+
+/// Body of `POST /control/command` — the engine command proxy (Issue #147).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ControlCommandRequest {
+    pub cmd: String,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Response of `POST /control/command` (WS-analog, §6.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlCommandResponse {
+    pub cmd: String,
+    /// Parsed engine JSON, or `{ "applied": true }` for a plain `OK`.
+    pub result: serde_json::Value,
+    /// Trimmed engine body (bounded length).
+    pub raw: String,
+}
+
+// ---------------------------------------------------------------------------
 // Issue #22: control-panel state (read-only composition)
 // ---------------------------------------------------------------------------
 
