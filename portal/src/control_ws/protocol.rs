@@ -769,4 +769,120 @@ mod tests {
         assert_eq!(meters[0].rms_r, None);
         assert_eq!(meters[0].rms_l, Some(-18.2));
     }
+
+    #[test]
+    fn resolve_builds_remaining_engine_commands() {
+        let cases: &[(&str, serde_json::Value, &str)] = &[
+            (
+                "mixer.trim",
+                serde_json::json!({"channel":"live","gain_db":-3.0}),
+                "mixer.trim live -3",
+            ),
+            (
+                "mixer.solo",
+                serde_json::json!({"channel":"relay","solo":true}),
+                "mixer.solo relay true",
+            ),
+            (
+                "mixer.patch",
+                serde_json::json!({"channel":"fun","source":"file:/x"}),
+                "mixer.patch fun file:/x",
+            ),
+            (
+                "mixer.master",
+                serde_json::json!({"gain_db":0.0}),
+                "mixer.master 0",
+            ),
+            (
+                "layer.preset",
+                serde_json::json!({"preset":"live"}),
+                "layer.preset live",
+            ),
+            (
+                "layer.force",
+                serde_json::json!({"layer":"queue"}),
+                "layer.force queue",
+            ),
+            (
+                "layer.enable",
+                serde_json::json!({"layer":"queue","enabled":true}),
+                "layer.enable queue true",
+            ),
+            (
+                "tape.start",
+                serde_json::json!({"tape_id":"t-1"}),
+                "tape.start t-1",
+            ),
+            ("tape.stop", serde_json::json!({}), "tape.stop"),
+            ("live.clear", serde_json::json!({}), "live.clear"),
+            ("live.status", serde_json::json!({}), "live.status"),
+            (
+                "monitor.enable",
+                serde_json::json!({"enabled":true}),
+                "monitor.enable true",
+            ),
+            ("monitor.status", serde_json::json!({}), "monitor.status"),
+        ];
+        for (cmd, args, expected) in cases {
+            assert_eq!(
+                resolve(&frame(cmd, args.clone())),
+                Ok(Action::Engine((*expected).into())),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_missing_or_bad_args() {
+        // Missing `source`.
+        let err =
+            resolve(&frame("mixer.patch", serde_json::json!({"channel":"live"}))).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("source"));
+
+        // Missing / non-bool `enabled`.
+        let err =
+            resolve(&frame("layer.enable", serde_json::json!({"layer":"queue"}))).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("enabled"));
+        let err = resolve(&frame(
+            "layer.enable",
+            serde_json::json!({"layer":"queue","enabled":"yes"}),
+        ))
+        .unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("enabled"));
+
+        // Non-bool `mute` / missing `solo`.
+        let err = resolve(&frame(
+            "mixer.mute",
+            serde_json::json!({"channel":"live","mute":"yes"}),
+        ))
+        .unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("mute"));
+        let err = resolve(&frame("mixer.solo", serde_json::json!({"channel":"live"}))).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("solo"));
+
+        // Missing `gain_db` for `mixer.trim`.
+        let err = resolve(&frame("mixer.trim", serde_json::json!({"channel":"live"}))).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("gain_db"));
+    }
+
+    #[test]
+    fn resolve_rejects_non_object_args() {
+        // `args` present but not an object.
+        let err = resolve(&frame("mixer.set", serde_json::json!(5))).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("args"));
+
+        // `cmd` absent entirely.
+        let mut f = frame("ping", serde_json::json!({}));
+        f.cmd = None;
+        let err = resolve(&f).unwrap_err();
+        assert_eq!(err.code, WsErrorCode::InvalidArgs);
+        assert_eq!(err.field.as_deref(), Some("cmd"));
+    }
 }
