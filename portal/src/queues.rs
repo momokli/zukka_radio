@@ -15,21 +15,34 @@
 
 use askama::Template;
 use axum::Extension;
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::api_client::{
-    ControlError, NewQueue, NewQueueItem, Queue, QueueError, QueueItem, QueueQuery,
+    ControlError, NewQueue, NewQueueItem, Queue, QueueError, QueueItem, QueueQuery, Track,
+    TrackError, TrackQuery,
 };
 use crate::app::AppState;
 use crate::auth::AuthContext;
 use crate::error::{PortalError, redirect};
 use crate::rbac;
 use crate::templates::{
-    QueueEditorPage, QueueFormFragment, QueueItemRow, QueueListFragment, QueueRow, QueuesPage,
+    QueueEditorPage, QueueFormFragment, QueueItemRow, QueueListFragment, QueueRow,
+    QueueSelectorOption, QueueSourcesFragment, QueuesPage, SourceRowView, format_total_duration,
+    normalized_source_kind,
 };
+
+/// Projects catalog tracks into source-panel rows.
+fn source_rows(tracks: &[Track]) -> Vec<SourceRowView> {
+    tracks.iter().map(SourceRowView::from_track).collect()
+}
+
+/// The `NN FOUND` counter label of the source panel.
+fn found_label(rows: &[SourceRowView]) -> String {
+    format!("{:02} FOUND", rows.len())
+}
 
 fn render<T: Template>(page: &T) -> Result<Response, PortalError> {
     Ok(Html(page.render()?).into_response())
@@ -141,12 +154,13 @@ async fn render_list_fragment(
         .items(Some(&ctx.caster_id), queue_id)
         .await
         .map_err(queue_error)?;
+    let referenced = load_referenced_tracks(state, ctx, &items).await?;
     let writable = can_write(ctx, &queue);
     let fragment = QueueListFragment {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items),
+        items: QueueItemRow::from_items(items, &referenced),
         can_write: writable,
     };
     let mut response = render(&fragment)?;
@@ -279,11 +293,121 @@ pub async fn queues_post(
 // US-3: editor
 // ---------------------------------------------------------------------------
 
-/// `GET /queues/{id}` — items in position order + add/rename/skip/clear forms.
+/// Loads the tracks referenced by `items` (kind `track`) via one targeted
+/// [`TrackApi::get`] per unique id, in first-occurrence order.
+///
+/// Unlike [`load_catalog`] (a single `limit: 200` page used for the source
+/// panel) this never truncates: a referenced track outside the first catalog
+/// page still contributes its duration to `TOTAL` and its title to the item
+/// row (Issue #155 review — truncated `TOTAL`). A track invisible to the
+/// viewer (`NotFound`, e.g. foreign-private) is skipped so one stale reference
+/// never fails the whole page; other errors surface as `Upstream` like
+/// [`load_catalog`].
+pub(crate) async fn load_referenced_tracks(
+    state: &AppState,
+    ctx: &AuthContext,
+    items: &[QueueItem],
+) -> Result<Vec<Track>, PortalError> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut ids: Vec<&str> = Vec::new();
+    for item in items {
+        if item.kind != "track" {
+            continue;
+        }
+        if let Some(id) = item.track_id.as_deref() {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+    let mut tracks = Vec::with_capacity(ids.len());
+    for id in ids {
+        match state.tracks.get(Some(&ctx.caster_id), id).await {
+            Ok(track) => tracks.push(track),
+            Err(TrackError::NotFound) => {}
+            Err(err) => return Err(PortalError::Upstream(err.to_string())),
+        }
+    }
+    Ok(tracks)
+}
+
+/// Loads the viewer-scoped track catalog (shared + own private), used to
+/// resolve queue-item titles/durations and to fill the source panel.
+async fn load_catalog(state: &AppState, ctx: &AuthContext) -> Result<Vec<Track>, PortalError> {
+    state
+        .tracks
+        .list(
+            Some(&ctx.caster_id),
+            &TrackQuery {
+                q: None,
+                visibility: None,
+                owner_caster_id: None,
+                limit: Some(200),
+                offset: None,
+            },
+        )
+        .await
+        .map_err(|err| PortalError::Upstream(err.to_string()))
+}
+
+/// Loads the visible queues for the toolbar selector, own-first then by name.
+async fn load_selector_options(
+    state: &AppState,
+    ctx: &AuthContext,
+    selected_id: &str,
+) -> Result<Vec<QueueSelectorOption>, PortalError> {
+    let mut queues = state
+        .queues
+        .list(Some(&ctx.caster_id), &QueueQuery::default())
+        .await
+        .map_err(queue_error)?;
+    queues.sort_by(|a, b| {
+        let own_a = a.caster_id == ctx.caster_id;
+        let own_b = b.caster_id == ctx.caster_id;
+        own_b.cmp(&own_a).then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(queues
+        .into_iter()
+        .map(|queue| QueueSelectorOption {
+            selected: queue.id == selected_id,
+            id: queue.id,
+            name: queue.name,
+        })
+        .collect())
+}
+
+/// Sums the durations of the queue's track items (links/unknown → 0 ms).
+pub fn compute_total_ms(items: &[QueueItem], tracks: &[Track]) -> i64 {
+    let durations: std::collections::HashMap<&str, i64> = tracks
+        .iter()
+        .map(|track| (track.id.as_str(), track.duration_ms))
+        .collect();
+    items
+        .iter()
+        .map(|item| match item.kind.as_str() {
+            "track" => item
+                .track_id
+                .as_deref()
+                .and_then(|id| durations.get(id).copied())
+                .unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Query of `GET /queues/{id}` (`?conflict=1` renders the `409` banner after a
+/// version-conflict reload, Issue #155 Block 4).
+#[derive(Debug, Default, Deserialize)]
+pub struct EditorQuery {
+    pub conflict: Option<String>,
+}
+
+/// `GET /queues/{id}` — items in position order + the queue-screen editor.
 pub async fn queue_editor(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
+    Query(query): Query<EditorQuery>,
 ) -> Result<Response, PortalError> {
     let queue = state
         .queues
@@ -295,15 +419,110 @@ pub async fn queue_editor(
         .items(Some(&ctx.caster_id), &id)
         .await
         .map_err(queue_error)?;
+    let tracks = load_catalog(&state, &ctx).await?;
+    let referenced = load_referenced_tracks(&state, &ctx, &items).await?;
     let writable = can_write(&ctx, &queue);
+    let queues = load_selector_options(&state, &ctx, &queue.id).await?;
+    let item_count = items.len() as i64;
+    let total_label = format_total_duration(compute_total_ms(&items, &referenced));
+    let rows = source_rows(&tracks);
+    let found = found_label(&rows);
+    let pending_count = items.iter().filter(|i| i.state == "pending").count() as i64;
+    let playing_count = items.iter().filter(|i| i.state == "playing").count() as i64;
+    let has_items = !items.is_empty();
     render(&QueueEditorPage {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items),
+        items: QueueItemRow::from_items(items, &referenced),
         can_write: writable,
         can_control: ctx.has("control.write"),
+        queue_kind_label: queue.kind.to_uppercase(),
+        total_label,
+        item_count_label: format!("{item_count:02}"),
+        version_label: format!("V.{:02}", queue.version),
+        kind: "track".to_string(),
+        q: String::new(),
+        found_label: found,
+        is_track: true,
+        is_tape: false,
+        is_link: false,
+        rows,
+        conflict: query.conflict.as_deref() == Some("1"),
+        has_items,
+        is_playing: playing_count > 0,
+        pending_count,
+        playing_count,
+        queues,
         queue,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Issue #155, Block 2: source-catalog fragment (`GET /queues/{id}/sources`)
+// ---------------------------------------------------------------------------
+
+/// Query of `GET /queues/{id}/sources` (htmx catalog fragment).
+#[derive(Debug, Deserialize)]
+pub struct SourceQuery {
+    pub q: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// `GET /queues/{id}/sources` — the source-catalog fragment swapped into
+/// `#source-results`. Tracks reuse [`TrackApi::list`] with the viewer scope
+/// (shared + the viewer's own private); tapes have no read-contract and links
+/// are manual input, so only `kind=track` hits the catalog.
+pub async fn queue_sources(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(query): Query<SourceQuery>,
+) -> Result<Response, PortalError> {
+    let queue = state
+        .queues
+        .get(Some(&ctx.caster_id), &id)
+        .await
+        .map_err(queue_error)?;
+    let writable = can_write(&ctx, &queue);
+    let kind = normalized_source_kind(query.kind.as_deref()).to_string();
+    let q = query.q.unwrap_or_default();
+    let rows = if kind == "track" {
+        let trimmed = q.trim();
+        let tracks = state
+            .tracks
+            .list(
+                Some(&ctx.caster_id),
+                &TrackQuery {
+                    q: if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    },
+                    visibility: None,
+                    owner_caster_id: None,
+                    limit: Some(50),
+                    offset: None,
+                },
+            )
+            .await
+            .map_err(|err| PortalError::Upstream(err.to_string()))?;
+        source_rows(&tracks)
+    } else {
+        Vec::new()
+    };
+    let found = found_label(&rows);
+    render(&QueueSourcesFragment {
+        csrf_token: ctx.csrf_token.clone(),
+        queue_id: id,
+        can_write: writable,
+        is_track: kind == "track",
+        is_tape: kind == "tape",
+        is_link: kind == "link",
+        kind,
+        q,
+        found_label: found,
+        rows,
     })
 }
 

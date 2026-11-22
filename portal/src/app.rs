@@ -32,8 +32,15 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 const HTMX_JS: &str = include_str!("../static/htmx.min.js");
 const HTMX_SSE_JS: &str = include_str!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
+const QUEUE_CSS: &str = include_str!("../static/queue.css");
 const SORTABLE_JS: &str = include_str!("../static/sortable.min.js");
 const WAVEFORM_JS: &str = include_str!("../static/waveform.js");
+
+// Vendored fonts (docs/portal.md D18: no CDN). Served unprotected so the
+// `@font-face` rules in `queue.css` resolve without a session.
+const VT323_WOFF2: &[u8] = include_bytes!("../static/fonts/VT323.woff2");
+const SPACE_MONO_REGULAR_WOFF2: &[u8] = include_bytes!("../static/fonts/SpaceMono-Regular.woff2");
+const SPACE_MONO_BOLD_WOFF2: &[u8] = include_bytes!("../static/fonts/SpaceMono-Bold.woff2");
 
 /// Shared application state.
 #[derive(Clone)]
@@ -345,6 +352,8 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::queues::queues_get).post(crate::queues::queues_post),
         )
         .route("/queues/{id}", get(crate::queues::queue_editor))
+        // Issue #155: htmx source-catalog fragment (tracks) for the queue screen.
+        .route("/queues/{id}/sources", get(crate::queues::queue_sources))
         .route(
             "/queues/{id}/items",
             axum::routing::post(crate::queues::item_add),
@@ -463,8 +472,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/static/htmx.min.js", get(htmx_js))
         .route("/static/htmx-ext-sse.js", get(htmx_sse_js))
         .route("/static/app.css", get(app_css))
+        .route("/static/queue.css", get(queue_css))
         .route("/static/sortable.min.js", get(sortable_js))
         .route("/static/waveform.js", get(waveform_js))
+        .route("/static/fonts/VT323.woff2", get(vt323_woff2))
+        .route(
+            "/static/fonts/SpaceMono-Regular.woff2",
+            get(space_mono_regular_woff2),
+        )
+        .route(
+            "/static/fonts/SpaceMono-Bold.woff2",
+            get(space_mono_bold_woff2),
+        )
         // Issue #148: cockpit WebSocket bridge. Deliberately **outside** the
         // `protected` layer: a WS upgrade must not be answered with a `303
         // /login` redirect — auth happens in-band (Close `4401`).
@@ -500,6 +519,13 @@ async fn app_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
 }
 
+async fn queue_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        QUEUE_CSS,
+    )
+}
+
 async fn sortable_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
@@ -511,6 +537,24 @@ async fn waveform_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         WAVEFORM_JS,
+    )
+}
+
+async fn vt323_woff2() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "font/woff2")], VT323_WOFF2)
+}
+
+async fn space_mono_regular_woff2() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "font/woff2")],
+        SPACE_MONO_REGULAR_WOFF2,
+    )
+}
+
+async fn space_mono_bold_woff2() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "font/woff2")],
+        SPACE_MONO_BOLD_WOFF2,
     )
 }
 

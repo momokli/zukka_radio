@@ -1,0 +1,26 @@
+{# QueueSelector + QueueMeta (Issue #155, Block 1) — the `queue-toolbar`
+   children. Purely server-rendered; switching a queue is a plain navigation
+   (no SPA state, D18). #}
+<div class="queue-selector">
+  <label for="queue-select">QUEUE / PLAYLIST</label>
+  <div>
+    <select
+      id="queue-select"
+      aria-label="Select queue"
+      onchange="if (this.value) window.location.href = '/queues/' + this.value;"
+    >
+      {% for q in queues %}
+      <option value="{{ q.id }}"{% if q.selected %} selected{% endif %}>{{ q.name }}</option>
+      {% endfor %}
+    </select>
+    <a class="queue-selector-link" href="/queues" aria-label="Alle Queues / neue Queue">QUEUES</a>
+  </div>
+</div>
+
+<div class="queue-meta" aria-label="Queue information">
+  <div><span>TYPE</span><strong>{{ queue_kind_label }}</strong></div>
+  <div><span>TOTAL</span><strong>{{ total_label }}</strong></div>
+  <div><span>ITEMS</span><strong>{{ item_count_label }}</strong></div>
+  <div><span>VERSION</span><strong>{{ version_label }}</strong></div>
+  {% if !can_write %}<span class="queue-readonly-badge">READ ONLY</span>{% endif %}
+</div>

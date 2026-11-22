@@ -205,21 +205,42 @@ pub struct QueueRow {
 }
 
 /// A queue item plus its neighbours (for the no-JS ↑/↓ buttons) and the
-/// pre-computed display strings (title, link label/state). Built by
-/// [`QueueItemRow::from_items`] so the templates stay free of method chains.
+/// pre-computed display strings (title, secondary line, kind icon, duration,
+/// link label/state). Built by [`QueueItemRow::from_items`] so the templates
+/// stay free of method chains. Tracks are resolved against the viewer-scoped
+/// catalog so the secondary line and duration are accurate (Issue #155).
 pub struct QueueItemRow {
     pub item: QueueItem,
     pub prev_id: String,
     pub next_id: String,
     pub title: String,
+    /// Secondary line: `ORIGINAL: …` on an override, the artist otherwise.
+    pub copy_sub: String,
     pub link_label: String,
     pub link_state: String,
+    /// 1-based, zero-padded display position (`01`…).
+    pub position_label: String,
+    /// `T` | `TP` | `URL` badge text.
+    pub kind_icon: String,
+    /// `m:ss` track duration (`""` when unknown / for links).
+    pub duration_label: String,
+    pub is_first: bool,
+    pub is_last: bool,
+    /// Only `kind == track` items carry a waveform canvas (Issue #23).
+    pub has_waveform: bool,
+    pub track_id: String,
 }
 
 impl QueueItemRow {
-    /// Builds the row list, wiring each item to its position neighbours.
-    pub fn from_items(items: Vec<QueueItem>) -> Vec<Self> {
+    /// Builds the row list, wiring each item to its position neighbours and
+    /// resolving track titles/artists/durations from `tracks`.
+    pub fn from_items(items: Vec<QueueItem>, tracks: &[Track]) -> Vec<Self> {
         let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+        let by_id: std::collections::HashMap<&str, &Track> = tracks
+            .iter()
+            .map(|track| (track.id.as_str(), track))
+            .collect();
+        let count = ids.len();
         items
             .into_iter()
             .enumerate()
@@ -229,12 +250,38 @@ impl QueueItemRow {
                     .and_then(|i| ids.get(i).cloned())
                     .unwrap_or_default();
                 let next_id = ids.get(index + 1).cloned().unwrap_or_default();
-                let title = item
-                    .title_override
-                    .clone()
+                let track = item
+                    .track_id
+                    .as_deref()
+                    .and_then(|id| by_id.get(id).copied());
+                let base = track
+                    .map(|t| t.title.clone())
                     .or_else(|| item.track_id.clone())
                     .or_else(|| item.link_url.clone())
                     .unwrap_or_else(|| item.id.clone());
+                let overridden = item.title_override.is_some();
+                let title = item.title_override.clone().unwrap_or(base.clone());
+                let copy_sub = if overridden {
+                    format!("ORIGINAL: {base}")
+                } else if item.kind == "track" {
+                    track.map(|t| t.artist.clone()).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let duration_label = if item.kind == "track" {
+                    track
+                        .map(|t| format_duration(t.duration_ms))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let kind_icon = match item.kind.as_str() {
+                    "track" => "T",
+                    "tape" => "TP",
+                    "link" => "URL",
+                    _ => "?",
+                }
+                .to_string();
                 let link_label = if item.kind == "link" {
                     item.link_provider
                         .clone()
@@ -243,13 +290,23 @@ impl QueueItemRow {
                     String::new()
                 };
                 let link_state = item.link_state.clone().unwrap_or_default();
+                let has_waveform = item.kind == "track" && item.track_id.is_some();
+                let track_id = item.track_id.clone().unwrap_or_default();
                 Self {
                     item,
                     prev_id,
                     next_id,
                     title,
+                    copy_sub,
                     link_label,
                     link_state,
+                    position_label: format!("{:02}", index + 1),
+                    kind_icon,
+                    duration_label,
+                    is_first: index == 0,
+                    is_last: index + 1 == count,
+                    has_waveform,
+                    track_id,
                 }
             })
             .collect()
@@ -267,6 +324,44 @@ pub struct QueuesPage {
     pub error: Option<String>,
 }
 
+/// One `<option>` of the queue toolbar selector; `selected` is precomputed
+/// server-side (Askama cannot compare two borrowed values in the template).
+pub struct QueueSelectorOption {
+    pub id: String,
+    pub name: String,
+    pub selected: bool,
+}
+
+/// One catalog row in the source panel (`partials/queue_sources.html`), built
+/// from a `Track` (Issue #155, Block 2).
+pub struct SourceRowView {
+    pub id: String,
+    pub title: String,
+    /// `artist · album` (or the Music-API id when no album is known).
+    pub detail: String,
+    pub duration_label: String,
+    /// `shared` | `private` (the viewer-scoped visibility the scheduler returned).
+    pub access: String,
+}
+
+impl SourceRowView {
+    /// Projects a scheduler `Track` into a source row.
+    pub fn from_track(track: &Track) -> Self {
+        let detail = if track.album.trim().is_empty() {
+            track.music_api_id.clone()
+        } else {
+            track.album.clone()
+        };
+        Self {
+            id: track.id.clone(),
+            title: track.title.clone(),
+            detail,
+            duration_label: format_total_duration(track.duration_ms),
+            access: track.visibility.clone(),
+        }
+    }
+}
+
 /// Queue editor (`GET /queues/{id}`). Carries the fragment fields too so
 /// `partials/queue_list.html` can be `{% include %}`-d in scope.
 #[derive(Template)]
@@ -281,6 +376,68 @@ pub struct QueueEditorPage {
     /// Whether the viewer may skip (`control.write`, §6.10.1) — global control,
     /// independent of queue write permission.
     pub can_control: bool,
+    /// All visible queues (own + foreign) for the toolbar `<select>`.
+    pub queues: Vec<QueueSelectorOption>,
+    /// Precomputed toolbar display strings (Issue #155, Block 1).
+    pub queue_kind_label: String,
+    pub total_label: String,
+    pub item_count_label: String,
+    pub version_label: String,
+    // Source panel (Issue #155, Block 2) — field names mirror
+    // [`QueueSourcesFragment`] so `partials/queue_sources.html` is `{% include %}`-d.
+    pub kind: String,
+    pub q: String,
+    pub found_label: String,
+    pub is_track: bool,
+    pub is_tape: bool,
+    pub is_link: bool,
+    pub rows: Vec<SourceRowView>,
+    // Transport bar + states (Issue #155, Block 4).
+    /// `409` version-conflict banner (`?conflict=1` after a reload).
+    pub conflict: bool,
+    pub has_items: bool,
+    pub is_playing: bool,
+    pub pending_count: i64,
+    pub playing_count: i64,
+}
+
+/// The source-catalog fragment (`GET /queues/{id}/sources`) swapped into
+/// `#source-results` (Issue #155, Block 2). Includes the filter group so a
+/// filter/kind change re-renders the pressed state too.
+#[derive(Template)]
+#[template(path = "partials/queue_sources.html")]
+pub struct QueueSourcesFragment {
+    pub csrf_token: String,
+    pub queue_id: String,
+    pub can_write: bool,
+    pub kind: String,
+    pub q: String,
+    pub found_label: String,
+    pub is_track: bool,
+    pub is_tape: bool,
+    pub is_link: bool,
+    pub rows: Vec<SourceRowView>,
+}
+
+/// Resolves the source-filter kind (`track`|`tape`|`link`, default `track`).
+pub fn normalized_source_kind(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("tape") => "tape",
+        Some("link") => "link",
+        _ => "track",
+    }
+}
+
+/// Formats a duration in ms as `mm:ss` (or `hh:mm:ss` beyond an hour); a zero
+/// total renders as `00:00` (unlike [`format_duration`], which is empty).
+pub fn format_total_duration(ms: i64) -> String {
+    let total = ms.max(0) / 1000;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 /// The authoritative item list (`partials/queue_list.html`), returned by every

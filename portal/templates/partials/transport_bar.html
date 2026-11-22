@@ -1,0 +1,46 @@
+{# Transport bar (Issue #155, Block 4). SEND/SKIP only carry a write path with
+   `can_control` (they post to the existing `/queues/{id}/skip` control route);
+   CLEAR has no writable contract yet → disabled "später" (Blocker-Issue). #}
+<div class="transport-bar">
+  <div class="transport-actions">
+    {% if can_control %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/skip"
+      hx-post="/queues/{{ queue_id }}/skip"
+      hx-swap="none"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="reason" value="send" />
+      <button type="submit" class="transport-send"{% if !has_items %} disabled{% endif %}>
+        <span class="transport-play" aria-hidden="true"></span>{% if is_playing %}STOP{% else %}SEND{% endif %}
+      </button>
+    </form>
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/skip"
+      hx-post="/queues/{{ queue_id }}/skip"
+      hx-swap="none"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="reason" value="skip" />
+      <button type="submit"{% if !is_playing %} disabled{% endif %}>
+        <span aria-hidden="true">≫</span> SKIP
+      </button>
+    </form>
+    {% else %}
+    <button type="button" disabled title="später">
+      <span class="transport-play" aria-hidden="true"></span>SEND
+    </button>
+    <button type="button" disabled title="später"><span aria-hidden="true">≫</span> SKIP</button>
+    {% endif %}
+    <button type="button" disabled title="später"><span aria-hidden="true">■</span> CLEAR</button>
+  </div>
+  <div class="transport-status" role="status">
+    <span{% if is_playing %} class="online"{% endif %}></span>
+    <strong>{% if is_playing %}TRANSMITTING{% else %}STANDBY{% endif %}</strong>
+    <span>{{ pending_count }} PENDING / {{ playing_count }} PLAYING</span>
+  </div>
+</div>

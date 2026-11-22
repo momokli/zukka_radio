@@ -1,16 +1,28 @@
-<li class="queue-item" id="queue-item-{{ row.item.id }}" data-item-id="{{ row.item.id }}">
-  <span class="pos">{{ row.item.position }}</span>
-  <span class="kind badge badge-{{ row.item.kind }}">{{ row.item.kind }}</span>
-  <span class="title">{{ row.title }}</span>
-  {% if row.item.kind == "track" %}{% if let Some(track_id) = row.item.track_id %}
+{# One queue item (Issue #155, Block 3). Keeps the frozen contracts:
+   `id="queue-item-{id}"`, the track-only waveform canvas (`data-waveform-src`,
+   `class="waveform-canvas"`), the `link-provider badge` / link-state badge,
+   and the no-JS ↑/↓ move forms (`aria-label="nach oben"`/„nach unten"). #}
+<li
+  class="queue-item queue-item-{{ row.item.state }}"
+  id="queue-item-{{ row.item.id }}"
+  data-item-id="{{ row.item.id }}"
+>
+  <span class="queue-position">{{ row.position_label }}</span>
+  <span class="drag-handle" aria-label="Drag handle">⠿</span>
+  <span class="queue-kind-icon kind-{{ row.item.kind }}" aria-label="{{ row.item.kind }}">{{ row.kind_icon }}</span>
+  <div class="queue-item-copy">
+    <strong>{{ row.title }}</strong>
+    {% if row.copy_sub != "" %}<span>{{ row.copy_sub }}</span>{% endif %}
+  </div>
+  {% if row.has_waveform %}
   <canvas
     class="waveform-canvas"
     width="120"
     height="40"
-    data-waveform-src="/library/tracks/{{ track_id }}/waveform.json"
+    data-waveform-src="/library/tracks/{{ row.track_id }}/waveform.json"
     aria-label="Waveform"
   ></canvas>
-  {% endif %}{% endif %}
+  {% endif %}
   {% if row.item.kind == "link" %}
   <span class="link-provider badge">{{ row.link_label }}</span>
   {% if row.link_state == "unplayable" %}
@@ -23,51 +35,56 @@
   <span class="link-state badge">wird aufgelöst …</span>
   {% endif %}
   {% endif %}
-  <span class="state muted">{{ row.item.state }}</span>
+  <time>{{ row.duration_label }}</time>
+  <span class="item-state state-{{ row.item.state }}">{{ row.item.state }}</span>
   {% if can_write %}
-  <span class="move">
-    {% if !row.prev_id.is_empty() %}
-    <form
-      method="post"
-      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
-      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
-      hx-target="#queue-items"
-      hx-swap="outerHTML"
-      class="inline"
-    >
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <input type="hidden" name="before_id" value="{{ row.prev_id }}" />
-      <input type="hidden" name="version" value="{{ version }}" />
-      <button type="submit" aria-label="nach oben">↑</button>
-    </form>
-    {% endif %}
-    {% if !row.next_id.is_empty() %}
-    <form
-      method="post"
-      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
-      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
-      hx-target="#queue-items"
-      hx-swap="outerHTML"
-      class="inline"
-    >
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <input type="hidden" name="after_id" value="{{ row.next_id }}" />
-      <input type="hidden" name="version" value="{{ version }}" />
-      <button type="submit" aria-label="nach unten">↓</button>
-    </form>
-    {% endif %}
-    <form
-      method="post"
-      action="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
-      hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
-      hx-target="#queue-items"
-      hx-swap="outerHTML"
-      hx-confirm="Item wirklich entfernen?"
-      class="inline"
-    >
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit">Entfernen</button>
-    </form>
-  </span>
+  <details class="item-menu">
+    <summary aria-label="Menü für {{ row.title }}">•••</summary>
+    <div>
+      {% if !row.is_first %}
+      <form
+        method="post"
+        action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+        hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+        hx-target="#queue-items"
+        hx-swap="outerHTML"
+        class="inline"
+      >
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="before_id" value="{{ row.prev_id }}" />
+        <input type="hidden" name="version" value="{{ version }}" />
+        <button type="submit" aria-label="nach oben">↑ MOVE UP</button>
+      </form>
+      {% endif %}
+      {% if !row.is_last %}
+      <form
+        method="post"
+        action="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+        hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/move"
+        hx-target="#queue-items"
+        hx-swap="outerHTML"
+        class="inline"
+      >
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="after_id" value="{{ row.next_id }}" />
+        <input type="hidden" name="version" value="{{ version }}" />
+        <button type="submit" aria-label="nach unten">↓ MOVE DOWN</button>
+      </form>
+      {% endif %}
+      <button type="button" disabled title="später">TITLE CHANGE</button>
+      <form
+        method="post"
+        action="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
+        hx-post="/queues/{{ queue_id }}/items/{{ row.item.id }}/delete"
+        hx-target="#queue-items"
+        hx-swap="outerHTML"
+        hx-confirm="Item wirklich entfernen?"
+        class="inline"
+      >
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit">REMOVE</button>
+      </form>
+    </div>
+  </details>
   {% endif %}
 </li>

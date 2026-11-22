@@ -6,6 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}" />
     <title>{% block title %}zukka{% endblock %} · zukka radio</title>
     <link rel="stylesheet" href="/static/app.css" />
+    {% block head %}{% endblock %}
     <script src="/static/htmx.min.js" defer></script>
     <script src="/static/htmx-ext-sse.js" defer></script>
     <script src="/static/sortable.min.js" defer></script>

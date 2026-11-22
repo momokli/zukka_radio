@@ -1,0 +1,103 @@
+{# Source-catalog fragment (Issue #155, Block 2). Swapped into `#source-results`
+   via htmx; includes the filter group so the pressed/selected state tracks the
+   active kind. Tracks come from `TrackApi::list` (viewer scope); tapes have no
+   read-contract (Blocker-Issue) and links are manual input. #}
+<input type="hidden" id="source-kind" name="kind" value="{{ kind }}" />
+
+<div class="source-filters" role="group" aria-label="Source type">
+  <button
+    type="button"
+    data-kind="track"
+    aria-pressed="{{ is_track }}"{% if is_track %}
+    class="selected"{% endif %}
+    hx-get="/queues/{{ queue_id }}/sources"
+    hx-target="#source-results"
+    hx-swap="innerHTML"
+    hx-vals='{"kind":"track"}'
+  >TRACKS</button>
+  <button
+    type="button"
+    data-kind="tape"
+    disabled
+    title="später"
+    aria-pressed="{{ is_tape }}"
+    hx-get="/queues/{{ queue_id }}/sources"
+    hx-target="#source-results"
+    hx-swap="innerHTML"
+    hx-vals='{"kind":"tape"}'
+  >TAPES</button>
+  <button
+    type="button"
+    data-kind="link"
+    aria-pressed="{{ is_link }}"{% if is_link %}
+    class="selected"{% endif %}
+    hx-get="/queues/{{ queue_id }}/sources"
+    hx-target="#source-results"
+    hx-swap="innerHTML"
+    hx-vals='{"kind":"link"}'
+  >LINKS</button>
+</div>
+
+<ul class="source-results" aria-label="Source search results">
+  {% if is_link %}
+  <li class="source-row source-row-link">
+    <span class="queue-kind-icon kind-link" aria-label="link">URL</span>
+    {% if can_write %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/items"
+      hx-post="/queues/{{ queue_id }}/items"
+      hx-target="#queue-items"
+      hx-swap="outerHTML"
+      class="source-link-form"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="kind" value="link" />
+      <input type="url" name="link_url" aria-label="Link URL" placeholder="https://..." required />
+      <select name="link_provider" aria-label="Link provider">
+        <option value="youtube">youtube</option>
+        <option value="spotify">spotify</option>
+        <option value="other">other</option>
+      </select>
+      <button type="submit" aria-label="Add link to queue">ADD</button>
+    </form>
+    {% else %}
+    <span class="source-empty">READ ONLY — später</span>
+    {% endif %}
+  </li>
+  {% else if is_tape %}
+  <li class="source-empty">TAPES — später (kein Katalog-Contract)</li>
+  {% else %}
+  {% for row in rows %}
+  <li class="source-row">
+    <span class="queue-kind-icon kind-track" aria-label="track">T</span>
+    <div class="source-copy">
+      <strong>{{ row.title }}</strong>
+      <span>{{ row.detail }}</span>
+    </div>
+    <div class="source-row-meta">
+      <span class="access-badge access-{{ row.access }}">{{ row.access }}</span>
+      <time>{{ row.duration_label }}</time>
+    </div>
+    {% if can_write %}
+    <form
+      method="post"
+      action="/queues/{{ queue_id }}/items"
+      hx-post="/queues/{{ queue_id }}/items"
+      hx-target="#queue-items"
+      hx-swap="outerHTML"
+      class="inline"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="kind" value="track" />
+      <input type="hidden" name="track_id" value="{{ row.id }}" />
+      <button type="submit" aria-label="Add {{ row.title }} to queue">ADD</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+  {% if rows.is_empty() %}
+  <li class="source-empty">NO MATCHING SOURCE</li>
+  {% endif %}
+  {% endif %}
+</ul>
