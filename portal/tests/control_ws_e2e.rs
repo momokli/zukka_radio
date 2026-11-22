@@ -744,6 +744,39 @@ async fn coalesced_fader_engine_error_is_reported() {
     assert_eq!(error["data"]["code"], "channel_not_found");
 }
 
+#[tokio::test]
+async fn coalesced_fader_engine_unavailable_closes_4503() {
+    let engine = Arc::new(FakeEngineClient::new());
+    engine.fail_commands(zukka_portal::control_ws::engine::EngineError::Unavailable(
+        "no endpoint configured".into(),
+    ));
+    let hub = Arc::new(MeterHub::new());
+    let url = serve("operator", engine, hub).await;
+    let mut ws = connect(&url).await;
+    send_text(
+        &mut ws,
+        serde_json::json!({"type": "auth", "token": SERVICE_TOKEN}),
+    )
+    .await;
+    read_until_type(&mut ws, "state").await;
+
+    send_text(
+        &mut ws,
+        serde_json::json!({
+            "id": "f-2", "cmd": "mixer.set",
+            "args": {"channel": "live", "gain_db": -6.0}
+        }),
+    )
+    .await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["ok"], true); // fader is acknowledged, applied async
+
+    // §6.3: the coalescer path must surface `engine_unavailable` and close 4503.
+    let error = read_until_type(&mut ws, "error").await;
+    assert_eq!(error["data"]["code"], "engine_unavailable");
+    assert_eq!(read_close_code(&mut ws).await, 4503);
+}
+
 // ---------------------------------------------------------------------------
 // (f) throttle
 // ---------------------------------------------------------------------------

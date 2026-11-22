@@ -336,8 +336,9 @@ async fn run_connection(socket: WebSocket, state: AppState, session: Session) {
                 for command in coalescer.take(Instant::now()) {
                     // F6: surface engine failures instead of discarding them.
                     if let Err(err) = state.engine.command(&command).await {
+                        let code = err.code();
                         let data = serde_json::json!({
-                            "code": err.code().as_str(),
+                            "code": code.as_str(),
                             "message": err.message(),
                         });
                         if sender
@@ -345,6 +346,18 @@ async fn run_connection(socket: WebSocket, state: AppState, session: Session) {
                             .await
                             .is_err()
                         {
+                            close = true;
+                            break;
+                        }
+                        // §6.3: `engine_unavailable` also ends the connection
+                        // (4503), same as the state path.
+                        if code == WsErrorCode::EngineUnavailable {
+                            let _ = sender
+                                .send(Message::Close(Some(close_frame(
+                                    CLOSE_ENGINE_UNAVAILABLE,
+                                    "engine unavailable",
+                                ))))
+                                .await;
                             close = true;
                             break;
                         }

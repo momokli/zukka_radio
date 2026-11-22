@@ -580,7 +580,7 @@ Regeln:
 - Ein `error`-Event beendet die Verbindung **nicht** (außer `engine_unavailable`
   mit Close-Code `4503`).
 
-**Abgrenzung (Follow-up, Issue #148):** `state` wird nach Auth genau einmal
+**Abgrenzung (Follow-up, Issue #157):** `state` wird nach Auth genau einmal
 (Voll-Snapshot) gesendet. Inkrementelle `state.diff`-/`event`-Emission setzt eine
 Control-Event-Quelle voraus (Scheduler-Control-Events), die noch nicht an die
 Bridge angebunden ist; sie wird als Folge-Issue nachgezogen. Bis dahin erhalten
