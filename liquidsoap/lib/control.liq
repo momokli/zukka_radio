@@ -98,6 +98,77 @@ server.register("layer.status", description="Show/Queue-Verfuegbarkeit als JSON"
     layer_status_json()
   end)
 
+# --- Mixer / Layer commands (issue #145, docs/control-api.md §4.1/§4.2) ----
+#
+# Pure logic + validation live in lib/mixer.liq; these handlers only split the
+# argument line and dispatch. Validation happens BEFORE any ref is written;
+# error texts carry the stable codes (unknown_channel, bad_gain, bad_source,
+# unknown_preset, unknown_layer).
+
+def arity_error(usage) =
+  "ERROR invalid_args: " ^ usage
+end
+
+def one_arg(arg, usage, on_ok) =
+  parts = split_args(arg)
+  if list.length(parts) != 1 then arity_error(usage)
+  else on_ok(list.nth(parts, 0))
+  end
+end
+
+def two_args(arg, usage, on_ok) =
+  parts = split_args(arg)
+  if list.length(parts) != 2 then arity_error(usage)
+  else on_ok(list.nth(parts, 0), list.nth(parts, 1))
+  end
+end
+
+server.register("mixer.set", description="Kanal-Fader setzen (dB oder linear)",
+  usage="<ch> <gain>", fun (arg) ->
+    two_args(arg, "mixer.set <ch> <gain>", cmd_set))
+
+server.register("mixer.trim", description="Kanal-Trim (dB) setzen",
+  usage="<ch> <gain_db>", fun (arg) ->
+    two_args(arg, "mixer.trim <ch> <gain_db>", cmd_trim))
+
+server.register("mixer.mute", description="Kanal muten/unmuten",
+  usage="<ch> <true|false>", fun (arg) ->
+    two_args(arg, "mixer.mute <ch> <true|false>", cmd_mute))
+
+server.register("mixer.solo", description="Kanal auf Cue-Bus (Solo)",
+  usage="<ch> <true|false>", fun (arg) ->
+    two_args(arg, "mixer.solo <ch> <true|false>", cmd_solo))
+
+server.register("mixer.exclusive", description="Nur diesen Kanal hoerbar",
+  usage="<ch>", fun (arg) ->
+    one_arg(arg, "mixer.exclusive <ch>", cmd_exclusive))
+
+server.register("mixer.patch", description="Kanal-Quelle patchen",
+  usage="<ch> <source>", fun (arg) ->
+    two_args(arg, "mixer.patch <ch> <source>", cmd_patch))
+
+server.register("mixer.master", description="Master-Fader (dB) setzen",
+  usage="<gain_db>", fun (arg) ->
+    one_arg(arg, "mixer.master <gain_db>", cmd_master))
+
+server.register("mixer.meters", description="Kanal-Meter als JSON (§4.5)",
+  usage="", fun (arg) -> begin
+    ignore(arg)
+    cmd_meters()
+  end)
+
+server.register("layer.preset", description="Mixer-Preset anwenden",
+  usage="<default|live|relay-only>", fun (arg) ->
+    one_arg(arg, "layer.preset <default|live|relay-only>", cmd_preset))
+
+server.register("layer.force", description="Automatik-Override setzen",
+  usage="<layer|none>", fun (arg) ->
+    one_arg(arg, "layer.force <layer|none>", cmd_force))
+
+server.register("layer.enable", description="Ebene ein-/ausschalten",
+  usage="<layer> <true|false>", fun (arg) ->
+    two_args(arg, "layer.enable <layer> <true|false>", cmd_enable))
+
 # Tape recording (issue #108, consolidated §4.4): open/close the per-broadcast
 # recorder defined in outputs.liq. `tape_status_json`/`tape_start_guard` come
 # from tape.liq; the guard returns "" when a start may proceed.

@@ -50,7 +50,8 @@ Zwei Konsequenzen daraus, die den Rest des Dokuments prägen:
 
 **Single-Output-Mount.** Der Stack hat genau **einen** `output.icecast`
 (`mount="stream.mp3"`, `liquidsoap/lib/outputs.liq`); alle Ebenen
-(live/show/queue/rotation/relay/fun) werden über `fallback` dorthin gemischt.
+(live/show/queue/rotation/relay/fun) werden über den **Mixer-Graph** (§3.2)
+dorthin gemischt — seit #145 **nicht mehr** über eine `fallback`-Kette.
 Ein Mount trägt daher **keine** Layer-Information. Der Scheduler beobachtet
 deshalb die ICY-Metadaten dieses einen Mounts (`title`/`artist`) und leitet
 daraus die Ebene heuristisch ab (`observed_layer`, Issue #140). Ein
@@ -302,7 +303,8 @@ liquidsoap/
   lib/harbor.liq         # Caster-Pool, Auth, FCFS-Registry
   lib/live.liq           # Live-Switch + Override
   lib/layers.liq         # show, queue, rotation, relay, fun
-  lib/master.liq         # fallback-Kette + Transitions
+  lib/mixer.liq          # Mixer-Graph: Strips, Gain-Refs, Meter, Presets
+  lib/master.liq         # Master-Mix (mix -> compress -> clip) + Cue-Bus
   lib/tape.liq           # Tape-State + pure Helfer (issue #108)
   lib/outputs.liq        # icecast, hls, tape
   lib/control.liq        # server.harbor + Commands + Status
@@ -319,50 +321,83 @@ Derselbe Wert wird beim Start des Icecast-Containers per Template in dessen
 `icecast.xml` gerendert (siehe `infrastructure.md`); beide Seiten müssen also
 aus derselben Env-Variable gespeist werden. Es gibt keinen Default.
 
-### 3.2 Prioritätenkette — Code-Skizze
+### 3.2 Mixer-Graph — Code-Skizze
+
+Seit **#145** gibt es **keine** Prioritätenkette mehr. Die sechs Program-Kanäle
+werden summiert; die frühere Auswahl „höchste verfügbare Ebene gewinnt" ist
+entfallen (docs/product-v2-cockpit.md §4). `lib/mixer.liq` baut pro Kanal einen
+Strip, `lib/master.liq` instantiiert den Graph und formt den Master:
 
 ```liquidsoap
-# lib/master.liq
-# Skizze. Reihenfolge = Priorität. Höchste verfügbare Ebene gewinnt.
+# lib/mixer.liq — ein Strip: Trim -> Fader (Mute gefaltet) -> Peak -> RMS
+pre   = amplify(fun () -> trim(), src)
+fader = amplify(fun () -> fader_value(mute(), gain()), pre)
+pk    = peak.stereo(duration=1.0, fader)
+meter = rms.stereo(duration=1.0, pk)
+```
 
-master = fallback(
-  track_sensitive = false,
-  transition_length = 1.0,
-  transitions = [live_transition],
-  [
-    live_src,       # 100
-    show_src,       #  80
-    queue_src,      #  60
-    rotation_src,   #  40
-    relay_src,      #  20
-    fun_src,        #   1
-  ]
+```liquidsoap
+# lib/master.liq — Master-Mix. Kein `fallback`.
+radio = amplify(
+  fun () -> master_gain(),
+  clip(compress(mix(list.map(fun (c) -> c.src, mixer_channels()))))
 )
 ```
 
-`track_sensitive=false` ist für alle Ebenen außer `fun` richtig: Live soll
-sofort übernehmen, nicht erst am Ende des laufenden Tracks. Der Preis ist, dass
-ein Ebenenwechsel mitten im Track passiert — deshalb die Transition.
+- Kanal-Reihenfolge (`live, show, queue, rotation, relay, fun`) ist stabil und
+  folgt `docs/control-api.md` §5.5.
+- Fader/Gain und Trim sind `ref`s; `mixer.set` / `mixer.trim` schreiben sie zur
+  Laufzeit. Mute faltet in den Fader (0.0), der gespeicherte Gain bleibt.
+- Solo wirkt **nur** auf einen separaten Cue-Bus (`build_cue`), nie auf das
+  Programm (docs/product-v2-cockpit.md §2).
+- Presets (`layer.preset`) setzen Kanal-Gains/-Gates; `default` öffnet den
+  Musikpfad (rotation), `live`/`relay-only` je nur einen Kanal.
+
+Übergänge (US7): Track-zu-Track-`crossfade` liegt auf dem Rotations-Kanal (beide
+Seiten Dateien, Dauer bekannt):
+
+```liquidsoap
+# lib/layers.liq
+rotation = crossfade(playlist("/rotation/rotation.m3u", reload_mode="watch"))
+```
+
+`smooth_add` blendet eine Zusatzquelle ohne Cut ein; der `fun`-Kanal mischt den
+Jingle über das Rotations-Bett:
+
+```liquidsoap
+# lib/master.liq
+fun_src = smooth_add(normal=rotation, special=fallback_jingle)
+```
+
+Der Live-Handoff bleibt der kurze 0,5-s-Fade aus `lib/live.liq` (D11): bei
+getrenntem Harbor-Input ist der alte Source nicht mehr zuverlässig lieferfähig,
+ein langer Crossfade würde ins Leere faden.
 
 ```liquidsoap
 # lib/live.liq
-# Kurzer Fade statt Crossfade: bei getrenntem Harbor-Input ist der alte
-# Source nicht mehr zuverlässig lieferfähig, ein langer Crossfade würde
-# ins Leere faden.
 def live_transition(old, new) =
   add([fade.out(duration=0.5, old), fade.in(duration=0.5, new)])
 end
 ```
 
-Musik-Ebenen bekommen Track-zu-Track-Crossfade, weil dort beide Seiten Dateien
-sind und die Dauer bekannt ist:
-
-```liquidsoap
-# lib/layers.liq
-rotation_src = crossfade(
-  playlist("/tracks/rotation.m3u", reload_mode="watch", mode="randomize")
-)
-```
+> **Korrektur: `on_position` ist kein Operator, sondern eine Source-Methode.**
+> `liquidsoap -h on_position` liefert „Plugin not found". Die frühere Skizze
+> `source.on_position` ist damit zwar korrekt benannt, im Script muss aber die
+> **vollständige Signatur** stehen — mit explizitem `synchronous` und einem
+> Handler mit **zwei** Argumenten `(position, metadata)`:
+>
+> ```liquidsoap
+> # lib/mixer.liq (attach_end_hook)
+> src.on_position(
+>   position=fun () -> 10.0,
+>   remaining=true,
+>   synchronous=false,
+>   fun (position, metadata) -> log(level=4, "ending in #{position}s")
+> )
+> ```
+>
+> Der `fun`-Kanal nutzt diesen Hook als vorausschauendes Fade-in (10 s vor
+> Trackende).
 
 ### 3.3 Multi-Caster
 
@@ -665,6 +700,17 @@ Commands via `server.register`:
 | `live.status`     | —                           | JSON: `live_order`, `override`, aktueller Mount    |
 | `layer.available` | `<source_id> <true\|false>` | Verfügbarkeit einer Content-Ebene                  |
 | `layer.source_id` | `<layer> <id>`              | löst die Seed-`source_id` zur Laufzeit auf         |
+| `mixer.set`       | `<ch> <gain>`               | Kanal-Fader (dB oder linear, §4.1 control-api)     |
+| `mixer.trim`      | `<ch> <gain_db>`            | Kanal-Trim (dB) vor dem Fader                      |
+| `mixer.mute`      | `<ch> <true\|false>`        | Kanal muten/unmuten                                |
+| `mixer.solo`      | `<ch> <true\|false>`        | Kanal auf den Cue-Bus (Programm unberührt)         |
+| `mixer.exclusive` | `<ch>`                      | nur diesen Kanal hörbar, alle anderen gemutet      |
+| `mixer.patch`     | `<ch> <source>`             | Kanal-Quelle patchen (validiert, mutes den Kanal)  |
+| `mixer.master`    | `<gain_db>`                 | Master-Fader (dB)                                  |
+| `mixer.meters`    | —                           | JSON-Array (§4.5 control-api), `-inf` als `null`   |
+| `layer.preset`    | `<default\|live\|relay-only>` | Mixer-Preset anwenden (Kanal-Gains/-Gates)     |
+| `layer.force`     | `<layer\|none>`             | Automatik-Override; `none` hebt auf                |
+| `layer.enable`    | `<layer> <true\|false>`     | Ebene ein-/ausschalten                             |
 | `tape.start`      | `<tape_id>`                 | setzt Tape-ID, startet MP3-192k-Recorder           |
 | `tape.stop`       | —                           | stoppt Recorder                                    |
 | `tape.status`     | —                           | JSON: `{active, tape_id, path}`                    |
