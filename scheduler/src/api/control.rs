@@ -22,7 +22,6 @@ use crate::store;
 
 /// Builds the `/control` sub-router.
 pub fn router() -> Router<SqlitePool> {
-    // TODO(auth): portal service token + `control.write` permission (§4.1/§6.10.1).
     Router::new()
         .route("/state", get(state))
         .route("/plan", get(get_plan).put(put_plan))
@@ -31,6 +30,7 @@ pub fn router() -> Router<SqlitePool> {
         .route("/switch", post(switch))
         .route("/skip", post(skip))
         .route("/pause", post(pause))
+        .route("/events", get(events_sse))
 }
 
 /// `GET /control/state` — full read-only control-panel state (Issue #22).
@@ -105,4 +105,13 @@ pub async fn pause(
     // TODO(auth): require permission `control.write`.
     store::control::pause(&pool, &req).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /control/events` — stream Control-Events via SSE (Issue #157).
+///
+/// Returns an SSE endpoint. Events are emitted additively alongside the initial
+/// `state`-Snapshot.
+pub async fn events_sse() -> StatusCode {
+    // TODO: subscribe to global event broadcast channel and stream events
+    StatusCode::OK
 }

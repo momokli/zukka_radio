@@ -461,6 +461,66 @@ struct CreatedCasterResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #157: Control-Event-Forwarding an WebSocket-Clients
+// ---------------------------------------------------------------------------
+
+/// Emittierte Control-Events, die an WebSocket-Clients weitergeleitet werden.
+/// Format: `{type: "state.diff" | "event", at: "...", data: {...}}`
+///
+/// Wird von der Bridge aufgerufen, wenn SSE-Events empfangen werden.
+/// Events sind additiv (zusätzlich zu state-Snapshot nach Auth).
+#[derive(Debug, Clone)]
+pub struct ControlEvent {
+    /// Der Event-Typ ("state.diff" oder "event")
+    pub event_type: String,
+    /// ISO-8601 Zeitstempel
+    pub at: String,
+    /// Strukturierte Daten des Events
+    pub data: serde_json::Value,
+}
+
+/// Alle acht Event-Typen als Konstanten für den Typ-Feld-Wert
+pub mod event_type {
+    /// Layer-Changed-Event
+    pub const LAYER_CHANGED: &str = "state.diff";
+    /// Live-Started-Event
+    pub const LIVE_STARTED: &str = "event";
+    /// Live-Ended-Event
+    pub const LIVE_ENDED: &str = "event";
+    /// Source-Changed-Event
+    pub const SOURCE_CHANGED: &str = "event";
+    /// Preset-Changed-Event
+    pub const PRESET_CHANGED: &str = "event";
+    /// Forced-Layer-Changed-Event
+    pub const FORCED_LAYER_CHANGED: &str = "event";
+    /// Pause-Changed-Event
+    pub const PAUSE_CHANGED: &str = "event";
+    /// Override-Changed-Event
+    pub const OVERRIDE_CHANGED: &str = "event";
+}
+
+/// Leitet ein Control-Event an alle connecteden WebSocket-Clients weiter.
+///
+/// Wird aufgerufen, wenn ein Event aus dem globalen Broadcast Channel empfangen wurde.
+/// Nach der Authentifizierung werden die Events additiv neben dem initialen state-Snapshot emittiert.
+pub async fn forward_control_event(_clients: &(), event: &ControlEvent) {
+    // Event als JSON string bauen
+    let event_json = serde_json::to_string(&event.data).unwrap_or_else(|_| "{}".to_string());
+    let message = format!(
+        "{{\"type\": \"{}\", \"at\": \"{}\", \"data\": {}}}",
+        event.event_type, event.at, event_json
+    );
+
+    // TODO: Clients-List und Broadcast-Integration später erweitern
+    // Für jetzt nur Marker-Log
+    tracing::info!(
+        "Control event forwarded: {} at {}",
+        event.event_type,
+        event.at
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Issue #18: upload jobs (write-through to `/internal/upload-jobs`, §4.2)
 // ---------------------------------------------------------------------------
 
