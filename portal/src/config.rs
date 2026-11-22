@@ -35,6 +35,9 @@ pub struct Config {
     pub ffmpeg_bin: String,
     /// Directory for streaming temp files (`UPLOAD_TMP_DIR`).
     pub upload_tmp_dir: PathBuf,
+    /// Liquidsoap control endpoint (`ZUKKA_LIQUIDSOAP_CONTROL_URL`); `None`
+    /// keeps the control bridge hermetic (`engine_unavailable`).
+    pub liquidsoap_control_url: Option<String>,
 }
 
 impl Config {
@@ -54,6 +57,10 @@ impl Config {
         let ffprobe_bin = env_or("FFPROBE_BIN", "ffprobe");
         let ffmpeg_bin = env_or("FFMPEG_BIN", "ffmpeg");
         let upload_tmp_dir = PathBuf::from(env_or("UPLOAD_TMP_DIR", "/tmp/zukka-uploads"));
+        let liquidsoap_control_url = std::env::var("ZUKKA_LIQUIDSOAP_CONTROL_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         let mut config = Self::new(
             bind,
@@ -69,6 +76,7 @@ impl Config {
         config.ffprobe_bin = ffprobe_bin;
         config.ffmpeg_bin = ffmpeg_bin;
         config.upload_tmp_dir = upload_tmp_dir;
+        config.liquidsoap_control_url = liquidsoap_control_url;
         Ok(config)
     }
 
@@ -104,6 +112,7 @@ impl Config {
             ffprobe_bin: "ffprobe".to_string(),
             ffmpeg_bin: "ffmpeg".to_string(),
             upload_tmp_dir: std::env::temp_dir().join("zukka-uploads"),
+            liquidsoap_control_url: None,
         })
     }
 

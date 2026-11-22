@@ -240,6 +240,8 @@ fn router(perms: BTreeMap<String, bool>) -> (Router, Arc<FakeAnnouncementApi>) {
         broadcasts: Arc::new(backend.broadcasts()),
         announcements: announcements.clone(),
         limiter: Arc::new(WindowLimiter::new(50, Duration::from_secs(900))),
+        engine: Arc::new(zukka_portal::control_ws::engine::FakeEngineClient::new()),
+        meter_hub: Arc::new(zukka_portal::control_ws::meter::MeterHub::new()),
     };
     (build_router(state), announcements)
 }
