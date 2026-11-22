@@ -201,6 +201,39 @@ N = Länge von `CockpitState.channels`) in exakt der Reihenfolge von
 - Das Array hat immer genau N Einträge in `channels[]`-Ordnung; `id` identifiziert
   den Kanal (nicht die Position).
 
+### 4.6 HTTP Command-Proxy (Scheduler)
+
+Der Scheduler exponiert einen **HTTP-Command-Proxy** (`POST /api/v1/control/command`),
+der einen einzelnen Engine-Command validiert, an den Liquidsoap-Command-Server
+pusht und Engine-/Transport-Fehler auf die Vertrags-Codes aus §6.4 mappt. Der
+Proxy spiegelt §4.1–§4.4, akzeptiert aber nur schreibende Commands
+(`mixer.set|trim|mute|solo|exclusive|patch|master`, `layer.preset|force|enable`,
+`monitor.enable`, `live.set|clear`, `tape.start|stop`). Read-Commands
+(`mixer.meters`, `live.status`, `layer.status`, `monitor.status`) sind **nicht**
+über den Proxy erreichbar; sie dienen intern der State-Projektion.
+
+Die Fehlercodes aus §6.4 werden auf HTTP-Status abgebildet; `error.code` ist der
+Vertrags-Code:
+
+| `code`               | HTTP | Auslöser                                                     |
+| -------------------- | ---- | ----------------------------------------------------------- |
+| `unknown_command`    | 400  | `cmd` nicht in der Proxy-Whitelist                          |
+| `channel_not_found`  | 404  | Engine `unknown_channel` (grammatik-gültige, unbekannte ID) |
+| `invalid_args`       | 422  | fehlende/ungültige `args`                                   |
+| `bad_gain`           | 422  | Gain außerhalb `[-60,+12]` dB bzw. linear außerhalb `[0,1]` |
+| `bad_source`         | 422  | ungültiges `source`-Präfix                                  |
+| `command_failed`     | 502  | Engine-Body `ERROR …` ohne bekanntes Sub-Code               |
+| `engine_unavailable` | 503  | kein Endpoint konfiguriert **oder** Transportfehler/Timeout |
+
+`bad_gain`/`invalid_args` prüft der Scheduler **vor** dem Push (die Engine
+prüft die dB-Range nicht, `#145`-Finding); die Range-Checks sind damit
+fail-fast. `gain_db` und `linear` schließen sich aus.
+
+Der Scheduler liest den Kanalzustand nicht zurück (kein `mixer.state`); die
+`channels[]`-Felder `gain_db`/`mute`/`solo`/`exclusive` in §5.1 sind daher eine
+**Plan-Projektion** (persistierte Absicht) und die Pegel (`rms_*`/`peak`)
+stammen aus `mixer.meters` (fail-open).
+
 ---
 
 ## 5. State-JSON
