@@ -1592,3 +1592,101 @@ async fn t57_c15_proxy_audit_args_bounded() {
         .expect("args is a serialized string");
     assert_eq!(args.chars().count(), 1024);
 }
+
+// --- Tester-stage additions (integrative gaps #147) -----------------------
+
+/// Roundtrip: `PUT /plan` (preset + forced_layer + paused) → `GET /plan`
+/// identical; `GET /state` folds the plan into `automation`/`override` while the
+/// `#140` fields stay untouched.
+#[tokio::test]
+async fn t58_plan_roundtrip_and_state_projection() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, _pool, app) = setup().await;
+
+    let (status, put_body) = send(
+        &app,
+        Method::PUT,
+        "/api/v1/control/plan",
+        Some(json!({
+            "preset": "live",
+            "forced_layer": "queue",
+            "paused": false,
+            "reason": "op"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{put_body}");
+
+    // GET must echo the persisted plan identically.
+    let (status, get_body) = get(&app, "/api/v1/control/plan").await;
+    assert_eq!(status, StatusCode::OK, "{get_body}");
+    assert_eq!(get_body["preset"], "live");
+    assert_eq!(get_body["forced_layer"], "queue");
+    assert_eq!(get_body["paused"], false);
+    assert_eq!(get_body["preset"], put_body["preset"]);
+    assert_eq!(get_body["forced_layer"], put_body["forced_layer"]);
+    assert_eq!(get_body["paused"], put_body["paused"]);
+
+    // Each set key reached the engine exactly once.
+    let reqs = received(&log);
+    assert_eq!(reqs.iter().filter(|c| *c == "layer.preset live").count(), 1);
+    assert_eq!(reqs.iter().filter(|c| *c == "layer.force queue").count(), 1);
+
+    // State folds the plan into automation/override; #140 fields unchanged.
+    let (status, state) = get(&app, "/api/v1/control/state").await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    assert_eq!(state["automation"]["mode"], "manual");
+    assert_eq!(state["automation"]["preset"], "live");
+    assert_eq!(state["automation"]["override"]["channel"], "queue");
+    assert_eq!(state["derived_layer"], "queue");
+    assert_eq!(state["active_layer"], "queue");
+    assert!(state["observed_layer"].is_null());
+    assert_eq!(state["observed"], false);
+    assert_eq!(state["on_air"], false);
+}
+
+/// Proxy request counting: a successful push reaches the engine exactly once and
+/// a scheduler-side validation error must **not** hit the engine at all — while
+/// both still produce exactly one audit row each.
+#[tokio::test]
+async fn t59_proxy_engine_request_counting() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, pool, app) = setup().await;
+
+    // Success path: exactly one engine request, one audit row.
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "gain_db": -6.0 }),
+        "Fader",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(received(&log).len(), 1, "success must push exactly once");
+    assert_eq!(event_count(&pool, "control_action").await, 1);
+
+    // Validation error (gain range): engine must stay untouched.
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "gain_db": -99.0 }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "bad_gain");
+    assert_eq!(
+        received(&log).len(),
+        1,
+        "validation errors must not reach the engine"
+    );
+    assert_eq!(event_count(&pool, "control_action").await, 2);
+    assert_eq!(
+        latest_details(&pool, "control_action").await["outcome"],
+        "bad_gain"
+    );
+}
