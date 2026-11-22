@@ -154,12 +154,13 @@ async fn render_list_fragment(
         .items(Some(&ctx.caster_id), queue_id)
         .await
         .map_err(queue_error)?;
+    let tracks = load_catalog(state, ctx).await?;
     let writable = can_write(ctx, &queue);
     let fragment = QueueListFragment {
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items),
+        items: QueueItemRow::from_items(items, &tracks),
         can_write: writable,
     };
     let mut response = render(&fragment)?;
@@ -292,6 +293,25 @@ pub async fn queues_post(
 // US-3: editor
 // ---------------------------------------------------------------------------
 
+/// Loads the viewer-scoped track catalog (shared + own private), used to
+/// resolve queue-item titles/durations and to fill the source panel.
+async fn load_catalog(state: &AppState, ctx: &AuthContext) -> Result<Vec<Track>, PortalError> {
+    state
+        .tracks
+        .list(
+            Some(&ctx.caster_id),
+            &TrackQuery {
+                q: None,
+                visibility: None,
+                owner_caster_id: None,
+                limit: Some(200),
+                offset: None,
+            },
+        )
+        .await
+        .map_err(|err| PortalError::Upstream(err.to_string()))
+}
+
 /// Loads the visible queues for the toolbar selector, own-first then by name.
 async fn load_selector_options(
     state: &AppState,
@@ -353,20 +373,7 @@ pub async fn queue_editor(
         .items(Some(&ctx.caster_id), &id)
         .await
         .map_err(queue_error)?;
-    let tracks = state
-        .tracks
-        .list(
-            Some(&ctx.caster_id),
-            &TrackQuery {
-                q: None,
-                visibility: None,
-                owner_caster_id: None,
-                limit: Some(200),
-                offset: None,
-            },
-        )
-        .await
-        .map_err(|err| PortalError::Upstream(err.to_string()))?;
+    let tracks = load_catalog(&state, &ctx).await?;
     let writable = can_write(&ctx, &queue);
     let queues = load_selector_options(&state, &ctx, &queue.id).await?;
     let item_count = items.len() as i64;
@@ -377,7 +384,7 @@ pub async fn queue_editor(
         csrf_token: ctx.csrf_token.clone(),
         queue_id: queue.id.clone(),
         version: queue.version,
-        items: QueueItemRow::from_items(items),
+        items: QueueItemRow::from_items(items, &tracks),
         can_write: writable,
         can_control: ctx.has("control.write"),
         queue_kind_label: queue.kind.to_uppercase(),

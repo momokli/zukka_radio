@@ -205,21 +205,42 @@ pub struct QueueRow {
 }
 
 /// A queue item plus its neighbours (for the no-JS ↑/↓ buttons) and the
-/// pre-computed display strings (title, link label/state). Built by
-/// [`QueueItemRow::from_items`] so the templates stay free of method chains.
+/// pre-computed display strings (title, secondary line, kind icon, duration,
+/// link label/state). Built by [`QueueItemRow::from_items`] so the templates
+/// stay free of method chains. Tracks are resolved against the viewer-scoped
+/// catalog so the secondary line and duration are accurate (Issue #155).
 pub struct QueueItemRow {
     pub item: QueueItem,
     pub prev_id: String,
     pub next_id: String,
     pub title: String,
+    /// Secondary line: `ORIGINAL: …` on an override, the artist otherwise.
+    pub copy_sub: String,
     pub link_label: String,
     pub link_state: String,
+    /// 1-based, zero-padded display position (`01`…).
+    pub position_label: String,
+    /// `T` | `TP` | `URL` badge text.
+    pub kind_icon: String,
+    /// `m:ss` track duration (`""` when unknown / for links).
+    pub duration_label: String,
+    pub is_first: bool,
+    pub is_last: bool,
+    /// Only `kind == track` items carry a waveform canvas (Issue #23).
+    pub has_waveform: bool,
+    pub track_id: String,
 }
 
 impl QueueItemRow {
-    /// Builds the row list, wiring each item to its position neighbours.
-    pub fn from_items(items: Vec<QueueItem>) -> Vec<Self> {
+    /// Builds the row list, wiring each item to its position neighbours and
+    /// resolving track titles/artists/durations from `tracks`.
+    pub fn from_items(items: Vec<QueueItem>, tracks: &[Track]) -> Vec<Self> {
         let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+        let by_id: std::collections::HashMap<&str, &Track> = tracks
+            .iter()
+            .map(|track| (track.id.as_str(), track))
+            .collect();
+        let count = ids.len();
         items
             .into_iter()
             .enumerate()
@@ -229,12 +250,38 @@ impl QueueItemRow {
                     .and_then(|i| ids.get(i).cloned())
                     .unwrap_or_default();
                 let next_id = ids.get(index + 1).cloned().unwrap_or_default();
-                let title = item
-                    .title_override
-                    .clone()
+                let track = item
+                    .track_id
+                    .as_deref()
+                    .and_then(|id| by_id.get(id).copied());
+                let base = track
+                    .map(|t| t.title.clone())
                     .or_else(|| item.track_id.clone())
                     .or_else(|| item.link_url.clone())
                     .unwrap_or_else(|| item.id.clone());
+                let overridden = item.title_override.is_some();
+                let title = item.title_override.clone().unwrap_or(base.clone());
+                let copy_sub = if overridden {
+                    format!("ORIGINAL: {base}")
+                } else if item.kind == "track" {
+                    track.map(|t| t.artist.clone()).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let duration_label = if item.kind == "track" {
+                    track
+                        .map(|t| format_duration(t.duration_ms))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let kind_icon = match item.kind.as_str() {
+                    "track" => "T",
+                    "tape" => "TP",
+                    "link" => "URL",
+                    _ => "?",
+                }
+                .to_string();
                 let link_label = if item.kind == "link" {
                     item.link_provider
                         .clone()
@@ -243,13 +290,23 @@ impl QueueItemRow {
                     String::new()
                 };
                 let link_state = item.link_state.clone().unwrap_or_default();
+                let has_waveform = item.kind == "track" && item.track_id.is_some();
+                let track_id = item.track_id.clone().unwrap_or_default();
                 Self {
                     item,
                     prev_id,
                     next_id,
                     title,
+                    copy_sub,
                     link_label,
                     link_state,
+                    position_label: format!("{:02}", index + 1),
+                    kind_icon,
+                    duration_label,
+                    is_first: index == 0,
+                    is_last: index + 1 == count,
+                    has_waveform,
+                    track_id,
                 }
             })
             .collect()

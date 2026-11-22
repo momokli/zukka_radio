@@ -1,14 +1,22 @@
-<ul
+{# Authoritative queue item list (Issue #155, Block 3). The `#queue-items`
+   swap root, `data-queue-id`/`data-version`/`data-can-write` (SortableJS +
+   htmx target) are unchanged; only the markup inside got richer. #}
+<ol
   id="queue-items"
-  class="queue-items"
+  class="queue-list"
   data-queue-id="{{ queue_id }}"
   data-version="{{ version }}"
   data-can-write="{{ can_write }}"
+  aria-label="Ordered queue items"
 >
   {% if items.is_empty() %}
-  <li class="muted">Diese Queue ist leer.</li>
+  <li class="queue-empty">
+    <span class="empty-reel" aria-hidden="true"><i></i><i></i></span>
+    <strong>THE QUEUE IS EMPTY</strong>
+    <p>Choose a source and press ADD to start building this transmission.</p>
+  </li>
   {% endif %}
   {% for row in items %}
   {% include "partials/queue_item.html" %}
   {% endfor %}
-</ul>
+</ol>
