@@ -30,7 +30,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnection;
 
 use crate::dto::{
-    AutomationOverrideDto, AutomationViewDto, ChannelViewDto, ConnectedCasterDto,
+    AutomationOverrideDto, AutomationViewDto, ChannelKindDto, ChannelViewDto, ConnectedCasterDto,
     ControlCommandRequest, ControlCommandResponse, ControlLiveRequest, ControlPauseRequest,
     ControlPlanPutRequest, ControlSkipRequest, ControlStateDto, ControlSwitchRequest, LayerSource,
     LiveStateDto, MasterOutputsDto, MasterViewDto, ObservedNowPlaying, PlanDto, PlanEngineStatus,
@@ -544,7 +544,7 @@ fn project_channels(
             ChannelViewDto {
                 id: (*id).to_string(),
                 label: channel_label(id),
-                kind: (*id).to_string(),
+                kind: ChannelKindDto::from_id(id),
                 source: None,
                 connected: false,
                 gain_db,
@@ -888,6 +888,15 @@ pub async fn put_plan(
         Some(None) => {
             delete_setting(pool, PRESET_KEY).await?;
             changed.insert("preset".to_string(), serde_json::Value::Null);
+            // `default` is the documented start distribution, i.e. the reset
+            // target: without this push the engine would keep the last preset's
+            // gains (e.g. `live` open) even though the plan has no preset.
+            engine.preset = Some(
+                push_outcome(&crate::liquidsoap::layer_preset("default"))
+                    .await
+                    .as_str()
+                    .to_string(),
+            );
         }
         Some(Some(name)) => {
             set_setting(pool, PRESET_KEY, &name).await?;
@@ -951,11 +960,18 @@ pub async fn put_plan(
 /// US-7). Called **after** [`reassert_live`], fail-open: an unreachable engine is
 /// only a warning, never a boot failure. Idempotent.
 pub async fn reconcile(pool: &SqlitePool) -> ApiResult<()> {
-    if let Some(preset) = get_setting(pool, PRESET_KEY).await? {
-        if is_valid_preset(&preset) {
+    match get_setting(pool, PRESET_KEY).await? {
+        Some(preset) if is_valid_preset(&preset) => {
             push_best_effort(&crate::liquidsoap::layer_preset(&preset)).await;
-        } else {
+        }
+        Some(preset) => {
             tracing::warn!(preset, "control.preset is unknown, skipping engine push");
+        }
+        // No preset set ⇒ the engine default is the documented start
+        // distribution (`default`), so re-assert it. This closes the reset path:
+        // a stale preset cannot survive a scheduler restart.
+        None => {
+            push_best_effort(&crate::liquidsoap::layer_preset("default")).await;
         }
     }
     if let Some(raw) = get_setting(pool, FORCED_LAYER_KEY).await? {
@@ -976,7 +992,7 @@ pub async fn reconcile(pool: &SqlitePool) -> ApiResult<()> {
 // ---------------------------------------------------------------------------
 
 /// Commands the HTTP proxy accepts (↔ §6.1.1, without read/`state.get`/`ping`).
-const PROXY_COMMANDS: [&str; 15] = [
+const PROXY_COMMANDS: [&str; 14] = [
     "mixer.set",
     "mixer.trim",
     "mixer.mute",
@@ -987,7 +1003,6 @@ const PROXY_COMMANDS: [&str; 15] = [
     "layer.preset",
     "layer.force",
     "layer.enable",
-    "monitor.enable",
     "live.set",
     "live.clear",
     "tape.start",
@@ -1061,6 +1076,30 @@ fn obj_bool(
     }
 }
 
+/// Returns the value of `key` unless it is an explicit JSON `null`, which is
+/// treated exactly like an absent field (§4.6: `{"gain_db":null}` ⇒
+/// `invalid_args`, not `bad_gain`).
+fn present<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    obj.get(key).filter(|value| !value.is_null())
+}
+
+/// Reads a required numeric argument: absent **or** explicit `null` is
+/// `invalid_args` (a missing argument), a present non-number is `bad_gain`.
+fn required_num(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &'static str,
+) -> ApiResult<f64> {
+    match present(obj, key) {
+        None => Err(ApiError::invalid_args(key, format!("'{key}' is required"))),
+        Some(value) => value
+            .as_f64()
+            .ok_or_else(|| ApiError::bad_gain(key, format!("{key} must be a number"))),
+    }
+}
+
 fn obj_channel(obj: &serde_json::Map<String, serde_json::Value>) -> ApiResult<&str> {
     let channel = obj_str(obj, "channel")?;
     if !valid_channel_syntax(channel) {
@@ -1114,7 +1153,7 @@ fn build_command(cmd: &str, args: &serde_json::Value) -> ApiResult<String> {
     match cmd {
         "mixer.set" => {
             let channel = obj_channel(obj)?;
-            match (obj.get("gain_db"), obj.get("linear")) {
+            match (present(obj, "gain_db"), present(obj, "linear")) {
                 (Some(_), Some(_)) => Err(ApiError::invalid_args(
                     "gain_db",
                     "gain_db and linear are mutually exclusive",
@@ -1145,10 +1184,7 @@ fn build_command(cmd: &str, args: &serde_json::Value) -> ApiResult<String> {
         }
         "mixer.trim" => {
             let channel = obj_channel(obj)?;
-            let value = obj
-                .get("gain_db")
-                .and_then(|v| v.as_f64())
-                .ok_or_else(|| ApiError::bad_gain("gain_db", "gain_db must be a number"))?;
+            let value = required_num(obj, "gain_db")?;
             Ok(crate::liquidsoap::mixer_trim(
                 channel,
                 &fmt_num(check_gain_db(value, "gain_db")?),
@@ -1183,10 +1219,7 @@ fn build_command(cmd: &str, args: &serde_json::Value) -> ApiResult<String> {
             Ok(crate::liquidsoap::mixer_patch(channel, source))
         }
         "mixer.master" => {
-            let value = obj
-                .get("gain_db")
-                .and_then(|v| v.as_f64())
-                .ok_or_else(|| ApiError::bad_gain("gain_db", "gain_db must be a number"))?;
+            let value = required_num(obj, "gain_db")?;
             Ok(crate::liquidsoap::mixer_master(&fmt_num(check_gain_db(
                 value, "gain_db",
             )?)))
@@ -1224,7 +1257,6 @@ fn build_command(cmd: &str, args: &serde_json::Value) -> ApiResult<String> {
                 obj_bool(obj, "enabled")?,
             ))
         }
-        "monitor.enable" => Ok(crate::liquidsoap::monitor_enable(obj_bool(obj, "enabled")?)),
         "live.set" => Ok(crate::liquidsoap::live_set(obj_str(obj, "mount")?)),
         "live.clear" => Ok(crate::liquidsoap::LIVE_CLEAR.to_string()),
         "tape.start" => Ok(crate::liquidsoap::tape_start(obj_str(obj, "tape_id")?)),
@@ -1269,6 +1301,18 @@ fn parse_result(body: &str) -> serde_json::Value {
     json!({ "applied": true })
 }
 
+/// Bounds the audited `args` to 1024 characters (serialized form) so an
+/// oversized request cannot bloat `event_log.details`.
+fn bound_args(args: &serde_json::Value) -> String {
+    const MAX: usize = 1024;
+    let text = serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string());
+    if text.chars().count() <= MAX {
+        text
+    } else {
+        text.chars().take(MAX).collect()
+    }
+}
+
 /// Appends the proxy audit row (exactly one per call, success **and** failure).
 async fn audit_command(
     pool: &SqlitePool,
@@ -1284,7 +1328,7 @@ async fn audit_command(
         json!({
             "action": "command",
             "cmd": cmd,
-            "args": args,
+            "args": bound_args(args),
             "outcome": outcome,
             "engine": engine,
         }),

@@ -1102,6 +1102,10 @@ async fn t36_p8_put_plan_null_deletes_keys() {
     assert_eq!(setting(&pool, "control.preset").await, None);
     assert_eq!(setting(&pool, "control.forced_layer").await, None);
     assert!(received(&log).iter().any(|c| c == "layer.force none"));
+    // P8: deleting the preset resets the engine to the documented default.
+    assert!(received(&log).iter().any(|c| c == "layer.preset default"));
+    assert_eq!(body["engine"]["preset"], "applied");
+    assert_eq!(body["engine"]["forced_layer"], "applied");
 }
 
 #[tokio::test]
@@ -1489,4 +1493,102 @@ async fn t53_switch_pushes_layer_force() {
         Some("queue")
     );
     assert!(received(&log).iter().any(|c| c == "layer.force queue"));
+}
+
+#[tokio::test]
+async fn t54_r4_reconcile_without_preset_pushes_default() {
+    let _env = lock_control_env().await;
+    let (url, log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, pool, _app) = setup().await;
+    // No `control.preset` key persisted: the engine default is the documented
+    // start distribution, so reconcile must re-assert it.
+    zukka_scheduler::store::control::reconcile(&pool)
+        .await
+        .expect("reconcile ok");
+    assert!(
+        received(&log).iter().any(|c| c == "layer.preset default"),
+        "reconcile must push the default preset when no key is set"
+    );
+}
+
+// --- C13/C14/C15: proxy hardening (rework #147) ---------------------------
+
+#[tokio::test]
+async fn t55_c13_proxy_monitor_enable_unknown_command() {
+    let _env = lock_control_env().await;
+    let (_dir, pool, app) = setup().await;
+    let (status, body) = proxy(&app, "monitor.enable", json!({ "enabled": true }), "x").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "unknown_command");
+    assert_eq!(event_count(&pool, "control_action").await, 1);
+    assert_eq!(
+        latest_details(&pool, "control_action").await["cmd"],
+        "monitor.enable"
+    );
+}
+
+#[tokio::test]
+async fn t56_c14_proxy_explicit_null_is_absent() {
+    let _env = lock_control_env().await;
+    let (_dir, _pool, app) = setup().await;
+
+    // `gain_db: null` behaves like an absent field ⇒ invalid_args (not bad_gain).
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "gain_db": null }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "invalid_args");
+
+    // `linear: null` likewise.
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "linear": null }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "invalid_args");
+
+    // A missing (or null) required gain is a missing argument, not a range error.
+    let (status, body) = proxy(
+        &app,
+        "mixer.trim",
+        json!({ "channel": "live", "gain_db": null }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "invalid_args");
+
+    let (status, body) = proxy(&app, "mixer.master", json!({ "gain_db": null }), "x").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "invalid_args");
+}
+
+#[tokio::test]
+async fn t57_c15_proxy_audit_args_bounded() {
+    let _env = lock_control_env().await;
+    let (url, _log) = spawn_engine_fixture("OK").await;
+    let _url = ControlUrlGuard::set(Some(&url));
+    let (_dir, pool, app) = setup().await;
+    let blob = "x".repeat(2000);
+    let (status, body) = proxy(
+        &app,
+        "mixer.set",
+        json!({ "channel": "live", "gain_db": -6.0, "blob": blob }),
+        "x",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let details = latest_details(&pool, "control_action").await;
+    let args = details["args"]
+        .as_str()
+        .expect("args is a serialized string");
+    assert_eq!(args.chars().count(), 1024);
 }

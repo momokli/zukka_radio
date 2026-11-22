@@ -978,6 +978,42 @@ pub struct ObservedNowPlaying {
 // Issue #147: addititive state projection (channels / master / automation)
 // ---------------------------------------------------------------------------
 
+/// `ChannelView.kind` — the eight documented channel kinds (§5.1, `#152`).
+///
+/// Additive widening of the enum keeps `schema_version` at `1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelKindDto {
+    Live,
+    Show,
+    Queue,
+    Rotation,
+    Relay,
+    Fun,
+    Harbor,
+    Adhoc,
+}
+
+impl ChannelKindDto {
+    /// Maps a channel `id` to its `kind` (§5.1 `id`-Grammatik). The six program
+    /// channels are `id == kind`; slots/adhoc keep their group kind.
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "live" => Self::Live,
+            "show" => Self::Show,
+            "queue" => Self::Queue,
+            "rotation" => Self::Rotation,
+            "relay" => Self::Relay,
+            "fun" => Self::Fun,
+            id if id.starts_with("harbor.slot-") => Self::Harbor,
+            id if id.starts_with("relay.slot-") => Self::Relay,
+            id if id.starts_with("adhoc-") => Self::Adhoc,
+            // Unreachable for the six program channels; keep a total mapping.
+            _ => Self::Adhoc,
+        }
+    }
+}
+
 /// One mixer channel view (§5.1, Issue #147).
 ///
 /// `gain_db`/`mute`/`solo`/`exclusive` are a **plan projection** (no
@@ -987,7 +1023,7 @@ pub struct ObservedNowPlaying {
 pub struct ChannelViewDto {
     pub id: String,
     pub label: String,
-    pub kind: String,
+    pub kind: ChannelKindDto,
     pub source: Option<String>,
     pub connected: bool,
     pub gain_db: Option<f64>,
