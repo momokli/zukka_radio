@@ -22,6 +22,7 @@ base64.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 form_urlencoded.workspace = true
+futures-util = "0.3"
 hmac.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -40,9 +41,9 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-futures-util = "0.3"
 http-body-util = "0.1"
 mime = "0.3"
 tempfile.workspace = true
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 zukka-scheduler = { path = "../scheduler" }

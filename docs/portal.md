@@ -486,6 +486,19 @@ ein 24-Zeichen-Passwort (base32), zeigt es **einmal**, speichert nur den Hash.
 Eine laufende Harbor-Verbindung wird **nicht** getrennt („kein Kick/Bann") —
 das neue Passwort gilt ab der nächsten Verbindung.
 
+**Cockpit-WebSocket-Bridge (#148)**
+
+- Endpoint: `GET /api/v1/control/ws` (siehe `control-api.md` §2.2/§6).
+- Liegt **außerhalb** der `protected`-Layer: ein WS-Upgrade darf nicht mit
+  `303 /login` beantwortet werden; Auth passiert **in-band**.
+- Auth-Reihenfolge: `Authorization: Bearer <SERVICE_TOKEN>` → Portal-Session-
+  Cookie (`control.read`) → Erst-Frame `{"type":"auth","token":"…"}`.
+- Close-Codes: `4401` (fehlende/ungültige Auth), `4408` (Pong-Timeout 30 s),
+  `4503` (`engine_unavailable`).
+- **Write-Gate:** Cookie-Sessions dürfen Engine-Writes nur mit `control.write`
+  (§6.10.1); sonst antwortet die Bridge `forbidden` und mutiert die Engine nicht.
+  Service-Token-Sitzungen haben Vollzugriff.
+
 ### 3.7 Datenmodell `portal.db`
 
 Nur Identität, Upload, Sichtbarkeit, Peaks. Programm-Daten liegen im Scheduler.

@@ -216,6 +216,8 @@ fn state(waveforms: Arc<dyn WaveformApi>) -> AppState {
         broadcasts: Arc::new(backend.broadcasts()),
         announcements: Arc::new(FakeAnnouncementApi::default()),
         limiter: Arc::new(WindowLimiter::new(5, Duration::from_secs(900))),
+        engine: Arc::new(zukka_portal::control_ws::engine::FakeEngineClient::new()),
+        meter_hub: Arc::new(zukka_portal::control_ws::meter::MeterHub::new()),
     }
 }
 

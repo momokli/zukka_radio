@@ -2277,12 +2277,303 @@ pub struct ControlState {
     pub observed_now_playing: Option<ObservedNowPlaying>,
 }
 
+// ---------------------------------------------------------------------------
+// Issue #148: CockpitState (§5.5) — the WS `state`/`hello` snapshot
+// ---------------------------------------------------------------------------
+
+/// A mixer channel as exposed by the cockpit (`docs/control-api.md` §5.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelView {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub gain_db: Option<f64>,
+    #[serde(default)]
+    pub trim_db: f64,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
+    pub exclusive: bool,
+    #[serde(default)]
+    pub rms_l: Option<f64>,
+    #[serde(default)]
+    pub rms_r: Option<f64>,
+    #[serde(default)]
+    pub peak: Option<f64>,
+    #[serde(default)]
+    pub limiter_active: bool,
+    #[serde(default)]
+    pub metadata: Option<ChannelMetadata>,
+}
+
+/// `ChannelView.metadata` (§5.1).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelMetadata {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+}
+
+/// Master bus view (§5.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MasterView {
+    #[serde(default)]
+    pub gain_db: f64,
+    #[serde(default)]
+    pub limiter_active: bool,
+    #[serde(default)]
+    pub outputs: MasterOutputs,
+}
+
+impl Default for MasterView {
+    fn default() -> Self {
+        Self {
+            gain_db: 0.0,
+            limiter_active: false,
+            outputs: MasterOutputs::default(),
+        }
+    }
+}
+
+/// `MasterView.outputs` (§5.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MasterOutputs {
+    #[serde(default)]
+    pub icecast: bool,
+    #[serde(default)]
+    pub hls: bool,
+    #[serde(default)]
+    pub tape: bool,
+}
+
+impl Default for MasterOutputs {
+    fn default() -> Self {
+        Self {
+            icecast: true,
+            hls: true,
+            tape: false,
+        }
+    }
+}
+
+/// Manual automation override (§5.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationOverride {
+    pub channel: String,
+    pub since: String,
+}
+
+/// Automation view (§5.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationView {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub next_event_at: Option<String>,
+    #[serde(default)]
+    pub next_source: Option<String>,
+    #[serde(default)]
+    pub overridden: Option<AutomationOverride>,
+}
+
+impl Default for AutomationView {
+    fn default() -> Self {
+        Self {
+            mode: "auto".to_string(),
+            preset: None,
+            next_event_at: None,
+            next_source: None,
+            overridden: None,
+        }
+    }
+}
+
+/// Monitor view (§5.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorView {
+    #[serde(default)]
+    pub connected_djs: i64,
+    #[serde(default)]
+    pub latency_ms: i64,
+    #[serde(default)]
+    pub codec: String,
+}
+
+impl Default for MonitorView {
+    fn default() -> Self {
+        Self {
+            connected_djs: 0,
+            latency_ms: 0,
+            codec: "opus".to_string(),
+        }
+    }
+}
+
+/// `CockpitState.now_playing` (§5.5).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CockpitNowPlaying {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Cockpit snapshot — the body of `GET /api/v1/control/state` and the WS
+/// `state`/`hello` payload (`docs/control-api.md` §5.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CockpitState {
+    pub schema_version: i64,
+    pub generated_at: String,
+    pub channels: Vec<ChannelView>,
+    pub master: MasterView,
+    pub automation: AutomationView,
+    pub monitors: MonitorView,
+    #[serde(default)]
+    pub listeners: Option<i64>,
+    #[serde(default)]
+    pub now_playing: Option<CockpitNowPlaying>,
+}
+
+/// The six fixed program channels, in normative order (§5.5).
+const PROGRAM_CHANNELS: [(&str, &str); 6] = [
+    ("live", "Live"),
+    ("show", "Show"),
+    ("queue", "Queue"),
+    ("rotation", "Rotation"),
+    ("relay", "Relay"),
+    ("fun", "Fun"),
+];
+
+/// Derives a §5.5 [`CockpitState`] from the scheduler's [`ControlState`].
+///
+/// The scheduler DTO predates §5.5 (R1): `schema_version`/`generated_at` are
+/// synthesized, `monitors` is derived from the live connection set, and
+/// `listeners` stays `null` until an Icecast listener source exists. The six
+/// program channels are always present, in the normative order.
+pub fn map_cockpit_state(state: ControlState) -> CockpitState {
+    let mut channels: Vec<ChannelView> = PROGRAM_CHANNELS
+        .iter()
+        .map(|(id, label)| {
+            let source = state
+                .sources
+                .iter()
+                .find(|s| s.name == *id || s.kind == *id);
+            ChannelView {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                kind: source
+                    .map(|s| {
+                        if s.kind.is_empty() {
+                            s.name.clone()
+                        } else {
+                            s.kind.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| (*id).to_string()),
+                source: None,
+                connected: source.map(|s| s.enabled).unwrap_or(false),
+                gain_db: None,
+                trim_db: 0.0,
+                mute: false,
+                solo: false,
+                exclusive: false,
+                rms_l: None,
+                rms_r: None,
+                peak: None,
+                limiter_active: false,
+                metadata: None,
+            }
+        })
+        .collect();
+    // Any non-program sources are appended after the fixed six.
+    for source in &state.sources {
+        if PROGRAM_CHANNELS.iter().any(|(id, _)| *id == source.name) {
+            continue;
+        }
+        channels.push(ChannelView {
+            id: source.name.clone(),
+            label: source.name.clone(),
+            kind: if source.kind.is_empty() {
+                source.name.clone()
+            } else {
+                source.kind.clone()
+            },
+            source: None,
+            connected: source.enabled,
+            gain_db: None,
+            trim_db: 0.0,
+            mute: false,
+            solo: false,
+            exclusive: false,
+            rms_l: None,
+            rms_r: None,
+            peak: None,
+            limiter_active: false,
+            metadata: None,
+        });
+    }
+
+    let now_playing = state.now_playing.as_ref().map(|np| CockpitNowPlaying {
+        title: np.title.clone(),
+        artist: np.artist.clone(),
+        source: state
+            .active_layer
+            .clone()
+            .or_else(|| state.observed_layer.clone()),
+    });
+
+    CockpitState {
+        schema_version: 1,
+        generated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        channels,
+        master: MasterView::default(),
+        automation: AutomationView {
+            mode: if state.paused { "manual" } else { "auto" }.to_string(),
+            preset: state.forced_layer.clone(),
+            next_event_at: None,
+            next_source: None,
+            overridden: state
+                .live
+                .override_caster_id
+                .as_ref()
+                .map(|id| AutomationOverride {
+                    channel: "live".to_string(),
+                    since: id.clone(),
+                }),
+        },
+        monitors: MonitorView {
+            connected_djs: state.live.connected.len() as i64,
+            ..MonitorView::default()
+        },
+        listeners: None,
+        now_playing,
+    }
+}
+
 /// Control operations the portal needs. Implemented by [`HttpControlApi`] in
 /// production and by [`FakeControlApi`] in tests.
 #[async_trait]
 pub trait ControlApi: Send + Sync {
     /// Reads the full control-panel state. `viewer` is sent as `X-Caster-Id`.
     async fn state(&self, viewer: Option<&str>) -> Result<ControlState, ControlError>;
+
+    /// Reads the §5.5 cockpit snapshot (WS `hello`/`state`). Provided in terms
+    /// of [`ControlApi::state`].
+    async fn cockpit_state(&self, viewer: Option<&str>) -> Result<CockpitState, ControlError> {
+        Ok(map_cockpit_state(self.state(viewer).await?))
+    }
 
     /// Forces one of the six layers (`POST /control/switch`).
     async fn switch(&self, layer: &str, reason: &str) -> Result<(), ControlError>;

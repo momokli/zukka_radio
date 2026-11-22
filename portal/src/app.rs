@@ -18,6 +18,8 @@ use crate::api_client::{
 };
 use crate::auth::{handlers, middleware};
 use crate::config::Config;
+use crate::control_ws::engine::{EngineClient, LiquidsoapEngineClient};
+use crate::control_ws::meter::MeterHub;
 use crate::error::PortalError;
 use crate::music_api::{HttpMusicApi, MusicApi};
 use crate::rate_limit::WindowLimiter;
@@ -49,12 +51,18 @@ pub struct AppState {
     pub broadcasts: Arc<dyn BroadcastApi>,
     pub announcements: Arc<dyn AnnouncementApi>,
     pub limiter: Arc<WindowLimiter>,
+    /// Liquidsoap command client for the cockpit WebSocket bridge (#148).
+    pub engine: Arc<dyn EngineClient>,
+    /// 30 Hz meter fan-out shared by all bridge connections (#148).
+    pub meter_hub: Arc<MeterHub>,
 }
 
 impl AppState {
     /// Builds state with the production login limiter and HTTP service clients
     /// derived from `config`.
     pub fn new(config: Config, identity: Arc<dyn IdentityApi>) -> Self {
+        let engine = default_engine(&config);
+        let meter_hub = Arc::new(MeterHub::new());
         Self {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
@@ -69,7 +77,21 @@ impl AppState {
             config: Arc::new(config),
             identity,
             limiter: Arc::new(WindowLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
+            engine,
+            meter_hub,
         }
+    }
+
+    /// Overrides the engine client (tests inject a [`FakeEngineClient`]).
+    pub fn with_engine(mut self, engine: Arc<dyn EngineClient>) -> Self {
+        self.engine = engine;
+        self
+    }
+
+    /// Overrides the meter hub (tests use a small broadcast capacity).
+    pub fn with_meter_hub(mut self, meter_hub: Arc<MeterHub>) -> Self {
+        self.meter_hub = meter_hub;
+        self
     }
 
     /// Builds state with a custom limiter (tests).
@@ -78,6 +100,8 @@ impl AppState {
         identity: Arc<dyn IdentityApi>,
         limiter: Arc<WindowLimiter>,
     ) -> Self {
+        let engine = default_engine(&config);
+        let meter_hub = Arc::new(MeterHub::new());
         Self {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
@@ -92,6 +116,8 @@ impl AppState {
             config: Arc::new(config),
             identity,
             limiter,
+            engine,
+            meter_hub,
         }
     }
 
@@ -112,6 +138,8 @@ impl AppState {
         let shows = default_shows(&config);
         let broadcasts = default_broadcasts(&config);
         let announcements = default_announcements(&config);
+        let engine = default_engine(&config);
+        let meter_hub = Arc::new(MeterHub::new());
         Self {
             config: Arc::new(config),
             identity,
@@ -126,6 +154,8 @@ impl AppState {
             broadcasts,
             announcements,
             limiter,
+            engine,
+            meter_hub,
         }
     }
 
@@ -140,6 +170,7 @@ impl AppState {
         shows: Arc<dyn ShowApi>,
         broadcasts: Arc<dyn BroadcastApi>,
     ) -> Self {
+        let engine = default_engine(&config);
         Self {
             music: default_music(&config),
             upload_jobs: default_jobs(&config),
@@ -154,8 +185,17 @@ impl AppState {
             config: Arc::new(config),
             identity,
             limiter,
+            engine,
+            meter_hub: Arc::new(MeterHub::new()),
         }
     }
+}
+
+/// The production engine client derived from `config` (disabled when unset).
+fn default_engine(config: &Config) -> Arc<dyn EngineClient> {
+    Arc::new(LiquidsoapEngineClient::new(
+        config.liquidsoap_control_url.clone(),
+    ))
 }
 
 fn default_music(config: &Config) -> Arc<dyn MusicApi> {
@@ -257,6 +297,10 @@ fn default_announcements(config: &Config) -> Arc<dyn AnnouncementApi> {
 
 /// Builds the full portal router.
 pub fn build_router(state: AppState) -> Router {
+    // One 30 Hz meter sampler per app state (#148); skipped while the engine
+    // is disabled, so hermetic deployments never poll Liquidsoap.
+    state.meter_hub.clone().start(state.engine.clone());
+
     let protected = Router::new()
         .route("/", get(handlers::dashboard))
         .route("/account", get(handlers::account_get))
@@ -416,6 +460,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/static/app.css", get(app_css))
         .route("/static/sortable.min.js", get(sortable_js))
         .route("/static/waveform.js", get(waveform_js))
+        // Issue #148: cockpit WebSocket bridge. Deliberately **outside** the
+        // `protected` layer: a WS upgrade must not be answered with a `303
+        // /login` redirect — auth happens in-band (Close `4401`).
+        .route("/api/v1/control/ws", get(crate::control_ws::ws_handler))
         .route(
             "/login",
             get(handlers::login_get).post(handlers::login_post),
