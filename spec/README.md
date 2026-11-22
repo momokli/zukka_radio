@@ -14,6 +14,10 @@ implementiert wird.
 | `commands.json`                 | maschinenlesbarer Command-Katalog                              |
 | `fixtures/*.json`               | Beispiel-Zustände (Inhalt für Mockups/Prototypen)              |
 | `ui-brief.md`                   | Design-Brief: Ziele, Screens, Komponenten, Interaktion, States |
+| `screens/queue.md`              | Screen-Spec QUEUE (Playlist/Queue-Editor)                      |
+| `screens/library.md`            | Screen-Spec LIBRARY (Katalog + Upload)                         |
+| `screens/monitor.md`            | Screen-Spec MONITOR (WebRTC-Return, Cue)                       |
+| `screens/tapes.md`              | Screen-Spec TAPES (bestehende Seite, Einbindung)               |
 | `design-tokens.json`            | Farben/Typografie/Form aus Tapes + Player                      |
 | `../tapes/assets/`              | Referenz-Optik (Tapes-Seite, CSS)                              |
 | `../player/`                    | Referenz-Optik (Kassette, Player)                              |
