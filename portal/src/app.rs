@@ -371,6 +371,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Issue #22: Control Panel (SSE + polling fallback + live badge).
         .route("/control", get(crate::control::control_get))
+        // Issue #149: minimal debug mixer UI over the WS bridge (control.read).
+        .route(
+            "/control/debug",
+            get(crate::control_debug::control_debug_get),
+        )
         .route("/control/state", get(crate::control::control_state))
         .route("/control/events", get(crate::control::control_events))
         .route("/control/badge", get(crate::control::control_badge))

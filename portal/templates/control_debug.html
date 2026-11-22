@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Control Debug</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 1rem 1.25rem 3rem;
+      font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #10131a; color: #e6e9ef;
+    }
+    h1 { font-size: 1.15rem; margin: 0; }
+    .muted { color: #8b93a7; }
+    .topbar { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem; }
+    .conn { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+    .conn--on { background: #14432a; color: #6ee7a0; }
+    .conn--off { background: #4a1f1f; color: #f3a1a1; }
+    .warn { background: #4a3a12; color: #ffd479; padding: .4rem .6rem; border-radius: 6px; }
+    .channels { display: grid; gap: .75rem; margin-top: 1rem; }
+    .ch {
+      background: #171b24; border: 1px solid #242a38; border-radius: 10px;
+      padding: .6rem .75rem; display: grid; gap: .5rem;
+    }
+    .ch__head { display: flex; align-items: center; gap: .5rem; }
+    .ch__label { font-weight: 600; }
+    .ch__id { color: #8b93a7; font-size: .78rem; }
+    .ch__kind { color: #8b93a7; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+    .ch__conn { width: .55rem; height: .55rem; border-radius: 50%; margin-left: auto; background: #6b7280; }
+    .ch__conn[data-state="on"] { background: #4ade80; }
+    .ch__conn[data-state="off"] { background: #f87171; }
+    .ch__body { display: flex; align-items: center; gap: .6rem; }
+    .ch__fader { flex: 1 1 auto; }
+    .ch__gain { min-width: 4.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+    .ch__buttons { display: flex; gap: .5rem; }
+    .btn {
+      padding: .25rem .7rem; border-radius: 6px; border: 1px solid #303748;
+      background: #1f2533; color: #e6e9ef; cursor: pointer;
+    }
+    .btn[aria-pressed="true"] { background: #b45309; border-color: #b45309; color: #fff; }
+    .ch__meters { display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: .5rem; }
+    .meter { display: block; height: .5rem; border-radius: 4px; background: #0c0f15; overflow: hidden; }
+    .meter__fill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #22c55e, #eab308 80%, #ef4444); }
+    .ch__peak { font-variant-numeric: tabular-nums; color: #b6bdcd; min-width: 3.5rem; text-align: right; }
+    .errors { margin-top: 1rem; display: grid; gap: .35rem; }
+    .toast { padding: .35rem .6rem; border-radius: 6px; font-size: .8rem; }
+    .toast--error { background: #4a1f1f; color: #f8b4b4; }
+    .toast--info { background: #1b2a3a; color: #a8d1f5; }
+    code { background: #0c0f15; padding: .05rem .3rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Control Debug <span class="muted">#149</span></h1>
+    <span id="conn" class="conn conn--off">verbinde…</span>
+  </header>
+  <p class="muted">
+    Minimale Debug-UI — ausschließlich über die WebSocket-Bridge
+    <code>/api/v1/control/ws</code> (kein SSE, kein Polling, kein REST-Read).
+    Wird später durch das echte Cockpit ersetzt.
+  </p>
+  {% if !can_write %}
+  <p class="warn">Nur Leserechte: Schreib-Commands (Fader/Mute/Solo) werden von der
+    Bridge mit <code>forbidden</code> abgelehnt.</p>
+  {% endif %}
+  <div id="channels" class="channels" aria-live="polite"></div>
+  <div id="errors" class="errors" aria-live="assertive"></div>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var WS_URL = (location.protocol === "https:" ? "wss://" : "ws://")
+      + location.host + "/api/v1/control/ws";
+    var API_VERSION = 1;
+    var FADER_MIN = -60;
+    var FADER_MAX = 12;
+    // §6.2: f32::MIN marks "no signal".
+    var NEG_INF = -3.4028235e38;
+    var FADER_THROTTLE_MS = 33; // ~30 sends/s (§6.5)
+
+    var channelsEl = document.getElementById("channels");
+    var errorsEl = document.getElementById("errors");
+    var connEl = document.getElementById("conn");
+
+    var channels = [];   // ordered ChannelView snapshots
+    var rows = {};       // id -> { root, fader, gain, mute, solo, connected, meterL, meterR, meterPeak }
+    var layout = [];     // channel_ids from meters.layout (§6.3)
+    var meterState = {}; // id -> { rms_l, rms_r, peak }
+    var seq = 0;
+    var ws = null;
+    var throttle = {};   // key -> { timer, cmd, args }
+
+    function nextId() {
+      seq += 1;
+      return "c-" + seq;
+    }
+
+    function esc(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    function setConn(text, ok) {
+      connEl.textContent = text;
+      connEl.className = "conn " + (ok ? "conn--on" : "conn--off");
+    }
+
+    function toast(message, level) {
+      var el = document.createElement("div");
+      el.className = "toast " + (level === "info" ? "toast--info" : "toast--error");
+      el.textContent = message;
+      errorsEl.appendChild(el);
+      while (errorsEl.childNodes.length > 8) {
+        errorsEl.removeChild(errorsEl.firstChild);
+      }
+    }
+
+    // --- command send -------------------------------------------------------
+    function sendRaw(cmd, args) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        toast("nicht verbunden — Command verworfen", "error");
+        return;
+      }
+      ws.send(JSON.stringify({
+        id: nextId(),
+        api_version: API_VERSION,
+        cmd: cmd,
+        args: args || {}
+      }));
+    }
+
+    // Coalesces rapid fader moves to at most one command per window (§6.5).
+    function sendThrottled(key, cmd, args) {
+      var entry = throttle[key];
+      if (!entry) {
+        entry = throttle[key] = { timer: null, cmd: cmd, args: args };
+      }
+      entry.cmd = cmd;
+      entry.args = args;
+      if (entry.timer) {
+        return;
+      }
+      entry.timer = setTimeout(function () {
+        entry.timer = null;
+        sendRaw(entry.cmd, entry.args);
+      }, FADER_THROTTLE_MS);
+    }
+
+    // --- rendering ----------------------------------------------------------
+    function createRow(ch) {
+      var root = document.createElement("div");
+      root.className = "ch";
+      root.setAttribute("data-channel-id", ch.id);
+      root.innerHTML =
+        '<div class="ch__head">' +
+          '<span class="ch__label" data-role="label"></span>' +
+          '<code class="ch__id" data-role="id"></code>' +
+          '<span class="ch__kind" data-role="kind"></span>' +
+          '<span class="ch__conn" data-role="connected"></span>' +
+        '</div>' +
+        '<div class="ch__body">' +
+          '<input type="range" class="ch__fader" data-role="fader" min="' + FADER_MIN +
+            '" max="' + FADER_MAX + '" step="0.5">' +
+          '<span class="ch__gain" data-role="gain">—</span>' +
+        '</div>' +
+        '<div class="ch__buttons">' +
+          '<button type="button" class="btn" data-role="mute">Mute</button>' +
+          '<button type="button" class="btn" data-role="solo">Solo</button>' +
+        '</div>' +
+        '<div class="ch__meters">' +
+          '<span class="meter"><span class="meter__fill" data-role="meter-l"></span></span>' +
+          '<span class="meter"><span class="meter__fill" data-role="meter-r"></span></span>' +
+          '<span class="ch__peak" data-role="meter-peak">—</span>' +
+        '</div>';
+
+      var refs = {
+        root: root,
+        label: root.querySelector('[data-role="label"]'),
+        id: root.querySelector('[data-role="id"]'),
+        kind: root.querySelector('[data-role="kind"]'),
+        connected: root.querySelector('[data-role="connected"]'),
+        fader: root.querySelector('[data-role="fader"]'),
+        gain: root.querySelector('[data-role="gain"]'),
+        mute: root.querySelector('[data-role="mute"]'),
+        solo: root.querySelector('[data-role="solo"]'),
+        meterL: root.querySelector('[data-role="meter-l"]'),
+        meterR: root.querySelector('[data-role="meter-r"]'),
+        meterPeak: root.querySelector('[data-role="meter-peak"]')
+      };
+
+      refs.fader.addEventListener("input", function () {
+        var gain = parseFloat(refs.fader.value);
+        refs.gain.textContent = gain.toFixed(1) + " dB";
+        sendThrottled("gain:" + ch.id, "mixer.set", { channel: ch.id, gain_db: gain });
+      });
+      refs.mute.addEventListener("click", function () {
+        var next = refs.mute.getAttribute("aria-pressed") !== "true";
+        refs.mute.setAttribute("aria-pressed", String(next));
+        sendRaw("mixer.mute", { channel: ch.id, mute: next });
+      });
+      refs.solo.addEventListener("click", function () {
+        var next = refs.solo.getAttribute("aria-pressed") !== "true";
+        refs.solo.setAttribute("aria-pressed", String(next));
+        sendRaw("mixer.solo", { channel: ch.id, solo: next });
+      });
+
+      return refs;
+    }
+
+    function updateRow(refs, ch) {
+      refs.label.textContent = ch.label || ch.id;
+      refs.id.textContent = ch.id;
+      refs.kind.textContent = ch.kind || "";
+      refs.connected.setAttribute("data-state", ch.connected ? "on" : "off");
+      if (document.activeElement !== refs.fader) {
+        refs.fader.value = ch.gain_db == null ? "0" : String(ch.gain_db);
+      }
+      refs.gain.textContent = ch.gain_db == null ? "—" : Number(ch.gain_db).toFixed(1) + " dB";
+      refs.mute.setAttribute("aria-pressed", String(!!ch.mute));
+      refs.solo.setAttribute("aria-pressed", String(!!ch.solo));
+    }
+
+    function renderAll() {
+      channelsEl.textContent = "";
+      rows = {};
+      for (var i = 0; i < channels.length; i++) {
+        var ch = channels[i];
+        var refs = createRow(ch);
+        updateRow(refs, ch);
+        rows[ch.id] = refs;
+        channelsEl.appendChild(refs.root);
+      }
+      applyMeters();
+    }
+
+    function indexOfChannel(id) {
+      for (var i = 0; i < channels.length; i++) {
+        if (channels[i].id === id) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function mergeChannel(patch) {
+      var idx = indexOfChannel(patch.id);
+      if (idx === -1) {
+        channels.push(patch);
+        var refs = createRow(patch);
+        updateRow(refs, patch);
+        rows[patch.id] = refs;
+        channelsEl.appendChild(refs.root);
+        applyMeters();
+        return;
+      }
+      var merged = channels[idx];
+      for (var key in patch) {
+        if (Object.prototype.hasOwnProperty.call(patch, key)) {
+          merged[key] = patch[key];
+        }
+      }
+      updateRow(rows[merged.id], merged);
+    }
+
+    // --- events -------------------------------------------------------------
+    function onState(data) {
+      channels = (data && data.channels) ? data.channels.slice() : [];
+      renderAll();
+    }
+
+    function onDiff(data) {
+      if (data && Array.isArray(data.channels)) {
+        for (var i = 0; i < data.channels.length; i++) {
+          mergeChannel(data.channels[i]);
+        }
+      }
+      // Other diff fields (master/automation/…) are not needed by this debug UI.
+    }
+
+    function onLayout(data) {
+      layout = (data && Array.isArray(data.channel_ids)) ? data.channel_ids.slice() : [];
+      applyMeters();
+    }
+
+    function dbToPercent(db) {
+      if (db === NEG_INF || db == null || db <= FADER_MIN) {
+        return 0;
+      }
+      if (db >= 0) {
+        return 100;
+      }
+      return Math.round(((db - FADER_MIN) / (0 - FADER_MIN)) * 100);
+    }
+
+    function fmtDb(db) {
+      if (db === NEG_INF || db == null || db <= FADER_MIN) {
+        return "—";
+      }
+      return db.toFixed(1);
+    }
+
+    function meterIds() {
+      if (layout.length) {
+        return layout;
+      }
+      return channels.map(function (c) { return c.id; });
+    }
+
+    function applyMeters() {
+      var ids = meterIds();
+      for (var i = 0; i < ids.length; i++) {
+        var m = meterState[ids[i]];
+        if (m) {
+          paintMeter(ids[i], m);
+        }
+      }
+    }
+
+    function paintMeter(id, m) {
+      var refs = rows[id];
+      if (!refs) {
+        return;
+      }
+      refs.meterL.style.width = dbToPercent(m.rms_l) + "%";
+      refs.meterR.style.width = dbToPercent(m.rms_r) + "%";
+      refs.meterPeak.textContent = fmtDb(m.peak);
+    }
+
+    function onMeters(buf) {
+      if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) {
+        return;
+      }
+      var view = new DataView(buf);
+      if (view.getUint8(0) !== 1) {
+        return;
+      }
+      var n = view.getUint8(1);
+      var available = Math.floor((buf.byteLength - 4) / 12);
+      if (n > available) {
+        n = available;
+      }
+      var ids = meterIds();
+      for (var i = 0; i < n; i++) {
+        var off = 4 + i * 12;
+        var id = ids[i];
+        if (!id) {
+          continue;
+        }
+        var m = {
+          rms_l: view.getFloat32(off, true),
+          rms_r: view.getFloat32(off + 4, true),
+          peak: view.getFloat32(off + 8, true)
+        };
+        meterState[id] = m;
+        paintMeter(id, m);
+      }
+    }
+
+    function onReply(msg) {
+      if (msg.ok) {
+        return;
+      }
+      var err = msg.error || {};
+      toast("Command fehlgeschlagen — " + (err.code || "error") + ": " + (err.message || ""), "error");
+    }
+
+    function handleText(raw) {
+      var msg;
+      try {
+        msg = JSON.parse(raw);
+      } catch (e) {
+        return;
+      }
+      if (msg.type === "hello") { return; }
+      if (msg.type === "state") { onState(msg.data); return; }
+      if (msg.type === "state.diff") { onDiff(msg.data); return; }
+      if (msg.type === "meters.layout") { onLayout(msg.data); return; }
+      if (msg.type === "meters") { return; } // binär ist Default (§6.2)
+      if (msg.type === "event") { return; }
+      if (msg.type === "pong") { return; }
+      if (msg.type === "error") {
+        toast("Bridge-Fehler — " + (msg.data && msg.data.code) + ": " + (msg.data && msg.data.message), "error");
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(msg, "id") && typeof msg.ok === "boolean") {
+        onReply(msg);
+      }
+    }
+
+    function onMessage(ev) {
+      if (typeof ev.data === "string") {
+        handleText(ev.data);
+      } else {
+        onMeters(ev.data);
+      }
+    }
+
+    function connect() {
+      setConn("verbinde…", false);
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = function () { setConn("verbunden", true); };
+      ws.onmessage = onMessage;
+      ws.onerror = function () { setConn("Verbindungsfehler", false); };
+      ws.onclose = function () {
+        setConn("getrennt — neuer Versuch…", false);
+        setTimeout(connect, 2000);
+      };
+    }
+
+    connect();
+  })();
+  </script>
+</body>
+</html>
