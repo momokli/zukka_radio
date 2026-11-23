@@ -74,6 +74,8 @@ pub fn viewer_caster_id(headers: &HeaderMap) -> Option<String> {
 
 /// Builds the full application router: `/healthz` + `/api/v1`.
 pub fn router(pool: SqlitePool) -> Router {
+    // Initialize the global event channel once at router startup.
+    crate::events::create_event_channel();
     // TODO(auth): RBAC middleware (permission matrix §6.10.1) is a separate
     // issue; #10 ships the routes + handlers only.
     let api = Router::new()
