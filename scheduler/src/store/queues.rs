@@ -403,7 +403,7 @@ pub async fn activate(
         "broadcast" => {
             // Validate starts_at <= ends_at if both provided
             let now = now_ts();
-            let starts_at = req.starts_at.as_deref().unwrap_or_else(|| now.as_str());
+            let starts_at = req.starts_at.as_deref().unwrap_or(now.as_str());
             if let Some(ends_at) = &req.ends_at {
                 if ends_at.as_str() < starts_at {
                     return Err(ApiError::validation(
