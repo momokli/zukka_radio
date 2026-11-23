@@ -194,7 +194,7 @@ mod tests {
             serde_json::json!({"channel": 1, "value": 0.5}),
         );
         assert_eq!(event.event_type, ControlEventType::LayerChanged);
-        assert!(event.at.len() > 0);
+        assert!(!event.at.is_empty());
         assert_eq!(event.data, serde_json::json!({"channel": 1, "value": 0.5}));
     }
 

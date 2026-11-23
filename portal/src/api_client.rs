@@ -506,7 +506,7 @@ pub mod event_type {
 pub async fn forward_control_event(_clients: &(), event: &ControlEvent) {
     // Event als JSON string bauen
     let event_json = serde_json::to_string(&event.data).unwrap_or_else(|_| "{}".to_string());
-    let message = format!(
+    let _message = format!(
         "{{\"type\": \"{}\", \"at\": \"{}\", \"data\": {}}}",
         event.event_type, event.at, event_json
     );
