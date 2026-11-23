@@ -1076,6 +1076,93 @@ pub struct AutomationViewDto {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #162: Tapes read + Queue activate
+// ---------------------------------------------------------------------------
+
+/// Full tape representation (`tapes` row + `slug`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TapeDto {
+    pub id: String,
+    pub slug: String,
+    pub caster_id: String,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    #[serde(default)]
+    pub broadcast_id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub started_at: String,
+    pub ended_at: String,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    pub source: String,
+    #[serde(default)]
+    pub music_api_id: Option<String>,
+    #[serde(default)]
+    pub storage_key: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub mime: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
+    #[serde(default)]
+    pub etag: Option<String>,
+    pub status: String,
+    pub visible: bool,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Query parameters of `GET /tapes` (all optional).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListTapesParams {
+    pub q: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub owner_caster_id: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub visible: Option<bool>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// Body of `POST /queues/{id}/activate` — `version` is mandatory (optimistic lock).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivateQueueRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub starts_at: Option<String>,
+    #[serde(default)]
+    pub ends_at: Option<String>,
+    #[serde(default)]
+    pub show_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub version: i64,
+}
+
+/// Response of `POST /queues/{id}/activate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivateQueueResponse {
+    pub mode: String,
+    #[serde(default)]
+    pub broadcast_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Issue #16: auth (identity authority)
 // ---------------------------------------------------------------------------
 
